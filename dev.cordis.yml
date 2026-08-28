@@ -1,0 +1,15 @@
+# Local development overlay (host half only).
+# Loads the TypeScript source directly so you can iterate without building.
+# NOTE: the path MUST be absolute. Update it to match your checkout, then run:
+#   pnpm dsh web --patch ./dev.cordis.yml
+# The client (browser) half is NOT loaded through this overlay; to develop the
+# UI panel, build once (`pnpm build`) and install the package into the profile
+# (`dsh plugin --profile web add .`) so the `dsh.client` manifest is honoured.
+- insert:
+  - id: ai-team-dev
+    name: "/Users/yunke/WorkBuddy/dsh-ai-team/src/index.ts"
+    config:
+      stateDir: .dsh-ai-team
+      maxMembers: 12
+      enableFileWatch: false
+      apiBase: /api/ai-team

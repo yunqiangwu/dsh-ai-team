@@ -1,0 +1,66 @@
+{
+  "name": "dsh-ai-team",
+  "version": "0.1.0",
+  "description": "AI software-development team plugin for DeepSeek Harness: isolated agent workspaces, a shared git repository, branch collaboration, a task board and code review.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "external": [],
+      "immediately": false
+    }
+  },
+  "engines": {
+    "node": "^22.19 || >=24",
+    "dsh": ">=0.1.0-rc.6"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "tsx --test test/team-service.test.ts",
+    "test:integration": "tsx test/test-integration.ts",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6",
+    "@deepseek-ai/schemastery": ">=0.1.0-rc.6",
+    "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6",
+    "@deepseek-ai/schemastery": ">=0.1.0-rc.6",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "react": "^18.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

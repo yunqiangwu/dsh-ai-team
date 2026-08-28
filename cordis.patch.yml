@@ -1,0 +1,12 @@
+# Bundle patch for dsh-ai-team.
+# Applied automatically when the bundle is added to a profile:
+#   dsh plugin --profile web add .
+# The row is matched by `id`; `name` resolves the package via Node module resolution.
+insert:
+  - id: ai-team
+    name: 'dsh-ai-team'
+    config:
+      stateDir: .dsh-ai-team
+      maxMembers: 12
+      enableFileWatch: false
+      apiBase: /api/ai-team
