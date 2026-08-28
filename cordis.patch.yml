@@ -1,0 +1,25 @@
+# dsh-ai-team bundle layer: applied automatically when a profile lists this
+# package in dsh.profile.bundles, or when passed via `dsh web --patch`.
+# Users can override this row in their own profile cordis.patch.yml by id
+# (the whole config is replaced, not merged).
+#
+# Development (run from this repository):
+#   pnpm install && pnpm build
+#   pnpm dsh web --patch ./cordis.patch.yml
+# and point the `name` below at ./lib/index.js (default) or ./src/index.ts.
+- insert:
+    - id: ai-team
+      name: dsh-ai-team
+      config:
+        # Root directory holding every team's shared repository and the
+        # per-member isolated workspaces (git worktrees). Relative paths
+        # resolve against the current working directory of the DSH host.
+        rootDir: .dsh-ai-team
+        # Where team state (teams.json) is persisted. Defaults to <rootDir>.
+        stateDir: .dsh-ai-team
+        # Branch all task branches fork from and approved reviews merge into.
+        baseBranch: main
+        # Maximum members per team (leader included).
+        maxMembers: 8
+        # Maximum tasks per team.
+        maxTasks: 256
