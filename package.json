@@ -2,6 +2,15 @@
   "name": "dsh-ai-team",
   "version": "0.1.1",
   "description": "DSH plugin: simulate an AI software team — isolated per-member workspaces, one shared git repository, branch collaboration, task assignment, code review, and a team-collaboration panel in the Web UI",
+  "author": "waynew <jonneywu@foxmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yunqiangwu/dsh-ai-team.git"
+  },
+  "homepage": "https://github.com/yunqiangwu/dsh-ai-team#readme",
+  "bugs": {
+    "url": "https://github.com/yunqiangwu/dsh-ai-team/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
