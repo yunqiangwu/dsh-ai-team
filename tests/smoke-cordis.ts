@@ -88,4 +88,24 @@ describe('smoke: cordis Loader contract', () => {
     };
     expect(persisted.teams[0]?.name).toBe('smoke');
   }, 60_000);
+
+  it('ships + provisions the autopilot-team agent preset', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-ai-team-preset-'));
+    const userRoot = join(root, '.agent-presets');
+
+    // Provision the shipped template into a fresh user root.
+    const first = await plugin.ensureAutopilotTeamPreset(userRoot);
+    expect(first).toBe(join(userRoot, 'autopilot-team'));
+    const composition = await readFile(join(first as string, 'agent.cordis.yml'), 'utf8');
+    expect(composition).toContain('Autopilot Team');
+    const metadata = await readFile(join(first as string, 'preset.yml'), 'utf8');
+    expect(metadata).toContain('Autopilot 团队');
+
+    // Idempotent: re-provisioning returns the same dir and does not overwrite.
+    const second = await plugin.ensureAutopilotTeamPreset(userRoot);
+    expect(second).toBe(first);
+
+    // Best-effort: an unwritable root must not throw; it resolves undefined.
+    expect(await plugin.ensureAutopilotTeamPreset('/proc/not/writable')).toBeUndefined();
+  }, 30_000);
 });

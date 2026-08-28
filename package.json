@@ -41,6 +41,7 @@
   },
   "files": [
     "lib",
+    "preset",
     "README.md",
     "LICENSE",
     "cordis.patch.yml"

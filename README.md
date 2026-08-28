@@ -202,6 +202,21 @@ Given/When/Then 验收标准……
 
 另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片（`settings.plugin.item` 键控命名空间）。它绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段（`remote.url`、`baseBranch`、`bootstrap.enabled`、`gates.commands`、`daemon.heartbeatSeconds`/`maxReviewRounds`/`stuckMinutes`）供编辑保存，写入用户设置层；服务端通过 `installSettingsSection` 让插件读到生效配置（无设置服务时回退到 entry config）。因命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
 
+## Agent 预设：Autopilot 团队（一键切换模式）
+
+想让"启用"变成一次**切换模式**而不是改配置，用 DSH 的 agent preset 机制即可。插件自带一个 `autopilot-team` agent 预设：
+
+- **随包分发**：模板在插件包内 `preset/autopilot-team/`（已加入 `package.json` 的 `files`），随 `npm/pnpm publish` 一起发布。
+- **自动落盘**：插件 `apply()` 里通过 `src/preset.ts` 的 `ensureAutopilotTeamPreset()` 把这个模板拷贝到用户级预设根 `~/.dsh/.agent-presets/autopilot-team/`，**缺失才拷贝、绝不覆盖**（用户自建的 `autopilot-team` 优先），失败静默不阻塞加载。因此**安装并重启后即可在 agent 模式列表里看到「Autopilot 团队」**，无需手建文件。
+- **组合内容**：`agent.cordis.yml` 复刻 `standard` 的全套工具（shell/fs/subagent/workflow 等）并把人格设为 autopilot 团队编排队 leader；`preset.yml` 提供名称/描述/排序。
+- **效果**：在 agent 模式列表里切到 **Autopilot 团队**，该会话就变成"无人值守 AI 软件团队"的编排队；`dsh-ai-team` 的宿主插件工具是全站全局的，本预设无需重复 include。
+- **自动开箱感应**：插件在 `apply()` 里监听 `session/event` 的 `agent-preset/selected`，当选中 `autopilot-team` 时**自动创建一个 `demo` 团队**并把投影快照推到该会话，脚本号拉起看板（无需手动先调 `team_create`）。
+- **反复安全**：仅当尚无团队时才创建；`session.append` 前先让出微任务，避免在 `agent-preset/selected` 追加的发布边界内重入。
+
+> **重启生效**：`autopilot-team` 预设目录的盘点是无缓存的（即时读取），所以预设一旦落盘，刷新代理模式列表即可看到；但**自动建 `demo` 团队**这个钩子在本插件的宿主 `lib/index.js` 里，改动宿主代码后需**重启服务端**才会生效。
+
+
+
 ## 开发
 
 ```bash

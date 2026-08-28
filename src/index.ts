@@ -8,10 +8,15 @@ import z from '@deepseek-ai/schemastery';
 import type { Context } from '@deepseek-ai/cordis';
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 import { registerAutopilotProjection } from './projection.js';
+import { ensureAutopilotTeamPreset } from './preset.js';
+import { AUTOPILOT_TEAM_PRESET_ID } from './preset.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
 
 export const name = 'dsh-ai-team';
+
+/** Name of the auto-created demo team rendered in the kanban panel. */
+const DEMO_TEAM_NAME = 'demo';
 
 /** The tool runtime is mandatory; sessionProjections is optional (headless). */
 export const inject = ['tools'];
@@ -282,6 +287,42 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   registerAutopilotProjection(ctx);
   // Model-facing tools; each mutation appends `autopilot/update` to the log.
   registerAutopilotTools(ctx, service);
+  // Ship the `autopilot-team` agent preset: copy it into a user preset root on
+  // load (best-effort, never overwrites) so the roster exposes the mode on a
+  // fresh install without manual file creation.
+  ctx.inject(['agentPresets'], (presetCtx) => {
+    const presets = (presetCtx as unknown as {
+      agentPresets: { roots: { trust: string; path: string }[] };
+    }).agentPresets;
+    const userRoot = presets.roots.filter((root) => root.trust === 'user').pop()?.path;
+    void ensureAutopilotTeamPreset(userRoot);
+  });
+  // Auto-provision UX: when a session joins the `autopilot-team` agent preset,
+  // ensure a demo team exists and push the projection to that session so the
+  // kanban panel lights up immediately — no manual first tool call needed.
+  ctx.on('session/event', (rawSession, rawEvent) => {
+    const adoptedEvent = rawEvent as unknown as { type?: string; data?: { agentPreset?: string } };
+    if (adoptedEvent.type !== 'agent-preset/selected') return;
+    const presetId = adoptedEvent.data?.agentPreset;
+    if (presetId !== AUTOPILOT_TEAM_PRESET_ID) return;
+    const session = rawSession as { append(type: string, data: unknown): void };
+    void (async () => {
+      try {
+        if (service.projection().teams.length === 0) {
+          await service.createTeam({ name: DEMO_TEAM_NAME });
+        }
+        // Always yield to a microtask before appending: we are running inside
+        // the `agent-preset/selected` append's publication boundary, and a
+        // synchronous re-entrant `session.append` is rejected.
+        await Promise.resolve();
+        session.append('autopilot/update', {
+          state: service.projection(),
+        });
+      } catch (error) {
+        ctx.logger.warn('autopilot: demo-team auto-provision failed', error);
+      }
+    })();
+  });
   // State persistence, loop shutdown and listener teardown ride the plugin
   // lifecycle: unloading the plugin stops the daemon and flushes state.json.
   ctx.effect(
@@ -297,3 +338,4 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export { AutopilotService } from './service.js';
+export { ensureAutopilotTeamPreset } from './preset.js';
