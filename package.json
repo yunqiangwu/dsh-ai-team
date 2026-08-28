@@ -4,6 +4,25 @@
   "description": "AI software-development team plugin for DeepSeek Harness: isolated agent workspaces, a shared git repository, branch collaboration, a task board and code review.",
   "type": "module",
   "license": "MIT",
+  "author": "yunke",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yunqiangwu/dsh-ai-team.git"
+  },
+  "homepage": "https://github.com/yunqiangwu/dsh-ai-team#readme",
+  "bugs": {
+    "url": "https://github.com/yunqiangwu/dsh-ai-team/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "multi-agent",
+    "ai-team",
+    "git-worktree",
+    "code-review"
+  ],
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "exports": {
@@ -62,5 +81,9 @@
     "react": "^18.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   }
 }
