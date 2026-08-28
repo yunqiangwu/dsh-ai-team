@@ -4,16 +4,21 @@
  * and neutral alpha overlays, with semantic accents for status.
  */
 const CSS = `
-.dsh-ai-team { border: 1px solid rgba(127,127,127,.25); border-radius: 10px; margin: 8px 0; overflow: hidden; font-size: 12px; }
-.dsh-ai-team__header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; background: none; border: none; cursor: pointer; color: inherit; font: inherit; text-align: left; }
-.dsh-ai-team__title { font-weight: 600; }
-.dsh-ai-team__summary { opacity: .65; flex: 1; }
-.dsh-ai-team__chevron { transition: transform .15s ease; }
+.dsh-ai-team { border: 1px solid rgba(127,127,127,.25); border-radius: 12px; margin: 8px 0; overflow: hidden; font-size: 12px; }
+.dsh-ai-team__header { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 16px; background: rgba(127,127,127,.06); border: none; cursor: pointer; color: inherit; font: inherit; font-size: 13px; text-align: left; }
+.dsh-ai-team__header:hover { background: rgba(127,127,127,.12); }
+.dsh-ai-team__header:active { background: rgba(127,127,127,.16); }
+.dsh-ai-team__header:focus-visible { outline: 2px solid rgba(59,130,246,.55); outline-offset: 2px; }
+.dsh-ai-team__title { font-weight: 600; white-space: nowrap; }
+.dsh-ai-team__summary { opacity: .7; flex: 1; min-width: 0; }
+.dsh-ai-team__chevron { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; font-size: 16px; line-height: 1; border-radius: 50%; border: 1px solid rgba(127,127,127,.35); transition: transform .15s ease, background .15s ease; }
+.dsh-ai-team__header:hover .dsh-ai-team__chevron { background: rgba(127,127,127,.15); }
 .dsh-ai-team--open .dsh-ai-team__chevron { transform: rotate(90deg); }
-.dsh-ai-team__body { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 12px; }
+.dsh-ai-team--open .dsh-ai-team__header { border-bottom: 1px solid rgba(127,127,127,.12); }
+.dsh-ai-team__body { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
 .dsh-ai-team__section-title { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .55; }
-.dsh-ai-team__lamp { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); font-weight: 600; }
-.dsh-ai-team__lamp-dot { width: 8px; height: 8px; border-radius: 50%; }
+.dsh-ai-team__lamp { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); font-weight: 600; white-space: nowrap; flex: none; }
+.dsh-ai-team__lamp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .dsh-ai-team__lamp--running .dsh-ai-team__lamp-dot { background: #22c55e; }
 .dsh-ai-team__lamp--paused .dsh-ai-team__lamp-dot { background: #eab308; }
 .dsh-ai-team__lamp--escalated .dsh-ai-team__lamp-dot { background: #ef4444; }
