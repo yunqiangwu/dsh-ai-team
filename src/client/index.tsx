@@ -1,9 +1,10 @@
 import { ensurePanelStyles } from './styles.js';
 import { AutopilotPanel } from './AutopilotPanel.js';
+import { AutopilotSettingsCard } from './settings-card.js';
 import type { ClientContext } from './contract.js';
 
-/** Required services: sessions (projection seat), slots, locale. */
-export const inject = ['sessions', 'slots', 'locale'];
+/** Required services: sessions (projection seat), slots, locale, settings scope. */
+export const inject = ['sessions', 'slots', 'locale', 'settingsScope'];
 
 const zh = {
   'panel.title': '自动驾驶：{team}',
@@ -54,6 +55,21 @@ const zh = {
   'notify.failed': '通知失败',
   'notify.ticket': '工单',
   'notify.submitted': '已答复',
+  'config.intro': '编辑 autopilot 的关键配置。改动保存后写入用户设置层，下次带 patch 启动时生效。',
+  'config.remoteUrl': '远端仓库地址',
+  'remoteUrlHint': 'git@github.com:org/repo.git 或 https 地址；可为空仓库。',
+  'config.baseBranch': '基础分支',
+  'config.bootstrapEnabled': '启用引导',
+  'config.gatesCommands': '质量门命令（每行一条）',
+  'gatesCommandsHint': '每行一条，按顺序执行；全绿才允许合并。',
+  'config.heartbeatSeconds': '心跳间隔（秒）',
+  'config.maxReviewRounds': '最大返工轮次',
+  'config.stuckMinutes': '卡死判定期（分钟）',
+  'config.overridden': '已覆盖',
+  'config.revert': '还原',
+  'config.reset': '重置为继承值',
+  'config.discard': '放弃',
+  'config.save': '保存',
 };
 
 const en: Record<keyof typeof zh, string> = {
@@ -105,6 +121,21 @@ const en: Record<keyof typeof zh, string> = {
   'notify.failed': 'notify failed',
   'notify.ticket': 'ticket',
   'notify.submitted': 'answered',
+  'config.intro': 'Edit autopilot key settings. Changes are written to the user settings layer and take effect on the next patched boot.',
+  'config.remoteUrl': 'Remote repository URL',
+  'remoteUrlHint': 'git@github.com:org/repo.git or an https URL; may be an empty repo.',
+  'config.baseBranch': 'Base branch',
+  'config.bootstrapEnabled': 'Enable bootstrap',
+  'config.gatesCommands': 'Quality-gate commands (one per line)',
+  'gatesCommandsHint': 'One per line, run in order; all must pass before a merge.',
+  'config.heartbeatSeconds': 'Heartbeat interval (s)',
+  'config.maxReviewRounds': 'Max rework rounds',
+  'config.stuckMinutes': 'Stuck threshold (min)',
+  'config.overridden': 'overridden',
+  'config.revert': 'Revert',
+  'config.reset': 'Reset to inherited',
+  'config.discard': 'Discard',
+  'config.save': 'Save',
 };
 
 /** Client plugin body. */
@@ -120,6 +151,21 @@ export function apply(ctx: ClientContext): void {
         locale: 'autopilot',
       },
       AutopilotPanel,
+    ),
+  );
+  // Settings card: pairs the `autopilot` Host namespace with a browser card.
+  // Keyed on the namespace so the Plugins config tab matches the two ledgers.
+  const autopilotScope = ctx.settingsScope.bind<Record<string, unknown>>({ namespace: 'autopilot' });
+  ctx.slots.inject('settings.plugin.item', () =>
+    ctx.slots.register(
+      {
+        name: 'settings.plugin.item',
+        id: 'autopilot',
+        key: 'autopilot',
+        locale: 'autopilot',
+        inject: () => ({ t: ctx.locale.bind('autopilot'), scope: autopilotScope }),
+      },
+      AutopilotSettingsCard,
     ),
   );
 }

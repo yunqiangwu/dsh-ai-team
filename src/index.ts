@@ -6,6 +6,7 @@
  */
 import z from '@deepseek-ai/schemastery';
 import type { Context } from '@deepseek-ai/cordis';
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 import { registerAutopilotProjection } from './projection.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
@@ -207,58 +208,72 @@ export const Config: z<Config> = z.object({
 });
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  // Optional settings seam (Web "Plugin configuration" tab): register the
+  // `autopilot` namespace so the browser card can edit key fields, and read the
+  // effective config from the resolved scope when a settings service is mounted.
+  // When none is mounted (headless), the source falls back to the entry config.
+  let current: () => Config = () => config;
+  installSettingsSection(ctx, settingsNamespace('autopilot'), Config, config, {
+    setSource: (get) => {
+      current = get as () => Config;
+    },
+    onChange: () => {
+      // Re-judge derived state here if the plugin ever needs live config edits.
+    },
+  });
+  const effective = current();
   const service = await AutopilotService.create({
-    rootDir: config.rootDir,
-    stateDir: config.stateDir === '' ? undefined : config.stateDir,
-    baseBranch: config.baseBranch,
-    maxMembers: config.maxMembers,
-    maxTasks: config.maxTasks,
+    rootDir: effective.rootDir,
+    stateDir: effective.stateDir === '' ? undefined : effective.stateDir,
+    baseBranch: effective.baseBranch,
+    maxMembers: effective.maxMembers,
+    maxTasks: effective.maxTasks,
     remote: {
-      url: config.remote.url,
-      sshKeyEnv: config.remote.sshKeyEnv,
-      platform: config.remote.platform,
-      apiTokenEnv: config.remote.apiTokenEnv === '' ? undefined : config.remote.apiTokenEnv,
+      url: effective.remote.url,
+      sshKeyEnv: effective.remote.sshKeyEnv,
+      platform: effective.remote.platform,
+      apiTokenEnv: effective.remote.apiTokenEnv === '' ? undefined : effective.remote.apiTokenEnv,
     },
-    bootstrap: config.bootstrap,
+    bootstrap: effective.bootstrap,
     gates: {
-      commands: config.gates.commands,
-      e2eCommand: config.gates.e2eCommand === '' ? undefined : config.gates.e2eCommand,
-      requireCiGreen: config.gates.requireCiGreen,
-      timeoutMinutes: config.gates.timeoutMinutes,
+      commands: effective.gates.commands,
+      e2eCommand: effective.gates.e2eCommand === '' ? undefined : effective.gates.e2eCommand,
+      requireCiGreen: effective.gates.requireCiGreen,
+      timeoutMinutes: effective.gates.timeoutMinutes,
     },
-    daemon: config.daemon,
+    daemon: effective.daemon,
     escalation: {
-      webhookUrlEnv: config.escalation.webhookUrlEnv === '' ? undefined : config.escalation.webhookUrlEnv,
-      label: config.escalation.label,
-      pauseOnEscalation: config.escalation.pauseOnEscalation,
+      webhookUrlEnv: effective.escalation.webhookUrlEnv === '' ? undefined : effective.escalation.webhookUrlEnv,
+      label: effective.escalation.label,
+      pauseOnEscalation: effective.escalation.pauseOnEscalation,
     },
-    notification: config.notification?.enabled === true ? {
+    notification: effective.notification?.enabled === true ? {
       enabled: true,
       smtp: {
-        host: config.notification.smtp.host,
-        port: config.notification.smtp.port,
-        secure: config.notification.smtp.secure,
-        userEnv: config.notification.smtp.userEnv,
-        passEnv: config.notification.smtp.passEnv,
-        fromEnv: config.notification.smtp.fromEnv === '' ? undefined : config.notification.smtp.fromEnv,
-        startTls: config.notification.smtp.startTls,
+        host: effective.notification.smtp.host,
+        port: effective.notification.smtp.port,
+        secure: effective.notification.smtp.secure,
+        userEnv: effective.notification.smtp.userEnv,
+        passEnv: effective.notification.smtp.passEnv,
+        fromEnv: effective.notification.smtp.fromEnv === '' ? undefined : effective.notification.smtp.fromEnv,
+        startTls: effective.notification.smtp.startTls,
       },
-      mailTo: config.notification.mailTo,
+      mailTo: effective.notification.mailTo,
       ticket: {
-        host: config.notification.ticket.host,
-        port: config.notification.ticket.port,
-        publicBaseUrl: config.notification.ticket.publicBaseUrl,
+        host: effective.notification.ticket.host,
+        port: effective.notification.ticket.port,
+        publicBaseUrl: effective.notification.ticket.publicBaseUrl,
       },
-      autoResume: config.notification.autoResume,
+      autoResume: effective.notification.autoResume,
     } : undefined,
     deploy: {
-      enabled: config.deploy.enabled,
-      command: config.deploy.command === '' ? undefined : config.deploy.command,
-      healthCheckUrl: config.deploy.healthCheckUrl === '' ? undefined : config.deploy.healthCheckUrl,
-      rollbackCommand: config.deploy.rollbackCommand === '' ? undefined : config.deploy.rollbackCommand,
-      secretsEnv: config.deploy.secretsEnv,
+      enabled: effective.deploy.enabled,
+      command: effective.deploy.command === '' ? undefined : effective.deploy.command,
+      healthCheckUrl: effective.deploy.healthCheckUrl === '' ? undefined : effective.deploy.healthCheckUrl,
+      rollbackCommand: effective.deploy.rollbackCommand === '' ? undefined : effective.deploy.rollbackCommand,
+      secretsEnv: effective.deploy.secretsEnv,
     },
-    security: config.security,
+    security: effective.security,
   });
   // Expose the service for other plugins (and for tests driving the host).
   ctx.provide('autopilot', service);

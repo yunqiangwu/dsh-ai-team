@@ -26,6 +26,31 @@ export interface SlotRegistration {
   order?: number;
   /** Locale namespace the component's `t` is bound to. */
   locale?: string;
+  /** Keyed-slot key (settings.plugin.item keys on the namespace it edits). */
+  key?: string;
+  /** Build the props passed to the registered component. */
+  inject?: () => unknown;
+}
+
+/** Client-side sync view of one settings namespace (mirror of the scope contract). */
+export interface SettingsScopeSnapshot<T> {
+  status: 'loading' | 'ready' | 'unavailable';
+  value: T | undefined;
+  base: unknown;
+  user: unknown;
+  revision: number | undefined;
+  writable: boolean;
+  mode: 'host' | 'memory';
+}
+
+/** Reactive owner handle over one namespace's durable section. */
+export interface SettingsScope<T> {
+  getSnapshot(): SettingsScopeSnapshot<T>;
+  subscribe(listener: () => void): () => void;
+  /** Queue one scalar field write (dot path). */
+  set(field: string, value: unknown): Promise<void>;
+  /** Clear a field so it re-inherits the composition layer. */
+  unset(field: string): Promise<void>;
 }
 
 export interface ClientContext {
@@ -37,11 +62,17 @@ export interface ClientContext {
       namespace: string,
       dictionaries: { zh: Record<string, string>; en: Record<string, string> },
     ): () => void;
+    /** Bind a translator to a locale namespace; returns { key, params } => string. */
+    bind(namespace: string): Translator;
   };
   slots: {
     /** Run `callback` in the scope of one declared slot. */
     inject(slotName: string, callback: () => unknown): void;
     /** Register a React component into a slot; returns a disposer. */
     register(meta: SlotRegistration, component: unknown): () => void;
+  };
+  /** Settings transport: bind one namespace's bounded scope on this fiber. */
+  settingsScope: {
+    bind<T>(spec: { namespace: string }): SettingsScope<T>;
   };
 }

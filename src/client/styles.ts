@@ -44,6 +44,21 @@ const CSS = `
 .dsh-ai-team__feed-check { color: #22c55e; }
 .dsh-ai-team__deploy { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed rgba(127,127,127,.2); }
 .dsh-ai-team__empty { opacity: .5; font-style: italic; }
+/* ── Plugin settings card (settings.plugin.item / autopilot namespace) ── */
+.dsh-ai-team__config { display: flex; flex-direction: column; gap: 12px; }
+.dsh-ai-team__config-intro { margin: 0 0 2px; font-size: 12px; opacity: .6; }
+.dsh-ai-team__config-field { display: flex; flex-direction: column; gap: 4px; }
+.dsh-ai-team__config-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.dsh-ai-team__config-overridden { font-style: normal; font-size: 11px; color: #eab308; font-weight: 500; }
+.dsh-ai-team__config-input { font: inherit; padding: 6px 10px; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; background: transparent; color: inherit; }
+.dsh-ai-team__config-area { resize: vertical; }
+.dsh-ai-team__config-hint { font-size: 11px; opacity: .5; }
+.dsh-ai-team__config-reset { align-self: flex-start; font: inherit; font-size: 11px; cursor: pointer; border: none; background: none; color: #3b82f6; padding: 0; }
+.dsh-ai-team__config-reset:disabled { opacity: .4; cursor: default; }
+.dsh-ai-team__config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.dsh-ai-team__config-actions button { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 5px 14px; background: transparent; color: inherit; }
+.dsh-ai-team__config-actions button:disabled { opacity: .4; cursor: default; }
+.dsh-ai-team__config-actions button[type='button']:last-child { background: rgba(59,130,246,.9); border-color: transparent; color: #fff; }
 `;
 
 let injected = false;

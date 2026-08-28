@@ -200,6 +200,8 @@ Given/When/Then 验收标准……
 
 在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）、六列看板（含 needs-human）、质量门徽标与 CI 徽标、升级事件流、部署历史。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
 
+另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片（`settings.plugin.item` 键控命名空间）。它绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段（`remote.url`、`baseBranch`、`bootstrap.enabled`、`gates.commands`、`daemon.heartbeatSeconds`/`maxReviewRounds`/`stuckMinutes`）供编辑保存，写入用户设置层；服务端通过 `installSettingsSection` 让插件读到生效配置（无设置服务时回退到 entry config）。因命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
+
 ## 开发
 
 ```bash
