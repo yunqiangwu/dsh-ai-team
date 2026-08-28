@@ -1,0 +1,66 @@
+# dsh-ai-team bundle layer: applied automatically when a profile lists this
+# package in dsh.profile.bundles, or when passed via `dsh web --patch`.
+# Users can override this row in their own profile cordis.patch.yml by id
+# (the whole config is replaced, not merged).
+#
+# Development (run from this repository):
+#   pnpm install && pnpm build
+#   pnpm dsh web --patch ./cordis.patch.yml
+- insert:
+    - id: autopilot
+      name: dsh-ai-team
+      config:
+        rootDir: .dsh-ai-team
+        baseBranch: main
+        maxMembers: 8
+        maxTasks: 512
+        remote:
+          # git@github.com:org/repo.git or https URL; may be an EMPTY repo.
+          url: ''
+          # Name of the env var holding the SSH private key path / https token.
+          # Never put key material in this file.
+          sshKeyEnv: AUTOPILOT_GIT_KEY
+          platform: generic
+        bootstrap:
+          enabled: true
+          toolchain: [git, bun, pnpm]
+          setupCommand: pnpm run setup
+          verifyCommand: pnpm run e2e:local
+        gates:
+          commands:
+            - pnpm run typecheck
+            - pnpm run lint
+            - pnpm run test
+            - pnpm run build
+          e2eCommand: pnpm run e2e:local
+          requireCiGreen: true
+          timeoutMinutes: 30
+        daemon:
+          heartbeatSeconds: 60
+          maxReviewRounds: 3
+          stuckMinutes: 45
+          pollIntervalSeconds: 30
+        escalation:
+          label: needs-human
+          pauseOnEscalation: task
+        notification:
+          enabled: true
+          smtp:
+            host: smtp.qq.com          # or smtp.163.com / smtp.gmail.com
+            port: 465                  # 465 = implicit TLS; 587 = STARTTLS
+            secure: true
+            userEnv: AUTOPILOT_SMTP_USER      # env var name, never the value
+            passEnv: AUTOPILOT_SMTP_PASS      # SMTP auth code, env var name only
+            fromEnv: AUTOPILOT_SMTP_FROM      # optional; defaults to user
+          mailTo: ops@example.com
+          ticket:
+            host: 0.0.0.0              # bind host for the local ticket endpoint
+            port: 8080                 # 0 = ephemeral port
+            publicBaseUrl: http://server.example.com   # used to build the ticket URL in email
+          autoResume: true             # answer → write back + auto-clear escalation
+        deploy:
+          enabled: false
+        security:
+          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']
+          commandAllowlist: [pnpm, git, bun, docker]
+          pushRequiresGates: true
