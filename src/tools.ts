@@ -21,7 +21,21 @@ const jsonOutput = {
 
 /** Push the whole-state snapshot to the calling agent's session log. */
 function publish(service: AutopilotService, exec?: ToolRunContext): void {
-  exec?.agent?.session.append('autopilot/update', { state: service.projection() });
+  // `autopilot/update` is the plugin's own informational whole-state snapshot.
+  // Passing `{ ignorable: true }` lets a reader that does not understand the
+  // type (e.g. the core persistence read guard) skip it instead of refusing the
+  // whole log. The option is only typed on harness builds that ship the
+  // write-side marker, so a controlled cast keeps us buildable against older
+  // `@deepseek-ai/dsh-session` typings while still stamping the marker at
+  // runtime when the harness supports it.
+  const session = exec?.agent?.session;
+  if (session !== undefined) {
+    (session.append as unknown as (
+      type: string,
+      data: unknown,
+      opts?: { ignorable: true },
+    ) => unknown)('autopilot/update', { state: service.projection() }, { ignorable: true });
+  }
 }
 
 const present = (title: string) => () =>

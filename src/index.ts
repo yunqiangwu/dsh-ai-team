@@ -305,7 +305,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (adoptedEvent.type !== 'agent-preset/selected') return;
     const presetId = adoptedEvent.data?.agentPreset;
     if (presetId !== AUTOPILOT_TEAM_PRESET_ID) return;
-    const session = rawSession as { append(type: string, data: unknown): void };
+    const session = rawSession as {
+      append(type: string, data: unknown, opts?: { ignorable?: true }): void;
+    };
     void (async () => {
       try {
         if (service.projection().teams.length === 0) {
@@ -317,7 +319,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         await Promise.resolve();
         session.append('autopilot/update', {
           state: service.projection(),
-        });
+        }, { ignorable: true });
       } catch (error) {
         ctx.logger.warn('autopilot: demo-team auto-provision failed', error);
       }
