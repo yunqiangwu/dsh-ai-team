@@ -29,7 +29,7 @@ const present = (title: string) => () =>
 
 /** Register all dsh-ai-team tools on the shared tool runtime. */
 export function registerAutopilotTools(ctx: Context, service: AutopilotService): void {
-  // ── dsh-ai-team compatible tool set ──────────────────────────────────────
+  // ── core team / collaboration tools ──────────────────────────────────────
 
   ctx.tools.register(
     defineTool({

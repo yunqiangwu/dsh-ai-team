@@ -1,7 +1,8 @@
 /**
- * System-instruction templates per role. Compatible with dsh-ai-team's
- * leader / developer / reviewer, extended with the operator role (deploy &
- * ops loop) and the unattended rules (quality gates, escalation triggers).
+ * System-instruction templates per role: leader / developer / reviewer /
+ * operator. The operator role drives the deploy & ops loop; every role carries
+ * the unattended rules (objective quality gates, escalation triggers, never
+ * touch files outside your own workspace).
  */
 import type { Role } from './view.js';
 import { ROLES } from './view.js';

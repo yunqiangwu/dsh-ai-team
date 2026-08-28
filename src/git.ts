@@ -1,6 +1,5 @@
 /**
- * Thin promisified wrapper around the `git` CLI. Repository topology (kept
- * compatible with dsh-ai-team):
+ * Thin promisified wrapper around the `git` CLI. Repository topology:
  *
  *   <rootDir>/<teamId>/repo                 shared repository (integration
  *                                           checkout, always on baseBranch)
@@ -8,9 +7,9 @@
  *                                           member, sharing the same object
  *                                           store.
  *
- * On top of dsh-ai-team's local-only model this module adds the remote side:
- * clone of a (possibly empty) remote, authenticated push via GIT_SSH_COMMAND
- * built from an env-var reference, and the push safety rules of spec §4.5.
+ * This module adds the remote side: clone of a (possibly empty) remote,
+ * authenticated push via GIT_SSH_COMMAND built from an env-var reference,
+ * and the push safety rules of spec §4.5.
  */
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

@@ -1,9 +1,9 @@
 /**
  * AutopilotService — the heart of dsh-ai-team.
  *
- * Extends the dsh-ai-team collaboration model (isolated per-member git
- * worktrees on one shared repository, leader → developer task board,
- * reviewer-gated merges) with everything unattended operation needs:
+ * The collaboration model (isolated per-member git worktrees on one shared
+ * repository, leader → developer task board, reviewer-gated merges) provides
+ * the substrate; layered above it is everything unattended operation needs:
  * remote clone/push, bare-machine bootstrap, objective quality gates, a
  * daemon run loop with crash recovery, escalation, and the deploy loop.
  *
@@ -842,7 +842,7 @@ export class AutopilotService {
     }
   }
 
-  // ── team & member management (dsh-ai-team compatible) ────────────────────
+  // ── team & member management ─────────────────────────────────────────────
 
   async createTeam(input: {
     name: string;
@@ -1041,7 +1041,7 @@ export class AutopilotService {
     return this.taskView(team, task);
   }
 
-  // ── branch collaboration (dsh-ai-team compatible) ────────────────────────
+  // ── branch collaboration ─────────────────────────────────────────────────
 
   async branch(input: {
     teamId: string;

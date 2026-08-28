@@ -20,18 +20,15 @@ pnpm add dsh-ai-team
 
 在 dsh 配置里以插件方式加载（见下方配置示例），或在对话中直接调用工具即可跑通全流程。
 
-### 与原始 dsh-ai-team 的关系
+## 功能特性
 
-本包复用了早期 `dsh-ai-team` 的协作模型（worktree 隔离、任务看板、审查门控、session 事件 + 投影）作为功能基线，并在此基础上补齐**无人值守**所需的全部能力，作为该包的新版本对外发布。从旧的本地协作版本平滑升级：协作模型与工具名完全兼容，新增维度全部可选、默认关闭。
-
-| 原始 dsh-ai-team（保留兼容） | 本包新增 |
+| 协作与工程模型 | 无人值守与交付闭环 |
 | --- | --- |
-| leader / developer / reviewer 三角色团队 | operator 第四角色（部署与运维） |
+| leader / developer / reviewer / **operator** 四角色团队 | **客观质量门**：gates_run 全绿才可 approve/push；远端 CI 绿才可合并 |
 | 每成员一个 git worktree，共享 object store | 远程 git：clone / push / PR（`GIT_SSH_COMMAND` 注入密钥） |
 | 任务看板 + `task/<id>` 分支 | `.tasks/*.md` 任务契约集成（frontmatter 真相源 + `_board.md` 自动生成） |
-| `code_review` 审查门控，`--no-ff` 合入 | **客观质量门**（gates_run 全绿才可 approve/push；远端 CI 绿才可合并） |
-| session 事件 + 投影 + Web 看板 | 主循环：崩溃恢复、依赖/域锁派发、卡死检测、空转降频、完成报告 |
-| — | 升级机制：`needs-human` 打标 + 任务单留言 + webhook 通知 + 粒度化暂停 |
+| `code_review` 审查门控，`--no-ff` 合入 | 主循环：崩溃恢复、依赖/域锁派发、卡死检测、空转降频、完成报告 |
+| session 事件 + 投影 + Web 看板 | 升级机制：`needs-human` 打标 + 任务单留言 + webhook 通知 + 粒度化暂停 |
 | — | 部署闭环：健康检查（指数退避）+ 自动回滚 + 部署历史 |
 | — | 人工确认：邮件通知 + 问卷工单，答复自动回写、可自动恢复循环 |
 | — | 安全硬规则：密钥只引用不落盘、命令白名单、forbiddenPaths、push 安全 |
@@ -195,9 +192,9 @@ Given/When/Then 验收标准……
 
 ## 工具一览
 
-兼容 dsh-ai-team：`team_create` / `team_add_member` / `team_list` / `team_status` / `task_assign` / `task_update` / `team_branch` / `code_review`。
+**团队与协作**：`team_create` / `team_add_member` / `team_list` / `team_status` / `team_branch` / `task_assign` / `task_update` / `code_review`。
 
-新增：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run` / `autopilot_status`。
+**无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_status` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run`。
 
 ## Web 面板
 
