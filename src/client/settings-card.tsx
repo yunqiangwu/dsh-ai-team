@@ -8,7 +8,7 @@
  * the KEY fields the user chose to expose for editing (the rest stay
  * composition-managed / YAML).
  */
-import { useSyncExternalStore, useState } from 'react';
+import { useCallback, useSyncExternalStore, useState } from 'react';
 import type { SettingsScope, Translator } from './contract.js';
 
 /** Dot-path expression over the resolved config. */
@@ -92,7 +92,13 @@ export function AutopilotSettingsCard({
   t: Translator;
   scope: SettingsScope<Record<string, unknown>>;
 }) {
-  const snapshot = useSyncExternalStore(scope.subscribe, () => scope.getSnapshot());
+  // `scope` is a SettingsScope instance whose `subscribe` relies on `this`
+  // (it reads `this.store` inside). Passing the bare method reference to
+  // `useSyncExternalStore` drops `this` on the first callback, so wrap it in an
+  // arrow that invokes it as a method — React calls the subscribe callback as a
+  // free function, not as `scope.subscribe(...)`.
+  const subscribeScope = useCallback((listener: () => void) => scope.subscribe(listener), [scope]);
+  const snapshot = useSyncExternalStore(subscribeScope, () => scope.getSnapshot());
   const { status, value, user, writable } = snapshot;
   const [drafts, setDrafts] = useState<Record<string, string | null>>({});
 
