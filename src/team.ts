@@ -9,7 +9,7 @@
  */
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml } from 'yaml';
 import type { TaskStatus } from './view.js';
 import { TASK_STATUSES } from './view.js';
 
@@ -20,6 +20,8 @@ export interface TaskContract {
   owner: string | null;
   dependsOn: string[];
   touches: string[];
+  /** Restricted paths declared by the task (per-task forbidden zones). */
+  forbidden: string[];
   /** Absolute path of the contract file. */
   path: string;
   /** Markdown body (acceptance criteria etc.), frontmatter excluded. */
@@ -50,6 +52,7 @@ export function parseTaskContract(path: string, content: string): TaskContract {
     owner: typeof raw['owner'] === 'string' && raw['owner'] !== '' ? raw['owner'] : null,
     dependsOn: toStringArray(raw['depends_on']),
     touches: toStringArray(raw['touches']),
+    forbidden: toStringArray(raw['forbidden']),
     path,
     body: match[2] ?? '',
   };
@@ -84,19 +87,37 @@ interface FrontmatterPatch {
   owner?: string | null;
 }
 
-/** Rewrite the frontmatter of one contract file, preserving the body. */
+/**
+ * Set (or remove) a single top-level frontmatter key **in place**, preserving
+ * the byte-for-byte ordering and formatting of every other line. Re-stringifying
+ * the whole frontmatter with a YAML serializer can reorder keys / reflow block
+ * lists, which trips projects' strict `validate:docs` checks (e.g. AgentDeploy).
+ */
+function setFrontmatterKey(frontmatter: string, key: string, value: string | null): string {
+  const matcher = new RegExp(`^${key}:.*$`, 'm');
+  if (value === null) {
+    // Remove the key line (owner cleared). Collapse a resulting blank line.
+    const without = frontmatter.replace(matcher, '');
+    return without.replace(/^\n+/, '').trimEnd();
+  }
+  if (matcher.test(frontmatter)) {
+    return frontmatter.replace(matcher, `${key}: ${value}`);
+  }
+  return `${frontmatter.trimEnd()}\n${key}: ${value}`;
+}
+
+/** Rewrite the frontmatter of one contract file, preserving the body and formatting. */
 export async function patchTaskContract(path: string, patch: FrontmatterPatch): Promise<void> {
   const content = await readFile(path, 'utf8');
   const match = FRONTMATTER_RE.exec(content);
   if (match === null) throw new Error(`task contract ${path} has no YAML frontmatter`);
-  const raw = (parseYaml(match[1] ?? '') ?? {}) as Record<string, unknown>;
-  if (patch.status !== undefined) raw['status'] = patch.status;
+  let frontmatter = match[1] ?? '';
+  if (patch.status !== undefined) frontmatter = setFrontmatterKey(frontmatter, 'status', patch.status);
   if (patch.owner !== undefined) {
-    if (patch.owner === null) delete raw['owner'];
-    else raw['owner'] = patch.owner;
+    frontmatter = setFrontmatterKey(frontmatter, 'owner', patch.owner === null ? null : patch.owner);
   }
   const body = match[2] ?? '';
-  await writeFile(path, `---\n${stringifyYaml(raw).trimEnd()}\n---\n${body}`, 'utf8');
+  await writeFile(path, `---\n${frontmatter}\n---\n${body}`, 'utf8');
 }
 
 /** Append a human/agent note (escalation messages, progress) to a contract body. */

@@ -91,10 +91,14 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
         teamId: { type: 'string', required: true },
         role: { type: 'string', required: true, enum: ROLES },
         name: { type: 'string', description: 'Display name; auto-generated when omitted' },
+        specialization: {
+          type: 'string',
+          description: 'Domain specialization (matches an ownership rule role, e.g. @agent-database)',
+        },
       },
       output: jsonOutput,
       async execute(args, exec) {
-        const input = args as { teamId: string; role: never; name?: string };
+        const input = args as { teamId: string; role: never; name?: string; specialization?: string };
         const member = await service.addMember(input);
         publish(service, exec);
         return asJson({ ...member, systemPrompt: service.memberSystemPrompt(input.teamId, member.id) });

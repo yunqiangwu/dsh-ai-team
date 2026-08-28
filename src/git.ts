@@ -15,6 +15,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { MergeStrategy } from './profile.js';
 
 /** Identity used for commits the plugin itself creates (init, merges). */
 const COMMITTER = ['-c', 'user.name=dsh-ai-team', '-c', 'user.email=dsh-ai-team@localhost'];
@@ -148,6 +149,12 @@ export async function checkout(worktreePath: string, branch: string): Promise<vo
  * Merge `source` into `target`. The integration checkout (repoPath) normally
  * sits on the base branch; for a non-base target we temporarily check it out
  * there and restore the base branch afterwards.
+ *
+ * `strategy` controls the merge commit shape:
+ *  - `no-ff` (default, historical) — a merge commit with both parents;
+ *  - `squash` — a single commit holding the whole diff, keeping `target`
+ *    linear and independently revertible (the AgentDeploy rule);
+ *  - `merge` — a fast-forward-or-merge-commit without `--no-ff`.
  */
 export async function mergeBranch(
   repoPath: string,
@@ -155,14 +162,29 @@ export async function mergeBranch(
   target: string,
   baseBranch: string,
   message?: string,
+  strategy: MergeStrategy = 'no-ff',
 ): Promise<void> {
   const restore = target !== baseBranch;
   if (restore) await git(['checkout', target], repoPath);
   try {
-    await git(
-      [...COMMITTER, 'merge', '--no-ff', '-m', message ?? `merge: ${source} into ${target}`, source],
-      repoPath,
-    );
+    if (strategy === 'squash') {
+      // --squash stages the whole diff without creating a merge commit; we
+      // then commit it with the plugin identity so the base stays linear.
+      await git(['merge', '--squash', source], repoPath);
+      await git(
+        [...COMMITTER, 'commit', '-m', message ?? `merge: ${source} into ${target}`],
+        repoPath,
+      ).catch(() => {
+        // No staged changes (already merged / empty diff) — nothing to commit.
+      });
+    } else if (strategy === 'merge') {
+      await git([...COMMITTER, 'merge', '-m', message ?? `merge: ${source} into ${target}`, source], repoPath);
+    } else {
+      await git(
+        [...COMMITTER, 'merge', '--no-ff', '-m', message ?? `merge: ${source} into ${target}`, source],
+        repoPath,
+      );
+    }
   } finally {
     if (restore) await git(['checkout', baseBranch], repoPath);
   }
@@ -260,9 +282,9 @@ export async function pushBranch(
 ): Promise<void> {
   const args = ['push', 'origin'];
   if (options?.forceWithLease === true) {
-    if (!branch.startsWith('task/') && !branch.startsWith('member/')) {
+    if (!branch.startsWith('task/') && !branch.startsWith('member/') && !branch.startsWith('agent/')) {
       throw new GitError(
-        `refusing to force-push shared branch "${branch}"; only task/member branches may use --force-with-lease`,
+        `refusing to force-push shared branch "${branch}"; only task/member/agent branches may use --force-with-lease`,
         '',
       );
     }

@@ -21,6 +21,7 @@ import { join, resolve } from 'node:path';
 import {
   addWorktree,
   checkout,
+  changedFiles,
   cloneRemote,
   commitAll,
   countNewCommits,
@@ -28,7 +29,6 @@ import {
   deleteBranch,
   ensureRepo,
   fetchRemote,
-  forbiddenPathViolations,
   git,
   isSshRemote,
   lastCommitAt,
@@ -39,10 +39,23 @@ import {
   sshEnvForKey,
 } from './git.js';
 import { bootstrapEnvironment, type BootstrapReport } from './bootstrap.js';
+import { DEFAULT_CACHE_DIRS, linkSharedCacheDirs } from './cache.js';
 import { runGates } from './gates.js';
 import { runDeploy } from './deploy.js';
 import { EscalationManager, type EscalationInput } from './escalate.js';
 import { Mailer, TicketServer, type TicketStore } from './notification.js';
+import {
+  classifyForbiddenFiles,
+  distinctDomainCount,
+  effectiveForbiddenRules,
+  enrichDescriptionWithOwnership,
+  ownerRoleForTouches,
+  renderBranchName,
+  renderPrBody,
+  renderPrTitle,
+  selectGateCommands,
+  type ProjectProfile,
+} from './profile.js';
 import { resolveOptionalEnvRef, SecretRedactor } from './secrets.js';
 import {
   appendTaskNote,
@@ -92,6 +105,16 @@ export interface AutopilotOptions {
     toolchain: string[];
     setupCommand: string;
     verifyCommand: string;
+    /** Native-build system packages (e.g. python3/make/g++ for node-gyp). */
+    systemPackages?: string[] | undefined;
+    /** Package-manager command (allowlist-checked), e.g. `sudo apt-get install -y`. */
+    packageManagerCommand?: string | undefined;
+    /** `.env` path to scaffold from the committed example (fail-loud if missing essentials). */
+    envFile?: string | undefined;
+    /** Committed `.env.example` path. */
+    envExample?: string | undefined;
+    /** Env-var names required at boot; missing ones fail loud. */
+    requiredEnvKeys?: string[] | undefined;
   };
   gates: {
     commands: string[];
@@ -151,6 +174,19 @@ export interface AutopilotOptions {
     commandAllowlist: string[];
     pushRequiresGates: boolean;
   };
+  /**
+   * Project-profile adapter: the repository's collaboration conventions
+   * (branch/PR naming, merge strategy, conditional gates, forbidden-zone
+   * policy, ownership routing). The default profile reproduces the plugin's
+   * historical behavior; project presets (e.g. AgentDeploy) override it.
+   */
+  profile: ProjectProfile;
+  /**
+   * Opt-in build-cache sharing: symlink gitignored build/test cache dirs to a
+   * per-branch shared location so consecutive tasks reuse prior output
+   * instead of rebuilding from scratch. Best-effort; on by default is OFF.
+   */
+  buildCache?: { enabled: boolean; dirs: string[] } | undefined;
   /** Test hook: shrink loop sleeps/backoffs. */
   tickSleepMs?: number | undefined;
   /** Test hook: injectable fetch for webhook/CI/health-check calls. */
@@ -168,6 +204,8 @@ interface MemberRecord {
   branch: string;
   status: MemberStatus;
   currentTaskId: string | null;
+  /** Optional domain specialization (matches an ownership rule's role). */
+  specialization?: string | undefined;
 }
 
 interface TaskRecord {
@@ -807,6 +845,11 @@ export class AutopilotService {
         repoPath: team.repoPath,
         allowlist: this.options.security.commandAllowlist,
         redactor: this.redactor,
+        systemPackages: this.options.bootstrap.systemPackages ?? [],
+        packageManagerCommand: this.options.bootstrap.packageManagerCommand,
+        envFile: this.options.bootstrap.envFile ? join(team.repoPath, this.options.bootstrap.envFile) : undefined,
+        envExample: this.options.bootstrap.envExample,
+        requiredEnvKeys: this.options.bootstrap.requiredEnvKeys ?? [],
       });
       this.bootstrapped = true;
       this.changed(team.id);
@@ -846,7 +889,7 @@ export class AutopilotService {
 
   async createTeam(input: {
     name: string;
-    members?: { role: Role; name?: string }[];
+    members?: { role: Role; name?: string; specialization?: string }[];
     /** Internal: clone the configured remote instead of a local init. */
     cloneRemote?: boolean;
   }): Promise<TeamView> {
@@ -882,12 +925,17 @@ export class AutopilotService {
       throw new Error('a team needs exactly one leader member');
     }
     for (const member of requested) {
-      await this.addMember({ teamId: id, role: member.role, ...(member.name !== undefined ? { name: member.name } : {}) });
+      await this.addMember({
+        teamId: id,
+        role: member.role,
+        ...(member.name !== undefined ? { name: member.name } : {}),
+        ...(member.specialization !== undefined ? { specialization: member.specialization } : {}),
+      });
     }
     return this.teamView(id);
   }
 
-  async addMember(input: { teamId: string; role: Role; name?: string }): Promise<MemberView> {
+  async addMember(input: { teamId: string; role: Role; name?: string; specialization?: string }): Promise<MemberView> {
     const team = this.teamOf(input.teamId);
     if (!isRole(input.role)) {
       throw new Error(`invalid role "${input.role}"; expected leader, developer, reviewer or operator`);
@@ -919,6 +967,7 @@ export class AutopilotService {
       branch,
       status: 'idle',
       currentTaskId: null,
+      ...(input.specialization !== undefined ? { specialization: input.specialization } : {}),
     };
     team.members.push(member);
     team.branches = await listBranches(team.repoPath);
@@ -965,7 +1014,15 @@ export class AutopilotService {
       }
     }
     const id = shortId('task');
-    const branch = `task/${contract?.id ?? id}`;
+    const destination = contract?.id ?? id;
+    const domainCount = distinctDomainCount(contract?.touches ?? []);
+    if (domainCount > this.options.profile.crossDomainThreshold) {
+      throw new Error(
+        `task "${input.title}" touches ${domainCount} distinct domains (limit ${this.options.profile.crossDomainThreshold}); ` +
+          `split it into per-domain tasks or escalate for a cross-domain change`,
+      );
+    }
+    const branch = renderBranchName(this.options.profile.branchTemplate, destination, contract?.title ?? input.title);
     await createBranch(team.repoPath, branch, team.baseBranch);
     await checkout(assignee.workspacePath, branch);
     const now = Date.now();
@@ -987,6 +1044,11 @@ export class AutopilotService {
       createdAt: now,
       updatedAt: now,
     };
+    task.description = enrichDescriptionWithOwnership(
+      input.description ?? contract?.body.slice(0, 2000) ?? '',
+      task.touches,
+      this.options.profile.ownership,
+    );
     team.tasks.push(task);
     assignee.branch = branch;
     assignee.status = 'working';
@@ -1101,7 +1163,19 @@ export class AutopilotService {
   async runGatesForTask(input: { taskId: string; signal?: AbortSignal }): Promise<GateSummary> {
     const { team, task } = this.findTask(input.taskId);
     const assignee = this.memberOf(team, task.assigneeId);
-    const commands = [...this.options.gates.commands];
+    // Profile-aware gate selection: honors `when` (touches-conditional) and
+    // `role: 'ci'` (enforced by remote CI only, never run locally).
+    const { commands, skippedCi } = selectGateCommands(
+      this.options.profile,
+      task.touches,
+      this.options.gates.commands,
+    );
+    // Opt-in build-cache: link gitignored cache dirs to a shared per-branch
+    // location before running gates, so `build`/`e2e` reuse prior output.
+    if (this.options.buildCache?.enabled === true) {
+      const cacheDir = join(this.options.rootDir, team.id, 'build-cache', task.branch);
+      await linkSharedCacheDirs(assignee.workspacePath, cacheDir, this.options.buildCache.dirs).catch(() => {});
+    }
     const summary = await runGates({
       cwd: assignee.workspacePath,
       commands,
@@ -1112,6 +1186,17 @@ export class AutopilotService {
       taskId: task.id,
       branch: task.branch,
     });
+    if (skippedCi.length > 0) {
+      // Surface the deliberately-skipped CI-only gates so the model/reviewer
+      // knows the local run is intentionally not the whole enforcement story.
+      summary.results.push({
+        command: `(ci-only, not run locally) ${skippedCi.join(' && ')}`,
+        passed: true,
+        exitCode: 0,
+        durationMs: 0,
+        logTail: 'deferred to remote CI (requireCiGreen)',
+      });
+    }
     task.gates = summary;
     task.lastActivityAt = Date.now();
     task.updatedAt = Date.now();
@@ -1175,6 +1260,7 @@ export class AutopilotService {
         team.baseBranch,
         team.baseBranch,
         `merge: ${task.branch} — ${task.title} (approved by ${reviewer.name})`,
+        this.options.profile.mergeStrategy,
       );
       merged = true;
       task.status = 'done';
@@ -1245,20 +1331,31 @@ export class AutopilotService {
       const baseSha = await resolveRef(team.repoPath, `origin/${team.baseBranch}`);
       const branchSha = await resolveRef(team.repoPath, task.branch);
       if (baseSha !== null && branchSha !== null) {
-        const violations = await forbiddenPathViolations(
-          team.repoPath,
-          baseSha,
-          branchSha,
-          this.options.security.forbiddenPaths,
-        );
-        if (violations.length > 0) {
+        // Forbidden-zone policy is profile-aware and mode-aware:
+        //  - `block` (human-only) → hard-block the push and escalate;
+        //  - `needs-approval` / `high-conflict` → hold the push for a human /
+        //    owner decision (a dedicated PR), escalating without pushing.
+        const rules = effectiveForbiddenRules(this.options.profile, this.options.security.forbiddenPaths);
+        const files = await changedFiles(team.repoPath, baseSha, branchSha);
+        const { blocks, approvals } = classifyForbiddenFiles(files, rules);
+        if (blocks.length > 0) {
           await this.escalateTask({
             taskId: task.id,
             reason: 'forbidden-paths',
-            message: `branch ${task.branch} touches human-only paths: ${violations.join(', ')}`,
+            message: `branch ${task.branch} touches human-only/blocked paths: ${blocks.join(', ')}`,
             suggestion: 'remove the forbidden changes from the task branch, rebase onto base, then pr_sync again',
           });
-          throw new Error(`push blocked: forbidden paths modified: ${violations.join(', ')}`);
+          throw new Error(`push blocked: forbidden paths modified: ${blocks.join(', ')}`);
+        }
+        if (approvals.length > 0) {
+          await this.escalateTask({
+            taskId: task.id,
+            reason: 'manual',
+            message: `branch ${task.branch} touches paths needing owner/human approval or a dedicated PR: ${approvals.join(', ')}`,
+            suggestion:
+              'confirm the change may land only as a separate PR after owner/human approval, or split it out of this task',
+          });
+          throw new Error(`push held for approval: ${approvals.join(', ')}`);
         }
       }
       await pushBranch(team.repoPath, task.branch, { env });
@@ -1267,7 +1364,7 @@ export class AutopilotService {
     }
     // PR creation (github only; other platforms fall back to push-only).
     if (this.options.remote.platform === 'github') {
-      task.prUrl = await this.githubUpsertPr(task).catch(() => task.prUrl);
+      task.prUrl = await this.githubUpsertPr(team, task).catch(() => task.prUrl);
       task.ciStatus = await this.githubCiStatus(team, task.branch).catch((): CiStatus => 'unknown');
     } else {
       task.ciStatus = 'unknown';
@@ -1285,12 +1382,21 @@ export class AutopilotService {
     return match[1] ?? '';
   }
 
-  private async githubUpsertPr(task: TaskRecord): Promise<string | null> {
+  private async githubUpsertPr(team: TeamRecord, task: TaskRecord): Promise<string | null> {
     const token = resolveOptionalEnvRef(this.options.remote.apiTokenEnv);
     if (token === undefined) return null;
     this.redactor.register(token);
     const fetchImpl = this.options.fetchFn ?? fetch;
     const slug = this.githubRepoSlug();
+    const id = task.contractId ?? task.id;
+    const title = renderPrTitle(this.options.profile.prTitleTemplate, id, task.title, task.touches);
+    const body = renderPrBody(
+      this.options.profile.prBodyTemplate,
+      id,
+      task.title,
+      task.touches,
+      this.memberOf(team, task.assigneeId).name,
+    );
     const response = await fetchImpl(`https://api.github.com/repos/${slug}/pulls`, {
       method: 'POST',
       headers: {
@@ -1299,10 +1405,10 @@ export class AutopilotService {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        title: `[${task.contractId ?? task.id}] ${task.title}`,
+        title,
         head: task.branch,
         base: this.options.baseBranch,
-        body: this.redactor.redact(task.description),
+        body: this.redactor.redact(body),
       }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -1310,8 +1416,8 @@ export class AutopilotService {
       // 422 usually means the PR already exists — keep the previous URL.
       return task.prUrl;
     }
-    const body = (await response.json()) as { html_url?: string };
-    return body.html_url ?? null;
+    const bodyJson = (await response.json()) as { html_url?: string };
+    return bodyJson.html_url ?? null;
   }
 
   private async githubCiStatus(team: TeamRecord, branch: string): Promise<CiStatus> {
@@ -1583,10 +1689,10 @@ export class AutopilotService {
           id: shortId('task'),
           contractId: contract.id,
           title: contract.title,
-          description: contract.body.slice(0, 2000),
+          description: enrichDescriptionWithOwnership(contract.body.slice(0, 2000), contract.touches, this.options.profile.ownership),
           assigneeId: leader.id,
           status: 'pending',
-          branch: `task/${contract.id}`,
+          branch: renderBranchName(this.options.profile.branchTemplate, contract.id, contract.title),
           reviewRound: 0,
           dependsOn: contract.dependsOn,
           touches: contract.touches,
@@ -1625,12 +1731,30 @@ export class AutopilotService {
     for (const task of team.tasks) {
       if (signal?.aborted === true) return;
       if (task.status !== 'pending') continue;
+      const domainCount = distinctDomainCount(task.touches);
+      if (domainCount > this.options.profile.crossDomainThreshold) {
+        report.escalated.push(task.id);
+        report.events.push(`cross-domain:${task.id}`);
+        await this.escalateTask({
+          taskId: task.id,
+          reason: 'cross-domain',
+          message: `task "${task.title}" touches ${domainCount} distinct domains (limit ${this.options.profile.crossDomainThreshold})`,
+          suggestion: 'split it into per-domain tasks instead of one cross-domain change',
+        });
+        continue;
+      }
       if (!task.dependsOn.every((dep) => doneContracts.has(dep))) continue;
       if (task.touches.length > 0 && touchesOverlap(task.touches, lockedTouches)) continue;
-      const developer = team.members.find(
+      const developers = team.members.filter(
         (member) => member.role === 'developer' && member.status === 'idle' && member.currentTaskId === null,
       );
-      if (developer === undefined) return; // no free developer: try again next tick
+      if (developers.length === 0) return; // no free developer: try again next tick
+      // Prefer a developer whose domain specialization matches the task's most
+      // specific ownership rule; fall back to any idle developer.
+      const ownerRole = ownerRoleForTouches(task.touches, this.options.profile.ownership);
+      const preferred = ownerRole === null ? undefined : developers.find((member) => member.specialization === ownerRole);
+      const developer = preferred ?? developers[0];
+      if (developer === undefined) return;
       // (Re)assign: the placeholder task created by syncContracts gets a real
       // assignee, branch and workspace checkout.
       if (task.assigneeId !== developer.id) {

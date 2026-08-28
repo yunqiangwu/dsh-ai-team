@@ -10,6 +10,9 @@ import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-sett
 import { registerAutopilotProjection } from './projection.js';
 import { ensureAutopilotTeamPreset } from './preset.js';
 import { AUTOPILOT_TEAM_PRESET_ID } from './preset.js';
+import { resolveProjectProfile } from './profile.js';
+import type { ProjectProfileInput } from './profile.js';
+import { DEFAULT_CACHE_DIRS } from './cache.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
 
@@ -88,6 +91,21 @@ export interface Config {
     commandAllowlist: string[];
     pushRequiresGates: boolean;
   };
+  /**
+   * Opt-in build-cache sharing: symlink gitignored build/test cache dirs to a
+   * shared per-branch location so consecutive tasks reuse prior output.
+   */
+  buildCache?: {
+    enabled: boolean;
+    dirs: string[];
+  };
+  /**
+   * Project-profile adapter (see src/profile.ts): encode a target
+   * repository's conventions (branch/PR naming, merge strategy, conditional
+   * gates, forbidden-zone policy, ownership routing). `preset: agentdeploy`
+   * seeds the AgentDeploy conventions; inline fields override them.
+   */
+  profile?: ProjectProfileInput;
 }
 
 export const Config: z<Config> = z.object({
@@ -114,12 +132,22 @@ export const Config: z<Config> = z.object({
       toolchain: z.array(z.string()).default(['git', 'bun', 'pnpm']),
       setupCommand: z.string().default('pnpm run setup'),
       verifyCommand: z.string().default('pnpm run e2e:local'),
+      systemPackages: z.array(z.string()).default([]),
+      packageManagerCommand: z.string().default(''),
+      envFile: z.string().default(''),
+      envExample: z.string().default(''),
+      requiredEnvKeys: z.array(z.string()).default([]),
     })
     .default({
       enabled: true,
       toolchain: ['git', 'bun', 'pnpm'],
       setupCommand: 'pnpm run setup',
       verifyCommand: 'pnpm run e2e:local',
+      systemPackages: [],
+      packageManagerCommand: '',
+      envFile: '',
+      envExample: '',
+      requiredEnvKeys: [],
     }),
 
   gates: z
@@ -202,13 +230,59 @@ export const Config: z<Config> = z.object({
   security: z
     .object({
       forbiddenPaths: z.array(z.string()).default(['.github/', 'AGENTS.md', 'LICENSE']),
-      commandAllowlist: z.array(z.string()).default(['pnpm', 'git', 'bun', 'docker']),
+      commandAllowlist: z.array(z.string()).default(['pnpm', 'git', 'bun', 'docker', 'node', 'bunx', 'ssh', 'nuxt']),
       pushRequiresGates: z.boolean().default(true),
     })
     .default({
       forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE'],
-      commandAllowlist: ['pnpm', 'git', 'bun', 'docker'],
+      commandAllowlist: ['pnpm', 'git', 'bun', 'docker', 'node', 'bunx', 'ssh', 'nuxt'],
       pushRequiresGates: true,
+    }),
+
+  buildCache: z
+    .object({
+      enabled: z.boolean().default(false),
+      dirs: z.array(z.string()).default(DEFAULT_CACHE_DIRS),
+    })
+    .default({ enabled: false, dirs: DEFAULT_CACHE_DIRS }),
+
+  profile: z
+    .object({
+      preset: z.string().default(''),
+      branchTemplate: z.string().default(''),
+      prTitleTemplate: z.string().default(''),
+      prBodyTemplate: z.string().default(''),
+      mergeStrategy: z.string().default(''),
+      gates: z
+        .array(
+          z.object({
+            command: z.string(),
+            when: z.array(z.string()).default([]),
+            role: z.union([z.const('local'), z.const('ci')]).default('local'),
+          }),
+        )
+        .default([]),
+      forbidden: z
+        .array(
+          z.object({
+            path: z.string(),
+            mode: z.union([z.const('block'), z.const('needs-approval'), z.const('high-conflict')]).default('block'),
+          }),
+        )
+        .default([]),
+      ownership: z.array(z.object({ glob: z.string(), role: z.string() })).default([]),
+      crossDomainThreshold: z.number().step(1).min(1).default(3),
+    })
+    .default({
+      preset: '',
+      branchTemplate: '',
+      prTitleTemplate: '',
+      prBodyTemplate: '',
+      mergeStrategy: '',
+      gates: [],
+      forbidden: [],
+      ownership: [],
+      crossDomainThreshold: 3,
     }),
 });
 
@@ -279,6 +353,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       secretsEnv: effective.deploy.secretsEnv,
     },
     security: effective.security,
+    buildCache: { enabled: effective.buildCache?.enabled ?? false, dirs: effective.buildCache?.dirs ?? DEFAULT_CACHE_DIRS },
+    profile: resolveProjectProfile(effective.profile, effective.gates.commands),
   });
   // Expose the service for other plugins (and for tests driving the host).
   ctx.provide('autopilot', service);

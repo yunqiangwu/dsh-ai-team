@@ -8,6 +8,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AutopilotOptions } from '../src/service.js';
+import { defaultProfile } from '../src/profile.js';
 
 export function sh(command: string, args: string[], cwd: string): string {
   return execFileSync(command, args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
@@ -102,6 +103,9 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
       commandAllowlist: ['git', 'pnpm', 'sh', 'echo'],
       pushRequiresGates: true,
     },
+    // Legacy default profile: historical behavior (task/<id>, no-ff, gates
+    // fall back to gates.commands above). Override per-test via `profile`.
+    profile: defaultProfile(),
     tickSleepMs: 20,
     ...overrides,
   };
