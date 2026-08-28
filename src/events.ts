@@ -33,5 +33,9 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
      */
     autopilot: AutopilotProjection | null;
   }
+  interface SessionProjectionStateMap {
+    /** Host fold state for the autopilot unit: same whole-value snapshot. */
+    autopilot: AutopilotProjection | null;
+  }
 }
 

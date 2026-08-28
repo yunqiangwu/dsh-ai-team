@@ -153,10 +153,13 @@ export function registerAutopilotProjection(ctx: Context): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
     projectionCtx.sessionProjections.register({
       key: 'autopilot',
-      schema: autopilotProjectionSchema.nullable(),
+      stateSchema: autopilotProjectionSchema.nullable(),
       init: (): AutopilotProjection | null => null,
       apply: (state, event) => (event.type === 'autopilot/update' ? event.data.state : state),
-      view: (state) => state,
+      wire: {
+        viewSchema: autopilotProjectionSchema.nullable(),
+        view: (state): AutopilotProjection | null => state,
+      },
       // v2: escalation views gained a `notification` block. Bump on shape change.
       stateVersion: 2,
     });
