@@ -1,6 +1,6 @@
 # 设计文档：需求采集 → 文档先行 → 并行开发 → 重规划
 
-> 状态：**M0 / M1 / M2 已实施，M3 仍是提案**（2026-08-29）。M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md` 已落代码，`stateVersion` 随之 5 → 7（M2 只加内部记录字段，没动视图，所以仍是 7）；M3 章节仍是待实施的规格真相源。
+> 状态：**M0 / M1 / M2 / M3 已实施**（2026-08-30）。M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md`、M3 = `INT-4.md` 已落代码，`stateVersion` 随之 5 → 7（M2 只加内部记录字段；M3 的 `cancelled` 是枚举取值、`priority` 不进视图，所以仍是 7）。
 > 两处与 §3 / §9 的口径不同，已知且有意：
 > ① **`_board.md` 没有「等人回答」列**（§3.1 场景一原本要求"看板与面板都显示"）。看板由 `team.ts` 从 `.tasks/*.md` 单向生成且要求字节稳定，把只活在 `state.json` 里的问卷状态混进去，等于给它第二个真相源；等待信息已由面板与 `autopilot_status` 的 `awaitingHuman` 覆盖。
 > ② **问卷投递的 webhook 与 `EscalationManager.deliverWebhook` 仍是两份实现**。M2 抽出了共用的工单 HTTP 层（`src/ticket-handler.ts`），但 webhook 投递没顺手合并——它不在 INT-2/INT-3 的字面要求里，且两份的文案与凭据语义已经分叉（推送的是带 token 的那份链接）。
@@ -230,7 +230,7 @@ M2 之前 `SlotProps` 只有 `{ sessionId?, useProjection, t }`，**面板发不
 | **M0 先修（不做则一切白搭）** | phase 字段 + `dispatch` 门；补 §6.4 不可满足依赖 → `blocked-dependency`；修 §7.1-3 事件不发布；契约解析失败不再清空看板 | `vocab.ts` `schema.ts` `service.ts` `projection.ts` | `test-unattended.ts` 加分支 |
 | **M1 能问、能写** | `src/questionnaire.ts` + 工单服务从 escalation 解耦；新工具 `ask_human` / `answer_questionnaire` / `doc_write` / `doc_approve` / `contract_create`；`TicketField` 补 `multiselect`；`roles.ts` 组长提示词重写（draft/升格，**不是**简单删除禁令） | `escalate.ts` 同级新文件、`notification.ts` `tools.ts` `team.ts` `roles.ts` | 新增 `test-questionnaire.ts` |
 | **M2 卡片（已实施）** | §7.1 三件事；请求处理从"服务器"里抽成可挂载的纯 handler，一份两个挂载点；token 走 `state.json` 旁路表；面板渲染问卷/升级内联表单与「等你决策」区块（`projection.blocked` 早已渲染，这里只补视觉可区分） | `ticket-handler.ts` `formmodel.ts` `notification.ts` `vocab.ts` `index.ts` `client/AutopilotPanel.tsx` `client/styles.ts` | 新增 `test-ticket-http.ts`（含 rebinding、404 逐字节相同、413）；`smoke-cordis.ts` 断言 client 产物无 zod / 无 `node:` **且** `/autopilot/ticket` 真在产物里（架构铁律 5） |
-| **M3 重规划** | `cancelled` + `priority` + `replan_*` 工具 + §6.2 分级表 + §6.3 三种处置 + 频率上限；`_board.md` 加列 | `vocab.ts` `team.ts` `service.ts` `tools.ts` | `test-unattended.ts` 重规划分支 |
+| **M3 重规划（已实施）** | `cancelled` + `priority` + `replan_*` 工具 + §6.2 分级表 + §6.3 三种处置 + 频率上限；`_board.md` 加列 | `vocab.ts` `team.ts` `service.ts` `tools.ts` | `test-unattended.ts` 重规划分支 |
 
 四个里程碑已落成任务契约：M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md`、M3 = `INT-4.md`，依赖链 `INT-1 → INT-2 → INT-3`，且 `INT-4` 只依赖 `INT-1`。所以 M3 在依赖图上与 M2 可并行——但两者 `touches` 都含 `src/`，域锁实际仍会把它俩串行化（§10.1）。
 

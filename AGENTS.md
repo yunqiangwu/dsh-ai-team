@@ -143,7 +143,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 
 ## 状态机
 
-- 任务：`pending → in_progress → in_review → done`，`changes_requested` 打回，升级置 `needs-human`（人工处理后可回 `pending`）。
+- 任务：`pending → in_progress → in_review → done`，`changes_requested` 打回，升级置 `needs-human`（人工处理后可回 `pending`）；重规划废弃置 `cancelled`（契约文件保留不删，语义见 README「需求变更与重规划」）。
 - 团队阶段：`intake → kickoff_pending_approval → scaffolding → developing ⇄ replanning`。前三个阶段一律不派发（`dispatch` 门），只有 `developing` / `replanning` 会。`intake → kickoff_pending_approval` 由服务端推（需求问卷答完，或 `ask_human(kind: approval)` 把一份非空开工包标成待批），组长不能自己 `autopilot_phase` 越过去；`createTeam` 落在 `developing`（老 state.json 缺 `phase` 也兜底它）。
 - 问卷：`open → answered / expired / cancelled`。它与升级是两件事：一张 open 问卷让任务在面板上标「等人回答」，但**不**置 `needs-human`、不进升级直方图、不产生学习记录，并让 `checkStuck` 豁免这张任务（`checkBudget` 不豁免，所以永远没人答的单最终以 `budget-exceeded` 升级）。
 - 循环：`stopped / running / paused / escalated / completed`。崩溃恢复时持久化的 `running` 一律降为 `paused`，等 `autopilot_resume`。
