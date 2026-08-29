@@ -20,7 +20,8 @@ pnpm add dsh-ai-team
 
 在 dsh 配置里以插件方式加载（见下方配置示例），或在对话中直接调用工具即可跑通全流程。
 
-> 「模糊需求 → 澄清 → PRD → 规范 → 拆任务 → 最小框架 → 测试先行 → 并行开发」这条人机交互链路的设计与分期，见 [DESIGN-INTERACTION.md](DESIGN-INTERACTION.md)。
+> 「模糊需求 → 澄清 → PRD → 规范 → 拆任务 → 最小框架 → 测试先行 → 并行开发」这条人机交互链路的设计与分期，见 [docs/design-interaction.md](docs/design-interaction.md)。
+> 首次上真实环境跑无人值守，看 [PILOT.md](PILOT.md)（操作者 runbook：怎么跑、看什么、出事怎么办）。
 
 ## 功能特性
 

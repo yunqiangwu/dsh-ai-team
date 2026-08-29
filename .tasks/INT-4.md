@@ -11,7 +11,7 @@ touches:
 
 # M3 重规划：cancelled / 优先级 / 分级变更与在途任务处置
 
-对应设计文档 [DESIGN-INTERACTION.md](../DESIGN-INTERACTION.md) §9 里程碑 M3、§6。
+对应设计文档 [docs/design-interaction.md](../docs/design-interaction.md) §9 里程碑 M3、§6。
 
 ## 背景
 

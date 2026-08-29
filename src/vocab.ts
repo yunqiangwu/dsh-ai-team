@@ -48,7 +48,7 @@ export type LoopState = (typeof LOOP_STATES)[number];
 
 /**
  * 团队阶段：与 `loopState` 正交的维度 —— loopState 说"循环在不在转"，phase 说
- * "转到哪一步了"（见 DESIGN-INTERACTION.md §2）。
+ * "转到哪一步了"（见 docs/design-interaction.md §2）。
  *
  * `dispatch` 只在 `developing` / `replanning` 下工作。这条门必须存在：否则组长刚
  * 把 PRD 草稿写出来、人还没确认，契约就已经被派出去了。

@@ -10,7 +10,7 @@ touches:
 
 # M1 能问能写：问卷实体与五个新工具
 
-对应设计文档 [DESIGN-INTERACTION.md](../DESIGN-INTERACTION.md) §9 里程碑 M1、§3、§4。
+对应设计文档 [docs/design-interaction.md](../docs/design-interaction.md) §9 里程碑 M1、§3、§4。
 
 ## 背景
 
@@ -55,7 +55,7 @@ touches:
 - **Then** 拒绝并提示走 `doc_approve`
 - **When** `doc_approve` 升格一份文档
 - **Then** 落盘前比对 frontmatter 的 `sha256` 与当前正文，不一致即拒绝审批并重开问卷（防"批 A 合 B"）
-- **And** `LICENSE` 仍是 `security.forbiddenPaths` 默认值，**不因任何问卷答复而放开**（§8-8）。⚠️ 2026-08-29 变更：`AGENTS.md` / `.github/` 已移出默认禁区（`src/index.ts:262` 默认值现为 `['LICENSE']`），不要再把它们加回去；两者的改写约束在 DESIGN-INTERACTION.md §4.1（单独成变更 + 人复核），不靠禁区实现。
+- **And** `LICENSE` 仍是 `security.forbiddenPaths` 默认值，**不因任何问卷答复而放开**（§8-8）。⚠️ 2026-08-29 变更：`AGENTS.md` / `.github/` 已移出默认禁区（`src/index.ts:262` 默认值现为 `['LICENSE']`），不要再把它们加回去；两者的改写约束在 docs/design-interaction.md §4.1（单独成变更 + 人复核），不靠禁区实现。
 - **And** `doc_approve` 只接受本地端点 POST 或人直接在会话里调用；组长与开发者只能 `ask_human`（§8-10）
 
 ### 场景六：contract_create 写前校验

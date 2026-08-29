@@ -10,7 +10,7 @@ touches:
 
 # M2 卡片：面板内作答与安全加固
 
-对应设计文档 [DESIGN-INTERACTION.md](../DESIGN-INTERACTION.md) §9 里程碑 M2、§7。
+对应设计文档 [docs/design-interaction.md](../docs/design-interaction.md) §9 里程碑 M2、§7。
 
 ## 背景
 

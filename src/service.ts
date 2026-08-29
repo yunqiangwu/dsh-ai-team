@@ -1870,7 +1870,7 @@ export class AutopilotService {
    *
    * 这是编排用的裸开关：任何阶段都能设，供人处置故障或组长推进流程。但它**不是**
    * 文档升格的合法路径 —— 从 `kickoff_pending_approval` 往前走应当由 M1 的
-   * `doc_approve` 完成，那条路径带审批人记录与 `sha256` 比对（DESIGN-INTERACTION
+   * `doc_approve` 完成，那条路径带审批人记录与 `sha256` 比对（docs/design-interaction
    * §4.2、§8-10）。用本工具绕过去等于把"人批过了"变成一句模型自己的话。
    */
   setPhase(input: { teamId: string; phase: TeamPhase }): TeamView {
@@ -2032,7 +2032,7 @@ export class AutopilotService {
     contracts: TaskContract[],
     signal?: AbortSignal,
   ): Promise<void> {
-    // 阶段门（DESIGN-INTERACTION §2）：非开发阶段一律不派发。缺了这条，组长刚把
+    // 阶段门（docs/design-interaction.md §2）：非开发阶段一律不派发。缺了这条，组长刚把
     // PRD 草稿写进仓库、人还没确认，契约就已经被派出去了。
     if (!DISPATCHABLE_PHASES.includes(teamPhase(team))) return;
     // 依赖判定要区分"还没完成"与"永不可能完成"，所以要看到任务本身而不只是 done 集合。

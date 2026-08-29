@@ -21,6 +21,11 @@
 ## 目录地图
 
 ```
+README.md           人类入口：功能、快速开始、Config 字段语义（配置的唯一真相源）
+AGENTS.md           本文件：AI 代理仓库指南（架构铁律、连带改动表、已知坑）
+PILOT.md            操作者 runbook：首次真实环境无人值守怎么跑、看什么、出事怎么办
+docs/               其余文档一律在此，见「文档规范」
+  design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（提案，未实施）
 src/
   index.ts        插件入口：四导出 name/inject/Config/apply，ctx.provide('autopilot')
   service.ts      AutopilotService —— 状态机宿主与全部编排（纯逻辑请落到 service/，别塞这里）
@@ -104,6 +109,18 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 - 提交信息用 Conventional Commits（`feat:` / `fix:` / `docs:` / `refactor:`，正文中文，见 `git log`）。
 - 宣告完成前按 `pnpm typecheck && pnpm lint && pnpm build && pnpm test` 的顺序跑（build 必须在 test 前，原因见「测试约定」）。
 
+## 文档规范
+
+仓库根只留三份 `.md`：`README.md`（人类入口 + **配置字段语义的真相源**）、`AGENTS.md`（本文件 —— 工具按固定路径名找它，所以它必须在根）、`PILOT.md`（操作者 runbook）。**其余文档一律放 `docs/`，新文档也直接写在 `docs/` 下**，别先在根落脚再搬家。
+
+- **命名**：`docs/` 下用小写 kebab-case（`docs/design-interaction.md`）；SCREAMING-CASE 只属于根目录那三份历史入口。一篇只讲一个主题，同类攒到 3 篇以上再开子目录（如 `docs/adr/0001-<slug>.md`），不要三层嵌套。
+- **每篇开头**：H1 一句话说明这是什么，紧接一段 `>` 引用交代**状态**（提案 / 已实施 / 生效中）和**分工**（"配置语义以 README 为准、操作以 PILOT 为准"）。引用代码时写 `src/xxx.ts:123` 并注明基于哪个版本号 —— 行号会漂移，读者需要知道自己按哪版在读。
+- **一处事实一处写**：配置字段 → README「配置」；架构与连带关系 → AGENTS.md；交互流程规格 → `docs/design-interaction.md`；怎么跑 → PILOT.md。别处要提就**链过去**，抄一份必然漂移。
+- **相对链接**：文档之间一律用 markdown 相对链接，从 `docs/` 指回根写 `../README.md`；`.tasks/*.md` 引设计文档写 `../docs/<name>.md`。
+- **不归本规范管**：`.tasks/*.md`（任务契约，目录写死在 `src/team.ts`，插件按它解析）、`<stateDir>/learnings.md` 与 `<stateDir>/completion.md`（运行态生成物，不入库）。别为了整齐把它们搬进 `docs/`。
+- **搬家算一次 docs-only 变更**（理由见文件开头：文档改写没有客观门可验证），且必须把旧文件名在全仓库改干净：`grep -rn '<旧文件名>' --exclude-dir={node_modules,.dsh-ai-team} .`。⚠️ `.dsh-ai-team/` 下是各成员 worktree 的仓库副本，改那里等于污染别人的分支。`.workbuddy/memory/*` 是历史会话记录，**不追溯改写**。
+- **`docs/` 不在 `package.json` 的 `files` 白名单里**，不随 npm 包发布：面向使用者的说明必须写进 `README.md`，`docs/` 只服务读源码的人。
+
 ## 状态机
 
 - 任务：`pending → in_progress → in_review → done`，`changes_requested` 打回，升级置 `needs-human`（人工处理后可回 `pending`）。
@@ -122,6 +139,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 | 新增 Config 字段 | `index.ts` 的 `Config` 接口与 schema → `service/options.ts` 的 `AutopilotOptions` → `apply()` 的映射 → README 配置块 → 需要时 `client/settings-card.tsx` |
 | 改 `profile.ts` 的约定 | 服务端默认值可能与 `ProjectProfile` 分叉，改前先核对 `README` 的 AgentDeploy 说明 |
 | 新增远端平台/PR 能力 | `github.ts` 适配层是否覆盖该平台 → `vocab.ts` 的 `CI_STATUSES`；⚠️ `remote.platform` 的 `'github' \| 'cnb' \| 'gitlab' \| 'generic'` 目前仍手抄在 `index.ts`（唯一残留的双写枚举，且非 github 无 CI 查询实现） |
+| 移动 / 重命名 `.md` 文档 | 全仓库 grep 旧文件名并逐处改引用（README、`.tasks/*.md` 契约、`src/` 注释、`*.patch.yml`）；放哪儿、怎么命名见「文档规范」 |
 
 ## 已知坑
 

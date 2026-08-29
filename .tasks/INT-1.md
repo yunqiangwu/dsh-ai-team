@@ -9,7 +9,7 @@ touches:
 
 # M0 先修：phase 维度与三个既有缺陷
 
-对应设计文档 [DESIGN-INTERACTION.md](../DESIGN-INTERACTION.md) §9 里程碑 M0、§2、§6.4、§7.1-3。
+对应设计文档 [docs/design-interaction.md](../docs/design-interaction.md) §9 里程碑 M0、§2、§6.4、§7.1-3。
 
 ## 背景
 
