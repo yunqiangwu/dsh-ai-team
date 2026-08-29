@@ -117,6 +117,29 @@ export const teamViewSchema = zod.object({
   reviews: zod.array(reviewViewSchema),
   // v3 才新增的字段：旧 session 的事件负载里没有这个键，缺省补空数组而不是抛错。
   learnings: zod.array(learningViewSchema).default([]),
+  // v5 才新增的字段：团队累计运行指标，旧负载缺省补零值。
+  metrics: zod
+    .object({
+      dispatched: zod.number().int().nonnegative(),
+      completed: zod.number().int().nonnegative(),
+      reviewRounds: zod.number().int().nonnegative(),
+      gateRuns: zod.number().int().nonnegative(),
+      gateFailures: zod.number().int().nonnegative(),
+      deploys: zod.number().int().nonnegative(),
+      rollbacks: zod.number().int().nonnegative(),
+      /** 按 EscalationReason 分桶的升级直方图。 */
+      escalations: zod.record(zod.string(), zod.number().int().nonnegative()),
+    })
+    .default({
+      dispatched: 0,
+      completed: 0,
+      reviewRounds: 0,
+      gateRuns: 0,
+      gateFailures: 0,
+      deploys: 0,
+      rollbacks: 0,
+      escalations: {},
+    }),
   createdAt: zod.number(),
 });
 

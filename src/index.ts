@@ -58,6 +58,8 @@ export interface Config {
     maxDiffLines: number;
     /** 单个任务允许的最大变更文件数；0 = 关闭该门。 */
     maxDiffFiles: number;
+    /** 单任务墙钟预算（小时，允许小数）：派发后超时未完成即升级 budget-exceeded；0 = 关闭。 */
+    maxTaskHours: number;
   };
   escalation: {
     webhookUrlEnv: string;
@@ -183,6 +185,8 @@ export const Config: z<Config> = z.object({
       // 0 = 关闭该门：评审体量上限对既有团队是行为变更，必须显式开启。
       maxDiffLines: z.number().step(1).min(0).default(0),
       maxDiffFiles: z.number().step(1).min(0).default(0),
+      // 允许小数（0.5 = 半小时）；0 = 关闭，与 maxDiff* 同属显式开启的行为变更。
+      maxTaskHours: z.number().min(0).default(0),
     })
     .default({
       maxReviewRounds: 3,
@@ -190,6 +194,7 @@ export const Config: z<Config> = z.object({
       pollIntervalSeconds: 30,
       maxDiffLines: 0,
       maxDiffFiles: 0,
+      maxTaskHours: 0,
     }),
 
   escalation: z

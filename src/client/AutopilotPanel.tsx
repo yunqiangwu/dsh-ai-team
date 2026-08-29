@@ -161,6 +161,33 @@ function LearningList({ learnings, t }: { learnings: LearningView[]; t: Translat
   );
 }
 
+/** 团队累计运行指标：一行计数 + 非零升级原因直方图（无人值守试点的观测面）。 */
+function MetricsList({ team, t }: { team: TeamView; t: Translator }) {
+  const metrics = team.metrics;
+  const reasons = Object.entries(metrics.escalations)
+    .filter(([, count]) => count > 0)
+    .toSorted(([, a], [, b]) => b - a);
+  return (
+    <div className="dsh-ai-team__metrics">
+      <div className="dsh-ai-team__card-meta">
+        <span>{t('metrics.dispatched', { dispatched: metrics.dispatched, completed: metrics.completed })}</span>
+        <span>{t('metrics.reviewRounds', { reviewRounds: metrics.reviewRounds })}</span>
+        <span>{t('metrics.gates', { gateRuns: metrics.gateRuns, gateFailures: metrics.gateFailures })}</span>
+        <span>{t('metrics.deploys', { deploys: metrics.deploys, rollbacks: metrics.rollbacks })}</span>
+      </div>
+      {reasons.length > 0 ? (
+        <div className="dsh-ai-team__card-meta">
+          {reasons.map(([reason, count]) => (
+            <span key={reason}>
+              {t(`reason.${reason}`)} ×{count}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TeamBody({ team, t }: { team: TeamView; t: Translator }) {
   return (
     <>
@@ -194,6 +221,10 @@ function TeamBody({ team, t }: { team: TeamView; t: Translator }) {
       <section>
         <h4 className="dsh-ai-team__section-title">{t('section.learnings')}</h4>
         <LearningList learnings={team.learnings} t={t} />
+      </section>
+      <section>
+        <h4 className="dsh-ai-team__section-title">{t('section.metrics')}</h4>
+        <MetricsList team={team} t={t} />
       </section>
     </>
   );

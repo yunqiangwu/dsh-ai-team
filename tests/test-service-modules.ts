@@ -223,6 +223,51 @@ describe('renderCompletionReport', () => {
     // 台账本身仍然要报告
     expect(out).toContain('migrations must run before the e2e gate');
   });
+
+  it('renders the run metrics section with histogram and task durations', () => {
+    const out = renderCompletionReport({
+      ...base,
+      team: team({
+        metrics: {
+          dispatched: 3,
+          completed: 2,
+          reviewRounds: 1,
+          gateRuns: 5,
+          gateFailures: 1,
+          deploys: 2,
+          rollbacks: 1,
+          escalations: { 'budget-exceeded': 2, 'task-stuck': 1 },
+        },
+        tasks: [
+          taskRecord({
+            contractId: 'CORE-1',
+            dispatchedAt: 1_700_000_000_000,
+            completedAt: 1_700_000_000_000 + 90 * 60_000,
+          }),
+          taskRecord({ contractId: 'CORE-2', dispatchedAt: 1_700_000_000_000 }), // 未完成 → 无耗时行
+          taskRecord({ contractId: 'CORE-3' }), // 旧数据无时间戳 → 跳过
+        ],
+      }),
+      deploys: [],
+      promoteAfterHits: undefined,
+    });
+    expect(out).toContain('- dispatched 3 / completed 2 / review rounds 1');
+    expect(out).toContain('- gate runs 5 (failures 1)');
+    expect(out).toContain('- deploys 2 (rollbacks 1)');
+    // 直方图按次数降序
+    const escalations = out.slice(out.indexOf('- escalations by reason'), out.indexOf('## deploys'));
+    expect(escalations.indexOf('budget-exceeded: 2')).toBeLessThan(escalations.indexOf('task-stuck: 1'));
+    // 只有派发且完成过的任务才有耗时行
+    expect(out).toContain('- task durations (dispatch → done)');
+    expect(out).toContain('CORE-1: 1h 30m');
+    expect(out).not.toContain('CORE-2:');
+    expect(out).not.toContain('CORE-3:');
+  });
+
+  it('omits the run metrics section for pre-metrics teams', () => {
+    const out = renderCompletionReport({ ...base, team: team(), deploys: [], promoteAfterHits: undefined });
+    expect(out).not.toContain('run metrics');
+  });
 });
 
 describe('state helpers', () => {

@@ -173,6 +173,77 @@ describe('unattended: daemon loop', () => {
     }
   }, 60_000);
 
+  it('wall-clock budget escalates a long-running task as budget-exceeded', async () => {
+    const { service, teamId, cleanup } = await serviceWithContracts(
+      'budget',
+      [{ id: 'B-1', title: 'spins forever' }],
+      // 1/3_600_000 h = 1 ms：派发后第一个 tick 即超预算（testOptions 直构
+      // options，绕过 zod 的 min 约束，所以小数小时合法）。
+      { daemon: { maxReviewRounds: 3, stuckMinutes: 45, pollIntervalSeconds: 1, maxTaskHours: 1 / 3_600_000 } },
+    );
+    try {
+      const tick1 = await service.tickOnce(); // dispatch B-1
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      const tick2 = await service.tickOnce();
+      // 与 stuck 用例同理：升级落在派发拍或下一拍。
+      expect(tick1.escalated.length + tick2.escalated.length).toBeGreaterThan(0);
+      expect(
+        service.escalations.all.some((record) => record.reason === 'budget-exceeded'),
+      ).toBe(true);
+      const view = service.teamView(teamId);
+      expect(view.tasks[0]?.status).toBe('needs-human');
+      // 直方图在 escalateTask 内累加，checkBudget 不重复计。
+      expect(view.metrics.escalations['budget-exceeded']).toBe(1);
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
+  it('run metrics accumulate across the gated review flow', async () => {
+    const { service, teamId, fixture, cleanup } = await serviceWithContracts('metrics', [
+      { id: 'M-1', title: 'counted' },
+    ]);
+    try {
+      await service.tickOnce(); // dispatch
+      let view = service.teamView(teamId);
+      expect(view.metrics.dispatched).toBe(1);
+      const task = view.tasks[0]!;
+      const dev = view.members.find((member) => member.id === task.assigneeId)!;
+      const reviewer = view.members.find((member) => member.role === 'reviewer')!;
+      commitInWorktree(dev.workspacePath, 'm.ts', 'export {};\n', 'feat: m');
+      await service.updateTask({ taskId: task.id, status: 'in_review' });
+      await service.runGatesForTask({ taskId: task.id }); // 门第 1 跑（绿）
+      await service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'request_changes', comments: 'redo' });
+      commitInWorktree(dev.workspacePath, 'm.ts', 'export const two = 2;\n', 'feat: m2');
+      await service.updateTask({ taskId: task.id, status: 'in_review' });
+      await service.runGatesForTask({ taskId: task.id }); // 门第 2 跑
+      await service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' });
+
+      view = service.teamView(teamId);
+      expect(view.metrics).toEqual({
+        dispatched: 1,
+        completed: 1,
+        reviewRounds: 1,
+        gateRuns: 2,
+        gateFailures: 0,
+        deploys: 0,
+        rollbacks: 0,
+        escalations: {},
+      });
+      expect(view.tasks[0]?.status).toBe('done');
+
+      // 完成（唯一任务 done → 下一拍写报告），报告里带指标段与耗时行。
+      await service.tickOnce();
+      const report = await readFile(join(fixture.stateDir, 'completion.md'), 'utf8');
+      expect(report).toContain('## run metrics');
+      expect(report).toContain('- dispatched 1 / completed 1 / review rounds 1');
+      expect(report).toMatch(/- task durations \(dispatch → done\)/);
+      expect(report).toContain('M-1:');
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
   it('review-round ceiling escalates after maxReviewRounds', async () => {
     const { service, teamId, cleanup } = await serviceWithContracts(
       'rounds',

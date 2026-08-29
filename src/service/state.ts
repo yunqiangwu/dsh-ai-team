@@ -96,6 +96,10 @@ export interface TaskRecord {
   prUrl: string | null;
   ciStatus: CiStatus | null;
   lastActivityAt: number;
+  /** 最近一次派发时刻；老 state.json 里没有，读取处兜底跳过（如预算检查）。 */
+  dispatchedAt?: number | undefined;
+  /** 任务置为 done 的时刻；未完成的任务没有。 */
+  completedAt?: number | undefined;
   createdAt: number;
   updatedAt: number;
 }
@@ -107,6 +111,35 @@ export interface ReviewRecord {
   verdict: ReviewVerdict;
   comments: string;
   createdAt: number;
+}
+
+/**
+ * 一个团队的累计运行指标（无人值守试点的观测面）。全部是只增计数器，
+ * 随 TeamRecord 整体落盘。可选：老 state.json 里没有，`load()` 归一化兜底。
+ */
+export interface TeamMetrics {
+  dispatched: number;
+  completed: number;
+  reviewRounds: number;
+  gateRuns: number;
+  gateFailures: number;
+  deploys: number;
+  rollbacks: number;
+  /** 按 EscalationReason 分桶的升级直方图。 */
+  escalations: Record<string, number>;
+}
+
+export function emptyTeamMetrics(): TeamMetrics {
+  return {
+    dispatched: 0,
+    completed: 0,
+    reviewRounds: 0,
+    gateRuns: 0,
+    gateFailures: 0,
+    deploys: 0,
+    rollbacks: 0,
+    escalations: {},
+  };
 }
 
 /** 一个团队的内存记录：成员、任务、评审与学习记录都随它整体落盘。 */
@@ -125,6 +158,7 @@ export interface TeamRecord {
    * （同 TaskRecord.contractPath）。`<stateDir>/learnings.md` 是它的全量生成物。
    */
   learnings?: LearningRecord[] | undefined;
+  metrics?: TeamMetrics | undefined;
   createdAt: number;
 }
 

@@ -111,6 +111,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           pollIntervalSeconds: 30             # 循环轮询间隔；心跳每拍落 heartbeat.json，崩溃可恢复
           maxDiffLines: 0                     # 评审体量门：单任务累计增删行上限；超限不许 approve 而是升级 change-too-large。0=关闭
           maxDiffFiles: 0                     # 同上按变更文件数。默认关闭：大 diff 的浅审是静默失败，但开启会改变既有团队行为
+          maxTaskHours: 0                     # 单任务墙钟预算（小时，允许小数）：派发后超时未完成即升级 budget-exceeded。0=关闭；无人值守跑真实项目时建议显式开启
         escalation:
           webhookUrlEnv: AUTOPILOT_WEBHOOK    # 通知 webhook 的环境变量名
           label: needs-human
@@ -196,11 +197,11 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 3. **派发**：`depends_on` 全部 done 且 `status=pending` 的任务，先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
 4. **审查闸门**：reviewer 调 `code_review` approve 前必须 `gates_run` 全绿（`pushRequiresGates`）；有远端 CI 且 `requireCiGreen` 时 CI 必须绿，且必须真验证过（未 `pr_sync` 视为未验证 → 拒）；配了 `daemon.maxDiffLines`/`maxDiffFiles` 时改动体量超限也拒（升级 `change-too-large`）；合并前还要查分支相对 base 的 diff 是否触及禁区，命中即拒绝并升级 `needs-human`。都过了才按画像策略合入 base；合并冲突拒绝并保持 `in_review`。
 5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
-6. **卡死检测**：任务 `stuckMinutes` 无 git 活动 → escalate。
+6. **卡死与预算**：任务 `stuckMinutes` 无 git 活动 → escalate（空闲失控）；派发后超过 `daemon.maxTaskHours`（默认关闭）仍未完成 → 升级 `budget-exceeded`（活跃空转）。插件看不见成员 agent 的 token 消耗，墙钟预算是唯一可靠的烧钱护栏。
 7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
 8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done → 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待人工升格清单**）并停机等待。
 
-**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 任务卡死 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
+**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
 
 ## 任务契约（.tasks/*.md）
 

@@ -8,7 +8,7 @@
  * 项目文档是人的决定，插件只列候选、绝不代笔（AGENTS.md / docs/ 属 human-only 区）。
  */
 import type { DeployView } from '../view.js';
-import type { TeamRecord } from './state.js';
+import type { TaskRecord, TeamRecord } from './state.js';
 
 export interface CompletionReportInput {
   team: TeamRecord;
@@ -20,14 +20,26 @@ export interface CompletionReportInput {
   finishedAt: number;
 }
 
+function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 /** 渲染 `<stateDir>/completion.md` 的完整内容。 */
 export function renderCompletionReport(input: CompletionReportInput): string {
   const { team, deploys, promoteAfterHits, finishedAt } = input;
   const learnings = team.learnings ?? [];
+  const metrics = team.metrics;
   const pendingPromotion =
     promoteAfterHits === undefined
       ? []
       : learnings.filter((learning) => !learning.promoted && learning.hits >= promoteAfterHits);
+  const histogram = Object.entries(metrics?.escalations ?? {}).toSorted(([, a], [, b]) => b - a);
+  const timedTasks = team.tasks.filter(
+    (task): task is TaskRecord & { dispatchedAt: number; completedAt: number } =>
+      task.dispatchedAt !== undefined && task.completedAt !== undefined,
+  );
   return [
     `# Autopilot completion report`,
     ``,
@@ -37,6 +49,28 @@ export function renderCompletionReport(input: CompletionReportInput): string {
     `## tasks`,
     ...team.tasks.map((task) => `- ${task.contractId ?? task.id} ${task.title} — ${task.status}`),
     ``,
+    ...(metrics === undefined
+      ? []
+      : [
+          `## run metrics`,
+          ``,
+          `- dispatched ${metrics.dispatched} / completed ${metrics.completed} / review rounds ${metrics.reviewRounds}`,
+          `- gate runs ${metrics.gateRuns} (failures ${metrics.gateFailures})`,
+          `- deploys ${metrics.deploys} (rollbacks ${metrics.rollbacks})`,
+          ...(histogram.length === 0
+            ? []
+            : [`- escalations by reason`, ...histogram.map(([reason, count]) => `  - ${reason}: ${count}`)]),
+          ...(timedTasks.length === 0
+            ? []
+            : [
+                `- task durations (dispatch → done)`,
+                ...timedTasks.map(
+                  (task) =>
+                    `  - ${task.contractId ?? task.id}: ${formatDuration(task.completedAt - task.dispatchedAt)}`,
+                ),
+              ]),
+          ``,
+        ]),
     `## deploys`,
     ...(deploys.length === 0
       ? ['- (none)']

@@ -77,6 +77,8 @@ export const ESCALATION_REASONS = [
   /** 单个任务的改动体量超过 daemon.maxDiffLines / maxDiffFiles：该拆任务而不是放行。 */
   'change-too-large',
   'task-stuck',
+  /** 单任务墙钟超过 daemon.maxTaskHours 仍未完成：活跃空转（区别于 task-stuck 的空闲），烧钱失控信号。 */
+  'budget-exceeded',
   'deploy-failed',
   'bootstrap-failed',
   'gate-failure',

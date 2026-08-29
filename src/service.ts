@@ -94,6 +94,7 @@ import type {
 import type { AutopilotOptions } from './service/options.js';
 import {
   clip,
+  emptyTeamMetrics,
   HELD_STATUSES,
   memberBranch,
   noteLines,
@@ -106,6 +107,7 @@ import type {
   PersistedState,
   ReviewRecord,
   TaskRecord,
+  TeamMetrics,
   TeamRecord,
   TickReport,
 } from './service/state.js';
@@ -427,6 +429,8 @@ export class AutopilotService {
       this.bootstrapped = state.bootstrapped ?? false;
       this.lastDeployBaseSha = state.lastDeployBaseSha ?? null;
       for (const team of this.teams.values()) {
+        // 老state.json 没有 metrics 字段：读取处归一化兜底，之后所有埋点都可直接写。
+        team.metrics ??= emptyTeamMetrics();
         team.branches = await listBranches(team.repoPath).catch(() => team.branches);
       }
     } catch {
@@ -544,6 +548,7 @@ export class AutopilotService {
       tasks: team.tasks.map((task) => this.taskView(team, task)),
       reviews: team.reviews.map((review) => this.reviewView(team, review)),
       learnings: (team.learnings ?? []).map((record) => viewOf(record)),
+      metrics: this.teamMetrics(team),
       createdAt: team.createdAt,
     };
   }
@@ -591,6 +596,11 @@ export class AutopilotService {
       );
     }
     return member;
+  }
+
+  /** 团队指标（缺则就地补零）：所有埋点与视图组装都走这里，避免各处判空。 */
+  private teamMetrics(team: TeamRecord): TeamMetrics {
+    return (team.metrics ??= emptyTeamMetrics());
   }
 
   private findTask(taskId: string): { team: TeamRecord; task: TaskRecord } {
@@ -855,6 +865,7 @@ export class AutopilotService {
       members: [],
       tasks: [],
       reviews: [],
+      metrics: emptyTeamMetrics(),
       createdAt: Date.now(),
     };
     // 先入册再逐个加成员：addMember 依赖 team 已经在表里。
@@ -1205,6 +1216,9 @@ export class AutopilotService {
       });
     }
     task.gates = summary;
+    const metrics = this.teamMetrics(team);
+    metrics.gateRuns += 1;
+    if (!summary.allPassed) metrics.gateFailures += 1;
     this.touchTask(task);
     this.changed(team.id);
     return summary;
@@ -1262,6 +1276,8 @@ export class AutopilotService {
       );
       merged = true;
       task.status = 'done';
+      task.completedAt = Date.now();
+      this.teamMetrics(team).completed += 1;
       await this.updateContractStatus(team, task, 'done');
       // 让开发者的个人分支跟上刚合入的 base，再回到空闲。
       await this.releaseMemberWorkspace(assignee, team);
@@ -1269,6 +1285,7 @@ export class AutopilotService {
     } else {
       task.status = 'changes_requested';
       task.reviewRound += 1;
+      this.teamMetrics(team).reviewRounds += 1;
       assignee.status = 'working';
       // 评审意见必须落到任务单上。此前这条分支只改内存字段，comments 既不进
       // `.tasks/<id>.md` 也不提交 —— 换任接手者（或下一场会话）完全看不见
@@ -1671,6 +1688,9 @@ export class AutopilotService {
     // 收敛到这条唯一漏斗上，所以不再单独设一类）。
     const learningTeam = found?.team ?? [...this.teams.values()][0];
     if (learningTeam !== undefined) {
+      // 升级原因直方图：与下面的知识捕获同源同漏斗，逐 reason 计数。
+      const histogram = this.teamMetrics(learningTeam).escalations;
+      histogram[input.reason] = (histogram[input.reason] ?? 0) + 1;
       const logTail = input.logTail ?? '';
       await this.captureLearning(learningTeam, {
         kind: 'escalation',
@@ -1732,6 +1752,9 @@ export class AutopilotService {
       ...(this.options.tickSleepMs !== undefined ? { backoffMs: Math.max(this.options.tickSleepMs, 10) } : {}),
     });
     this.deploys.push(view);
+    const metrics = this.teamMetrics(team);
+    metrics.deploys += 1;
+    if (view.status === 'rolled-back' || view.status === 'rollback-failed') metrics.rollbacks += 1;
     if (view.status === 'healthy') {
       this.lastDeployBaseSha = await resolveRef(team.repoPath, team.baseBranch);
     } else {
@@ -1877,6 +1900,7 @@ export class AutopilotService {
       await this.dispatch(team, report, contracts, signal);
       await this.checkReviewRounds(team, report);
       await this.checkStuck(team, report);
+      await this.checkBudget(team, report);
       await this.maybeDeploy(team, report);
       await this.checkCompletion(team, report);
     }
@@ -1983,6 +2007,8 @@ export class AutopilotService {
       developer.status = 'working';
       developer.currentTaskId = task.id;
       task.status = 'in_progress';
+      task.dispatchedAt = Date.now();
+      this.teamMetrics(team).dispatched += 1;
       this.touchTask(task);
       await this.updateContractStatus(team, task, 'in_progress', developer.name);
       lockedTouches.push(...task.touches);
@@ -2077,6 +2103,28 @@ export class AutopilotService {
           suggestion: 'check the assignee workspace, unblock or re-assign the task, then move it back to pending',
         });
       }
+    }
+  }
+
+  /**
+   * 每任务墙钟预算（daemon.maxTaskHours，0 = 关闭）：派发后超过此时长仍是
+   * in_progress 即升级 budget-exceeded。与 checkStuck 互补 —— 那里发现「空闲」，
+   * 这里挡「活跃空转」。老 state.json 的任务没有 dispatchedAt，跳过不判。
+   */
+  private async checkBudget(team: TeamRecord, report: TickReport): Promise<void> {
+    const maxMs = this.options.daemon.maxTaskHours * 3_600_000;
+    if (!(maxMs > 0)) return;
+    for (const task of team.tasks) {
+      if (task.status !== 'in_progress') continue;
+      if (task.dispatchedAt === undefined || Date.now() - task.dispatchedAt <= maxMs) continue;
+      report.escalated.push(task.id);
+      report.events.push(`budget:${task.id}`);
+      await this.escalateTask({
+        taskId: task.id,
+        reason: 'budget-exceeded',
+        message: `task "${task.title}" exceeded its wall-clock budget of ${this.options.daemon.maxTaskHours}h since dispatch`,
+        suggestion: 'split the task into smaller ones or raise daemon.maxTaskHours, then move it back to pending',
+      });
     }
   }
 

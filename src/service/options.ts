@@ -56,6 +56,13 @@ export interface AutopilotOptions {
      */
     maxDiffLines: number;
     maxDiffFiles: number;
+    /**
+     * 单任务成本预算（墙钟小时，允许小数）：从派发起超过此时长仍未完成的
+     * in_progress 任务升级 budget-exceeded。stuckMinutes 只能发现「空闲」，
+     * 这里挡的是「活跃空转」——插件看不见成员 agent 的 token 消耗，
+     * 墙钟是唯一可靠的失控信号。0 = 关闭。
+     */
+    maxTaskHours: number;
   };
   escalation: {
     webhookUrlEnv?: string | undefined;

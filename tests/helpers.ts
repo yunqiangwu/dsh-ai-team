@@ -102,6 +102,8 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
       maxReviewRounds: 3,
       stuckMinutes: 45,
       pollIntervalSeconds: 1,
+      // 0 = 关闭墙钟预算：既有用例不受派发时长影响。
+      maxTaskHours: 0,
       // 0 = 关闭评审体量门：既有断言 approve 成功的用例行为保持不变。
       maxDiffLines: 0,
       maxDiffFiles: 0,

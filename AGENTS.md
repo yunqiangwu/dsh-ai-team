@@ -108,7 +108,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 
 - 任务：`pending → in_progress → in_review → done`，`changes_requested` 打回，升级置 `needs-human`（人工处理后可回 `pending`）。
 - 循环：`stopped / running / paused / escalated / completed`。崩溃恢复时持久化的 `running` 一律降为 `paused`，等 `autopilot_resume`。
-- 升级触发条件（命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 任务卡死 / 部署连续失败 / 引导失败。
+- 升级触发条件（命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 任务卡死 / 超出任务墙钟预算（`daemon.maxTaskHours`）/ 部署连续失败 / 引导失败。
 
 ## 改一处要连带改哪儿
 
