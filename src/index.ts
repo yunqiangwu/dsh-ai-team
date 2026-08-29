@@ -110,7 +110,7 @@ export interface Config {
   /**
    * 知识回路：把评审意见、升级与部署失败沉淀成跨任务教训，并在派发时注入新任务
    * 描述。默认关闭 —— 开启会改变成员看到的提示词。`<stateDir>/learnings.md` 是它的
-   * 全量生成物；升格进项目文档始终由人做。
+   * 全量生成物；升格进项目文档由 leader 落，但要单独成 docs-only 变更。
    */
   learnings?: LearningOptions | undefined;
   /**
@@ -259,12 +259,12 @@ export const Config: z<Config> = z.object({
 
   security: z
     .object({
-      forbiddenPaths: z.array(z.string()).default(['.github/', 'AGENTS.md', 'LICENSE']),
+      forbiddenPaths: z.array(z.string()).default(['LICENSE']),
       commandAllowlist: z.array(z.string()).default(['pnpm', 'git', 'bun', 'docker', 'node', 'bunx', 'ssh', 'nuxt']),
       pushRequiresGates: z.boolean().default(true),
     })
     .default({
-      forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE'],
+      forbiddenPaths: ['LICENSE'],
       commandAllowlist: ['pnpm', 'git', 'bun', 'docker', 'node', 'bunx', 'ssh', 'nuxt'],
       pushRequiresGates: true,
     }),

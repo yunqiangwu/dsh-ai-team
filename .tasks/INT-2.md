@@ -55,7 +55,7 @@ touches:
 - **Then** 拒绝并提示走 `doc_approve`
 - **When** `doc_approve` 升格一份文档
 - **Then** 落盘前比对 frontmatter 的 `sha256` 与当前正文，不一致即拒绝审批并重开问卷（防"批 A 合 B"）
-- **And** `AGENTS.md` / `.github/` / `LICENSE` 仍是 `security.forbiddenPaths` 默认值，**不因任何问卷答复而放开**（§8-8）
+- **And** `LICENSE` 仍是 `security.forbiddenPaths` 默认值，**不因任何问卷答复而放开**（§8-8）。⚠️ 2026-08-29 变更：`AGENTS.md` / `.github/` 已移出默认禁区（`src/index.ts:262` 默认值现为 `['LICENSE']`），不要再把它们加回去；两者的改写约束在 DESIGN-INTERACTION.md §4.1（单独成变更 + 人复核），不靠禁区实现。
 - **And** `doc_approve` 只接受本地端点 POST 或人直接在会话里调用；组长与开发者只能 `ask_human`（§8-10）
 
 ### 场景六：contract_create 写前校验
@@ -71,7 +71,7 @@ touches:
 
 ### 场景八：提示词与测试
 
-- **Then** `src/roles.ts` 组长段落重写为"draft/升格"口径，**保留** `AGENTS.md` / `docs/` 属 human-only 的原意，不是简单删掉禁令
+- **Then** `src/roles.ts` 组长段落重写为"draft/升格"口径。⚠️ 2026-08-29 变更：`AGENTS.md` / `docs/` 已不再是 human-only，**保留那句错误事实断言反而会让模型误判权限**，要删；但保留其背后的真约束——文档改写没有客观门可验证，所以必须单独成 docs-only 变更、走 §4.1 审批链，`learning_promote` 只能在教训真的落进文档之后标
 - **And** 新增 `tests/test-questionnaire.ts` 覆盖场景一/二/四/五/六
 - **And** 每个新工具已在 README「工具一览」列出；新增 Config 字段已按 AGENTS.md「改一处要连带改哪儿」连带 `index.ts` → `service/options.ts` → `apply()` → README 配置块
 - **And** `pnpm typecheck && pnpm lint && pnpm build && pnpm test` 全绿

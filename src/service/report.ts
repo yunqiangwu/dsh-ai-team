@@ -4,8 +4,8 @@
  * 全部任务 done 时由守护循环写进 `<stateDir>/completion.md`。报告是给人看的收尾
  * 材料 —— 它不参与任何决策，所以整段渲染做成纯函数，改格式不需要碰状态机。
  *
- * 其中「待人工升格」清单是知识回路的收口：反复被印证的坑值得长期化，但写进
- * 项目文档是人的决定，插件只列候选、绝不代笔（AGENTS.md / docs/ 属 human-only 区）。
+ * 其中「待升格」清单是知识回路的收口：反复被印证的坑值得长期化。报告本身不参与
+ * 任何决策，所以只列候选、不代笔改文档（落 AGENTS.md / docs/ 由 leader 另起一次 docs-only 变更）。
  */
 import type { DeployView } from '../view.js';
 import type { TaskRecord, TeamRecord } from './state.js';

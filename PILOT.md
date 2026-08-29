@@ -26,9 +26,9 @@
 - [ ] Linux VPS 一台，Node ≥ 22.19，插件跑在**普通用户**下（bootstrap 走 rootless 安装）。
 - [ ] 平台能力先对齐预期：**PR 创建与 CI 状态查询只实现了 github**（其它平台 `pr_sync` 退化为纯推送、看板无 PR/CI 徽标）。
   - GitHub 私有仓：`platform: github` + `requireCiGreen: true`，全功能。
-  - 私有 Gitea（+ act-runner）：`platform: generic`，`requireCiGreen` 必须**显式置 false**——插件查不到 Gitea 的 CI，留着它会让「从未验证视为未通过」永久阻塞 approve。act-runner 照常跑 CI，只是红绿不作为插件门；workflow 放 `.gitea/workflows/`（默认禁区含 `.github/`，放那里的 workflow AI 团队碰不了）。SSH 非 22 端口时 `remote.url` 写全 `ssh://git@host:PORT/owner/repo.git`。
+  - 私有 Gitea（+ act-runner）：`platform: generic`，`requireCiGreen` 必须**显式置 false**——插件查不到 Gitea 的 CI，留着它会让「从未验证视为未通过」永久阻塞 approve。act-runner 照常跑 CI，只是红绿不作为插件门；workflow 放 `.gitea/workflows/`（Gitea 只认这个路径。注意 `.github/` 已不在默认禁区，AI 团队改得了那里的 workflow —— 这类改动单独成变更并人复核）。SSH 非 22 端口时 `remote.url` 写全 `ssh://git@host:PORT/owner/repo.git`。
   - cnb/gitlab 同属 generic 语义。
-- [ ] 目标仓库的 human-only 区（默认 `.github/`、`AGENTS.md`、`LICENSE`）已确认不需要 AI 团队动；契约 `touches` 不要写进去。
+- [ ] 禁区只剩默认 `LICENSE`（2026-08-29 变更）：`.github/` 与 `AGENTS.md` 技术上 AI 团队改得了，但**不要**把它们写进业务契约的 `touches`——改 CI 等于改把关自己的考卷，改 `AGENTS.md` 属 docs-only 变更，两者都该单独成一次变更并留人复核。
 
 **密钥与环境变量**——全部只配环境变量名，值绝不进任何 yml。注意区分两类 env：下面的表是 **dsh 进程本身**的环境变量（systemd `EnvironmentFile=` 或等效私有 env 文件注入）；`bootstrap.envFile` 是给**目标仓库应用**生成 .env，两回事。
 
@@ -87,7 +87,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
         deploy:
           enabled: false            # 首跑不部署；部署单独作为 L2 之后的验证项
         security:
-          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']
+          forbiddenPaths: ['LICENSE']
           commandAllowlist: [pnpm]  # gates 只跑 pnpm 脚本 → 白名单收到最小；勿放 sh/node/docker
           pushRequiresGates: true
         learnings:
@@ -162,7 +162,7 @@ autopilot_status      # 随时查看循环 / 看板 / 升级 / 部署
 ## 8. 复盘（每批任务结束后 24h 内）
 
 1. 从 completion.md 抄下三个数：完成率、升级直方图、耗时行分布。
-2. 「待人工升格」清单：把值得长期化的坑写进目标仓库文档，然后 `learning_promote` 标记（插件绝不代笔）。
+2. 「待升格」清单：把值得长期化的坑写进目标仓库文档（可以让 leader 自己落，但必须单独成 docs-only 变更，别混在代码任务里），然后 `learning_promote` 标记。
 3. 判定：本级的完成率 ≥ 80% 且无同因反复升级 → 进下一级；否则改契约模板 / 收紧配置，重跑本级。
 4. 校准预算：若耗时普遍远小于 `maxTaskHours`，下一步降它；若频繁贴线，先拆任务再考虑加时。
 

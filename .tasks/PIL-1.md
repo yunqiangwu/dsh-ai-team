@@ -21,4 +21,4 @@ touches:
 
 - **When** 对比任务分支与 main 的 diff
 - **Then** 仅 README.md 一个文件被修改，且改动全部为追加，不重写或删除既有章节
-- **And** 未触及 `.github/`、`AGENTS.md`、`LICENSE`（human-only 区）
+- **And** 未触及 `.github/`、`AGENTS.md`、`LICENSE`（本任务范围外，不是禁区——2026-08-29 起默认 `forbiddenPaths` 只剩 `LICENSE`）

@@ -110,6 +110,13 @@ describe('integration: full lifecycle', () => {
     const service = await AutopilotService.create(
       testOptions(fixture, {
         remote: { url: fixture.remotePath, sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'generic' },
+        // `.github/` 自 2026-08-29 起不在默认禁区里（默认只剩 LICENSE）：这里显式配回来，
+        // 顺带锁住「需要保护 CI 配置的项目自己加 forbiddenPaths」这条出路真的有效。
+        security: {
+          forbiddenPaths: ['.github/'],
+          commandAllowlist: ['git', 'pnpm', 'sh', 'echo'],
+          pushRequiresGates: true,
+        },
       }),
     );
     try {
@@ -209,9 +216,9 @@ describe('integration: full lifecycle', () => {
         assigneeId: dev.id,
         contractId: 'CORE-9',
       });
-      // 开发者把改动写进了 human-only 区（AGENTS.md 在 security.forbiddenPaths 里）。
+      // 开发者把改动写进了禁区（LICENSE 是默认 security.forbiddenPaths 里唯一剩下的路径）。
       commitInWorktree(dev.workspacePath, 'server/core/index.ts', 'export const core = 1;\n', 'feat: core');
-      commitInWorktree(dev.workspacePath, 'AGENTS.md', '# rewritten by the agent\n', 'docs: rewrite agents');
+      commitInWorktree(dev.workspacePath, 'LICENSE', 'rewritten by the agent\n', 'docs: rewrite license');
       await service.updateTask({ taskId: task.id, status: 'in_review' });
       const gates = await service.runGatesForTask({ taskId: task.id });
       expect(gates.allPassed).toBe(true);
@@ -225,8 +232,8 @@ describe('integration: full lifecycle', () => {
       expect(service.teamView(team.id).tasks.find((t) => t.id === task.id)?.status).toBe('needs-human');
       expect(service.escalations.all.some((record) => record.reason === 'forbidden-paths')).toBe(true);
       // base 与远端都不能出现那份改写（用 ls-tree：文件不存在时 git show 会非零退出）。
-      expect(gitTest(['ls-tree', '-r', '--name-only', 'main'], team.repoPath)).not.toContain('AGENTS.md');
-      expect(gitTest(['ls-tree', '-r', '--name-only', 'main'], fixture.remotePath)).not.toContain('AGENTS.md');
+      expect(gitTest(['ls-tree', '-r', '--name-only', 'main'], team.repoPath)).not.toContain('LICENSE');
+      expect(gitTest(['ls-tree', '-r', '--name-only', 'main'], fixture.remotePath)).not.toContain('LICENSE');
     } finally {
       await service.dispose();
     }

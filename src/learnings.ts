@@ -4,10 +4,10 @@
  * 设计前提（为什么不是「让 leader 定期维护文档」）：
  *  - 文档是给人看的，agent 每任务的上下文里根本不会去读它 —— 坑要避免重复踩，
  *    落点必须是**任务描述**，不是 `docs/`；
- *  - 想写文档的天然位置（AGENTS.md / docs/）恰好落在 `forbidden: block` 与
- *    `validate:docs` 的交叉火力区，而删除型操作没有任何客观验证信号。
- *  所以这里刻意只做「追加式捕获 + 有界注入 + 人工升格」，编辑文档的权力
- *  仍然留在 human-only 区。
+ *  - 文档改写（删段、重排）没有任何客观验证信号，质量门只能证明「没弄坏代码」，
+ *    证明不了「这坑真的不再踩」。
+ *  所以这里刻意只做「追加式捕获 + 有界注入 + 升格后停注入」：写文档是 leader 的
+ *  判断，不是这个模块的职责，模块本身也不碰任何项目文档。
  *
  * 本模块不认识 cordis、也不做任何 IO：真相源是 AutopilotService 内存里的
  * `LearningRecord[]`（随 state.json 落盘），`<stateDir>/learnings.md` 只是它的
@@ -244,7 +244,7 @@ export function renderLearningsFile(records: readonly LearningRecord[]): string 
     `> regenerated at ${new Date().toISOString()}`,
     '>',
     '> 本文件由 dsh-ai-team 从运行态全量重写，真相源在 state.json。',
-    '> 要沉淀成长期约定，请人工升格进项目文档（AGENTS.md / docs/），',
+    '> 要沉淀成长期约定，请升格进项目文档（AGENTS.md / docs/）—— 单独成一次 docs-only 变更，',
     '> 再用 `learning_promote` 标记 —— 标记后不再注入任务描述。',
     '',
   ];

@@ -935,7 +935,7 @@ describe('unattended: security hard rules', () => {
         remote: { url: fixture.remotePath, sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'github' },
         gates: { commands: ['git --version'], requireCiGreen: true, timeoutMinutes: 1 },
         security: {
-          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE'],
+          forbiddenPaths: ['LICENSE'],
           commandAllowlist: ['git', 'pnpm', 'sh', 'echo'],
           pushRequiresGates: false,
         },
@@ -970,6 +970,24 @@ describe('unattended: security hard rules', () => {
       // 「未绿」，默认配置（platform generic + requireCiGreen true）将永远无法 approve。
       const verdict = await service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' });
       expect(verdict.merged).toBe(true);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('rewriting AGENTS.md no longer trips the forbidden gate (default list is LICENSE only)', async () => {
+    const fixture = await makeFixture('agents-ok');
+    const service = await AutopilotService.create(testOptions(fixture));
+    try {
+      const { teamId, repoPath } = await seedTeamWithContract(service, 'agents-ok');
+      const { task, dev, reviewer } = await taskInReview(service, teamId, 'CORE-1');
+      // 2026-08-29：AGENTS.md 移出默认禁区，改它、提交它、合它都不该再被拦。
+      commitInWorktree(dev.workspacePath, 'AGENTS.md', '# rewritten by the leader\n', 'docs: promote a lesson');
+      const verdict = await service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' });
+      expect(verdict.merged).toBe(true);
+      expect(gitTest(['log', '--format=%s', 'main'], repoPath)).toContain('merge: task/CORE-1');
+      expect(gitTest(['show', 'main:AGENTS.md'], repoPath)).toContain('rewritten by the leader');
+      expect(service.escalations.all.some((record) => record.reason === 'forbidden-paths')).toBe(false);
     } finally {
       await service.dispose();
     }

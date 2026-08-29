@@ -65,6 +65,6 @@
         deploy:
           enabled: false
         security:
-          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']
+          forbiddenPaths: ['LICENSE']
           commandAllowlist: [pnpm, git, bun, docker]
           pushRequiresGates: true

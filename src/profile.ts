@@ -182,8 +182,6 @@ export function agentdeployProfile(fallbackCommands: readonly string[] = []): Pr
       { command: 'pnpm run validate:docs', when: ['.tasks/', 'docs/'] },
     ],
     forbidden: [
-      { path: '.github/', mode: 'block' },
-      { path: 'AGENTS.md', mode: 'block' },
       { path: 'LICENSE', mode: 'block' },
       { path: 'server/db/schema/', mode: 'high-conflict' },
     ],
@@ -329,7 +327,7 @@ export function classifyForbiddenFiles(files: readonly string[], rules: readonly
 
 /**
  * 构造生效的禁区规则：画像自身的规则，加上被强制为 `block` 模式的遗留
- * `security.forbiddenPaths`（它们属于 human-only 区）。重复路径上画像规则优先。
+ * `security.forbiddenPaths`。重复路径上画像规则优先。
  */
 export function effectiveForbiddenRules(
   profile: ProjectProfile,

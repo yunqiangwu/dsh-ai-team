@@ -1264,7 +1264,7 @@ export class AutopilotService {
     if (input.verdict === 'approve') {
       this.assertMergeAllowed(task);
       await this.assertDiffSizeAllowed(team, task);
-      // 合并进 base 之前必须查禁区：质量门全绿不代表可以改写 human-only 区。
+      // 合并进 base 之前必须查禁区：质量门全绿不代表可以改写禁区。
       await this.assertNoForbiddenChanges(team, task.branch, team.baseBranch, task.id);
       await mergeBranch(
         team.repoPath,
@@ -1491,7 +1491,7 @@ export class AutopilotService {
     });
   }
 
-  /** learning_list 工具的落点：查当前沉淀，并报告待人工升格的数量。 */
+  /** learning_list 工具的落点：查当前沉淀，并报告待升格（hits 已达门槛、尚未落文档）的数量。 */
   learningList(input: { teamId?: string; touches?: string[]; kind?: LearningKind; limit?: number }): {
     items: LearningView[];
     total: number;
@@ -1513,8 +1513,8 @@ export class AutopilotService {
   }
 
   /**
-   * learning_promote 工具的落点：人（或 leader）确认某条教训已升格进项目文档，
-   * 或直接否掉它。只改台账标记，绝不代笔改 AGENTS.md / docs/ —— 那是 human-only 区。
+   * learning_promote 工具的落点：确认某条教训已升格进项目文档（人或 leader 落的都算），
+   * 或直接否掉它。只改台账标记，不代笔改 AGENTS.md / docs/ —— 落文档是另一次 docs-only 变更。
    */
   async learningPromote(input: { id: string; action: 'mark-promoted' | 'dismiss' }): Promise<LearningView> {
     for (const team of this.teams.values()) {
@@ -1577,7 +1577,7 @@ export class AutopilotService {
    * 进了主干 —— 那正是这道规则要防的那件事。
    *
    * 策略由画像决定且区分模式：
-   *  - `block`（human-only）→ 硬阻断并升级；
+   *  - `block` → 硬阻断并升级；
    *  - `needs-approval` / `high-conflict` → 先压住，等人或 owner 决策
    *    （走独立 PR），升级但不推。
    */
@@ -1607,7 +1607,7 @@ export class AutopilotService {
       await this.escalateTask({
         taskId,
         reason: 'forbidden-paths',
-        message: `branch ${source} touches human-only/blocked paths: ${blocks.join(', ')}`,
+        message: `branch ${source} touches blocked paths: ${blocks.join(', ')}`,
         suggestion: `remove the forbidden changes from ${source}, rebase onto base, then retry`,
       });
       throw new Error(`forbidden paths modified: ${blocks.join(', ')}`);

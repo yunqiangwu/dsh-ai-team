@@ -98,11 +98,11 @@ export const learningViewSchema = zod.object({
   touches: zod.array(zod.string()),
   taskId: zod.string().nullable(),
   contractId: zod.string().nullable(),
-  /** 同因命中次数：越高越值得人工升格进项目文档。 */
+  /** 同因命中次数：越高越值得升格进项目文档。 */
   hits: zod.number().int().nonnegative(),
   lastHitAt: zod.number(),
   createdAt: zod.number(),
-  /** 已被人升格到 AGENTS.md / 项目文档：只出现在面板，不再参与注入。 */
+  /** 已升格进 AGENTS.md / 项目文档：只出现在面板，不再参与注入。 */
   promoted: zod.boolean(),
 });
 

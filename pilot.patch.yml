@@ -37,9 +37,10 @@
         deploy:
           enabled: false            # 首跑不部署；部署在 L2 通过后单独验证
         security:
-          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']
-          # Gitea Actions 的 workflow 请放 .gitea/workflows/（不在禁区）；
-          # 默认禁区含 .github/，AI 团队碰不了放那里的 workflow。
+          forbiddenPaths: ['LICENSE']
+          # Gitea Actions 的 workflow 请放 .gitea/workflows/（Gitea 只认这个路径）。
+          # 注意 .github/ 已不在默认禁区里：AI 团队改得了那里的 workflow，
+          # 而 CI 正是 requireCiGreen 把关自己的地方 —— 这类改动必须单独成变更并人复核。
           commandAllowlist: [pnpm]  # gates 只跑 pnpm 脚本 → 白名单收到最小；勿放 sh/node/docker
           pushRequiresGates: true
         learnings:

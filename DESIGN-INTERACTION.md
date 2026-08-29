@@ -34,9 +34,9 @@
 
 - `assignTask`（`src/service.ts:956-964`）只**校验**契约存在且为 `pending`；全文没有创建 `.tasks/*.md` 的代码路径。契约只能由人写好，或组长用通用 fs/shell 手搓、再由 `syncContracts`（`src/service.ts:1912`）事后收养。
 - 收养链路上已经咬过一次人：`src/service.ts:1898` 是 `.catch(() => [])`，**一个 frontmatter 写坏的契约文件会让整块看板静默清空**（`src/service.ts:1062` 的注释自己承认了这一点）。
-- `src/roles.ts:44-45` 组长提示词原文：*"Never edit AGENTS.md / docs/ yourself: those are human-only, and doc rewrites have no objective gate to verify against."*
+- `src/roles.ts:44-45` 组长提示词原文（历史记录）：*"Never edit AGENTS.md / docs/ yourself: those are human-only, and doc rewrites have no objective gate to verify against."* —— 这条禁令已在 2026-08-29 随默认禁区收缩到 `LICENSE` 一并移除，出口改由 §4.1 的 draft/审批链承担。
 
-推论：本文最核心的三个动作（追问、写文档、拆契约）在工具面上**一个都不存在**，其中一个还被架构铁律 6 主动禁止。解决方案见 §4 的 draft/升格机制——**不是删掉这条禁令**，而是给它一个有审批记录的合法出口。
+推论：本文最核心的三个动作（追问、写文档、拆契约）在工具面上**一个都不存在**，其中一个还被架构铁律 6 主动禁止。解决方案见 §4 的 draft/升格机制——禁令本身已在 2026-08-29 移除，但**不能只给一个裸的写文档能力**，约束下移到"必须走有审批记录的合法出口"。
 
 ## 2. 阶段状态机
 
@@ -142,9 +142,10 @@ docs/drafts/**                     组长写、组长改
 
 人批准后 `doc_approve` 把文件从 draft 区**移入**正式区（`docs/prd.md` 等）并记录审批人 + 时间。升格之后：
 
-- `AGENTS.md` / `.github/` / `LICENSE` **永久 human-only**，这条不改（`src/index.ts:262` 默认值维持）。
-- 已升格的正式文档对**所有角色**只读。要改，必须新起一份 draft + 重新走 `doc_approve`。这与 §1.2 的原意一致：**AI 写的文档永远是"待批草稿"，不是既定事实**。
-- 完成报告与 `learning_list` 的"待人工升格"清单继续只列候选，插件仍不代笔项目文档（`src/service/report.ts:8` 的精神保留）。
+- 默认 `security.forbiddenPaths` 现在只有 `LICENSE`（2026-08-29 变更）：`AGENTS.md` 与 `.github/` 不再是禁区，AI 团队可以改、可以提交。
+- 已升格的正式文档（`docs/prd.md` 等）对**所有角色**只读，这条不变：要改必须新起一份 draft + 重新走 `doc_approve`。这与 §1.2 的原意一致：**AI 写的正式文档永远是"待批草稿"，不是既定事实**。
+- 改 `AGENTS.md` / `.github/` 必须单独成一次变更（docs-only 或 CI-only），不混进代码任务的 diff：前者没有客观门可验证，后者会同时改动把关自己的 CI 脚本，`requireCiGreen` 的把关者不该自己改考卷——这两类改动留给人复核。
+- 完成报告与 `learning_list` 的"待升格"清单继续只列候选（`src/service/report.ts:8` 的精神保留），但落文档不再是人的专属动作。
 
 ### 4.2 每个文档的 frontmatter
 
@@ -254,7 +255,7 @@ approvedAt: null
 沿用 README「安全模型」6 条，本文新增 4 条：
 
 7. **AI 写文档只进 draft 区**，升格必须有 `doc_approve` 记录（审批人 + `sha256`）。
-8. **问卷不改变命令白名单、不改变禁区**。用户"同意"不能解锁 `AGENTS.md`——那是 human-only 区，不是一个可以被批准跨越的门。
+8. **问卷不改变命令白名单、不改变禁区**。用户"同意"不能解锁 `LICENSE`——禁区是配置决定的边界，不是一个可以被批准跨越的门（`AGENTS.md` / `.github/` 已于 2026-08-29 移出默认禁区，见 §4.1）。
 9. **工单/问卷端点无鉴权 → 默认只绑回环**，远程访问必须走 SSH 隧道；`autoResume` 在端点加鉴权前保持 `false`。
 10. **任何审批类状态转换不得由模型自己调用工具伪造**。`doc_approve` 只接受两条来源：本地端点 POST 或人直接在会话里调；组长与开发只能 `ask_human`。
 

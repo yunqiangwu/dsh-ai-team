@@ -140,7 +140,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           secretsEnv: []                      # 部署密钥环境变量名白名单
           skipTasksOnlyCommits: true          # base 只前进了 .tasks/ 提交（任务单回写/看板重生成）时不部署：这类提交不含代码，误部署还会触发回滚与升级
         security:
-          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']   # human-only 区
+          forbiddenPaths: ['LICENSE']                             # 默认禁区（2026-08-29 起只剩 LICENSE：AGENTS.md / .github 已移出，AI 团队可改可提交）
           commandAllowlist: [pnpm, git, bun, docker, node, bunx, ssh, nuxt]   # 可执行命令精确匹配白名单
           pushRequiresGates: true             # 门不过禁止 push 与 approve
         buildCache:                           # 可选：构建缓存（默认关闭）
@@ -199,7 +199,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
 6. **卡死与预算**：任务 `stuckMinutes` 无 git 活动 → escalate（空闲失控）；派发后超过 `daemon.maxTaskHours`（默认关闭）仍未完成 → 升级 `budget-exceeded`（活跃空转）。插件看不见成员 agent 的 token 消耗，墙钟预算是唯一可靠的烧钱护栏。
 7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
-8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done → 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待人工升格清单**）并停机等待。
+8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done → 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待升格清单**）并停机等待。
 
 **升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
 
@@ -236,7 +236,7 @@ Given/When/Then 验收标准……
 - **捕获**：两个自动来源（`code_review` 的 request_changes 意见、每一次 escalate，部署失败也已经收敛到升级这一条漏斗）+ 一个显式入口 `learning_record`（成员主动记一条）。原文与结论入库前统一过 `SecretRedactor` 并截断。
 - **去重**：键 = `(来源, 域, 意图桶)`，其中域沿用领域锁那套前缀折叠的最小覆盖集，桶是封闭词表且优先从升级原因等封闭来源推导（不让模型自由措辞做分桶，否则永远合不到一条）。同因反复出现只累加 `hits`，并保留最新结论。
 - **注入**：派发那一刻按 `touches` 相关性打分（同域 > 被印证次数 > 新鲜度），条数与字符双重预算，超出留一行指向 `learning_list`。域所有权硬规则始终留在描述最末尾。
-- **升格归人**：`hits ≥ promoteAfterHits` 的条目进入"待人工升格"清单（`learning_list` 与完成报告都会列出）。**插件绝不代笔改 `AGENTS.md` / `docs/`** —— 那些是 human-only 区，而且删除型改动没有任何客观门可以验证。人落地后再用 `learning_promote` 标记，它便不再参与注入。
+- **升格有门槛**：`hits ≥ promoteAfterHits` 的条目进入"待升格"清单（`learning_list` 与完成报告都会列出）。之后由人或 leader 把它写进 `AGENTS.md` / `docs/`，再用 `learning_promote` 标记，它便不再参与注入。⚠️ `AGENTS.md` / `docs/` 已不是 human-only 区（2026-08-29 起默认禁区只剩 `LICENSE`），但落文档要**单独成一次 docs-only 变更**，别混进代码任务的 diff —— 删除型改动没有任何客观门可以验证，混在代码里就等于没人能审它。
 - 生成物 `<stateDir>/learnings.md` 只是给人看的便利视图：与 `state.json` 同目录，**不进入目标仓库的 git 历史**（运行态不入库）。真相源始终是 `state.json`、注入走内存记录，这个文件删掉也不影响运行。
 
 ## 人工确认与问卷工单（notification）
@@ -253,10 +253,10 @@ Given/When/Then 验收标准……
 
 1. **密钥只引用不落盘**：Config 只存环境变量名；运行时读 `process.env`；所有日志（门输出、部署输出、webhook 负载、升级记录）经 SecretRedactor 强制脱敏。
 2. **命令白名单**：gates / bootstrap / deploy 的每个 shell 片段（按 `&& || ; | &` 与换行拆分）的可执行文件必须**精确命中** `commandAllowlist`，否则拒绝执行并提示走升级；会"藏进程"的构造 —— 命令替换 `$( )` 与反引号 —— **整条拒绝**（不做拆分放行的假象），而重定向与 glob 不启动新进程、继续放行。`bootstrap.systemPackages` 逐包名校验字符集，防止拼进 shell 后绕过 pm 的白名单检查。实话：清单里含 `sh` / `node` / `ssh` / `docker` 时这道就等价于没开（`node -e` 即任意执行），它的定位是**防误配 + 留审计痕迹**，不是防一个已被注入的模型。
-3. **forbiddenPaths**：派发期就检查 `touches` 是否踩到契约自声明的禁区；改动落地前再检查分支实际 diff —— `pr_sync` 推送、reviewer approve 合并、`team_branch` 手工合并三条路径共用同一道闸门，触及 human-only 区直接拒绝并升级；ref 解析不出来同样拒绝（不静默放行）。
+3. **forbiddenPaths**：派发期就检查 `touches` 是否踩到契约自声明的禁区；改动落地前再检查分支实际 diff —— `pr_sync` 推送、reviewer approve 合并、`team_branch` 手工合并三条路径共用同一道闸门，触及禁区直接拒绝并升级；ref 解析不出来同样拒绝（不静默放行）。默认禁区自 2026-08-29 起只剩 `LICENSE`。⚠️ 代价要说清：`.github/` 移出后 AI 团队改得了把关自己的 CI workflow，`requireCiGreen` 的考卷和答卷落在同一支笔下面 —— 需要硬保证 CI 配置不被改的项目，自己把 `.github/` 配回 `security.forbiddenPaths`。
 4. **门不过不合并**：`pushRequiresGates=true` 时门未绿禁止 push 与 approve；`requireCiGreen` 是另一道独立的门（不被前者短路），CI 非绿或从未验证（未 `pr_sync`）都禁止 approve —— 但 CI 状态只有 github 平台查得到，其它平台该门不生效；配了 `daemon.maxDiff*` 时改动体量超限也拒。
 5. **破坏性 git 操作禁止**：不 force-push 共享分支（任务/成员分支仅允许 `--force-with-lease`），不 reset 共享分支，不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 ref 名安全校验：不得以 `-` 开头、不得含空格或 `..` —— 否则一个 `-D` 就能被 git 当成「删分支」选项。
-6. **知识沉淀不改文档**：教训只进台账与任务描述；`AGENTS.md` / `docs/` 仍属 human-only 区，插件没有任何"改写项目文档"的能力。
+6. **知识回路不碰文档**：教训只写台账（`state.json` / `learnings.md`）与任务描述，`learning_promote` 只翻升格标记，这套工具里没有任何"改写项目文档"的能力。真要改 `AGENTS.md` / `docs/` 走的是通用文件编辑权限（2026-08-29 起它们不再是禁区），按约定必须单独成一次 docs-only 变更。
 
 ## 工具一览
 

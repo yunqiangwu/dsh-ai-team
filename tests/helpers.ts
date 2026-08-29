@@ -112,7 +112,7 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
     deploy: { enabled: false, secretsEnv: [], skipTasksOnlyCommits: true },
     learnings: { ...DEFAULT_LEARNINGS },
     security: {
-      forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE'],
+      forbiddenPaths: ['LICENSE'],
       commandAllowlist: ['git', 'pnpm', 'sh', 'echo'],
       pushRequiresGates: true,
     },

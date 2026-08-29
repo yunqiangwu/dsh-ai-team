@@ -20,7 +20,7 @@ export function systemPromptFor(role: Role, ctx: RoleContext): string {
     `Coordinate through the dsh-ai-team tools only — never edit files outside your own workspace.`,
     `The integration branch is "${ctx.baseBranch}".`,
     `Objective quality gates (gates_run) are the merge gate: code_review approve is rejected unless the gates are green.`,
-    `Never touch human-only files, never run commands outside the allowlist, never force-push shared branches.`,
+    `Never touch forbidden paths, never run commands outside the allowlist, never force-push shared branches.`,
     `Task descriptions may end with a "已知教训" section distilled from this repository's own earlier work: treat those`,
     `as constraints and follow them. When you hit a pitfall worth repeating that is not already there, record it with`,
     `learning_record (one concrete pitfall per call, phrased so a reader needs no context to act on it).`,
@@ -40,9 +40,10 @@ export function systemPromptFor(role: Role, ctx: RoleContext): string {
         `Read its contract note, decide, then release it with task_update (status pending + the decision as "note")`,
         `— that note is the only thing the developer will see. Check the blocked list in autopilot_status every time`,
         `you take the stage.`,
-        `When learning_list reports a lesson confirmed many times, propose it to the human as a project-doc entry.`,
-        `Never edit AGENTS.md / docs/ yourself: those are human-only, and doc rewrites have no objective gate to`,
-        `verify against. Mark a lesson promoted with learning_promote only AFTER the human has landed it.`,
+        `When learning_list reports a lesson confirmed many times, you may land it in the project docs (AGENTS.md / docs/)`,
+        `yourself — but as a docs-only change on its own branch, never mixed into a code task's diff: a doc rewrite has`,
+        `no objective gate to verify against, so it needs to be reviewable on its own. Mark a lesson promoted with`,
+        `learning_promote only AFTER it has actually landed in those docs.`,
       ].join(' ');
     case 'developer':
       return [

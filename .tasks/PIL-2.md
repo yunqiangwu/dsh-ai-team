@@ -21,4 +21,4 @@ touches:
 
 - **When** 对比任务分支与 main 的 diff
 - **Then** 仅新增根目录 `CHANGELOG.md` 一个文件，无其它改动
-- **And** 未触及 `.github/`、`AGENTS.md`、`LICENSE`（human-only 区）
+- **And** 未触及 `.github/`、`AGENTS.md`、`LICENSE`（本任务范围外，不是禁区——2026-08-29 起默认 `forbiddenPaths` 只剩 `LICENSE`）

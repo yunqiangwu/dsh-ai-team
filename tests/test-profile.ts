@@ -147,7 +147,9 @@ describe('profile: forbidden-zone classification', () => {
 
   it('effectiveForbiddenRules merges security.forbiddenPaths as block and dedupes', () => {
     const profile = resolveProjectProfile({ preset: 'agentdeploy' }, ['git --version']);
-    const rules = effectiveForbiddenRules(profile, ['.github/', 'AGENTS.md', 'LICENSE']);
+    // 画像自身不再声明 human-only 路径：2026-08-29 起 block 只剩 LICENSE。
+    expect(profile.forbidden.filter((rule) => rule.mode === 'block').map((rule) => rule.path)).toEqual(['LICENSE']);
+    const rules = effectiveForbiddenRules(profile, ['.github/', 'LICENSE']);
     expect(rules.find((rule) => rule.path === '.github/')?.mode).toBe('block');
     // Profile declared server/db/schema/ as high-conflict; security list does not duplicate it.
     const rules2 = effectiveForbiddenRules(profile, ['server/db/schema/']);

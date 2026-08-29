@@ -240,8 +240,8 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
         '(call gates_run first; with a remote, CI must be green too — see pr_sync), then ' +
         'merges the task branch into the base branch with the profile merge strategy. Before ' +
         'merging, the branch diff vs base is checked against the forbidden paths ' +
-        '(security.forbiddenPaths / the profile human-only rules): a hit refuses the merge and ' +
-        'escalates the task to needs-human — green gates do not license a human-only file. When ' +
+        '(security.forbiddenPaths / the profile block rules): a hit refuses the merge and ' +
+        'escalates the task to needs-human — green gates do not license a forbidden file. When ' +
         'daemon.maxDiffLines/maxDiffFiles are set, an oversized diff is refused and escalated ' +
         'as change-too-large instead. request_changes writes your comments onto the task ' +
         'contract (.tasks/<id>.md) and captures them as a lesson for later tasks; after ' +
@@ -580,12 +580,12 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
     defineTool({
       name: 'learning_promote',
       description:
-        'Close the loop on one lesson: mark-promoted once a HUMAN has written it into the ' +
+        'Close the loop on one lesson: mark-promoted once it has actually landed in the ' +
         'project docs (AGENTS.md / docs/ / ownership rules) — it then stops being injected ' +
         'into task descriptions because the project itself carries it; or dismiss it when it ' +
-        'was a one-off. This only flips the ledger: it never edits project documents, since ' +
-        'those paths are human-only and rewriting docs from the loop has no objective signal ' +
-        'to verify against.',
+        'was a one-off. This only flips the ledger: it does not edit project documents. Landing ' +
+        'one is its own docs-only change, because rewriting docs from the loop has no objective ' +
+        'signal to verify against.',
       parameters: {
         id: { type: 'string', required: true, description: 'Learning id from learning_list' },
         action: { type: 'string', required: true, enum: ['mark-promoted', 'dismiss'] },
