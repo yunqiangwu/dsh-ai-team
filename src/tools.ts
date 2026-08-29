@@ -5,7 +5,8 @@ import type { AutopilotService } from './service.js';
 import './events.js';
 // 工具层的枚举一律引用唯一词表（经 view.ts 门面）：手抄一份漏掉新值，表现为模型报不出
 // 那个原因 / 分类，而编译器和测试都不会响。
-import { ESCALATION_REASONS, LEARNING_BUCKETS, LEARNING_KINDS, REVIEW_VERDICTS, ROLES } from './view.js';
+import { ESCALATION_REASONS, LEARNING_BUCKETS, LEARNING_KINDS, REVIEW_VERDICTS, ROLES, TEAM_PHASES } from './view.js';
+import type { TeamPhase } from './view.js';
 
 /**
  * View 对象在构造上就是纯 JSON，但缺少索引签名，
@@ -21,21 +22,37 @@ const jsonOutput = {
   ],
 } as const;
 
-/** 把全量状态快照推送到调用方 agent 的 session 日志。 */
-function publish(service: AutopilotService, exec?: ToolRunContext): void {
+/** session 句柄：只用到 `append`，类型从 ToolRunContext 反推，避免手抄宿主签名。 */
+type SessionHandle = NonNullable<NonNullable<ToolRunContext['agent']>['session']>;
+
+/**
+ * 最近一次调用过本插件工具的 session，按服务实例索引。
+ * 工单答卷由 TicketServer 的 HTTP 回调处理，那条路径上没有 `exec` —— 想找回到
+ * 底该推给谁，只能靠这里记下的句柄。用 WeakMap 而不是模块级单例：一次进程里可能
+ * 有多个 ctx/service（测试就会），既不能串台，也不该把已销毁的 service 钉在内存里。
+ */
+const lastSessions = new WeakMap<AutopilotService, SessionHandle>();
+
+/** 把全量状态快照追加为一条 `autopilot/update` 事件。 */
+function appendSnapshot(service: AutopilotService, session: SessionHandle): void {
   // `autopilot/update` 是本插件自己的信息型全量状态快照。传入 `{ ignorable: true }`
   // 后，读不懂该类型的读取方（例如内核持久化的读取守卫）可以选择跳过它，
   // 而不是拒绝整条日志。该选项只在提供了写入侧标记的 harness 构建上有类型定义，
   // 因此这里用一次受控的 cast：既能对旧版 `@deepseek-ai/dsh-session` 类型编译通过，
   // 又能在 harness 支持时在运行时打上该标记。
+  (session.append as unknown as (
+    type: string,
+    data: unknown,
+    opts?: { ignorable: true },
+  ) => unknown)('autopilot/update', { state: service.projection() }, { ignorable: true });
+}
+
+/** 把全量状态快照推送到调用方 agent 的 session 日志。 */
+function publish(service: AutopilotService, exec?: ToolRunContext): void {
   const session = exec?.agent?.session;
-  if (session !== undefined) {
-    (session.append as unknown as (
-      type: string,
-      data: unknown,
-      opts?: { ignorable: true },
-    ) => unknown)('autopilot/update', { state: service.projection() }, { ignorable: true });
-  }
+  if (session === undefined) return;
+  lastSessions.set(service, session);
+  appendSnapshot(service, session);
 }
 
 const present = (title: string) => () =>
@@ -43,6 +60,20 @@ const present = (title: string) => () =>
 
 /** 在共享的工具运行时上注册全部 dsh-ai-team 工具。 */
 export function registerAutopilotTools(ctx: Context, service: AutopilotService): void {
+  // 带外变更的快照出口：工单答卷来自 TicketServer 的 HTTP 回调，那条栈里没有 `exec`，
+  // 于是 `this.changed()` 只落了盘、没人往 session 追加事件 —— 人答完问卷要等到下一次
+  // 工具调用才看得到面板刷新。登记一次，让那条路径也推一帧。
+  service.setSnapshotPublisher(() => {
+    const session = lastSessions.get(service);
+    if (session === undefined) return;
+    try {
+      appendSnapshot(service, session);
+    } catch (error) {
+      // session 可能已经销毁。失败要留痕：静默吞掉的话，"答复没生效"就又变成一次人肉排查。
+      ctx.logger.warn('autopilot: out-of-band snapshot publish failed', error);
+    }
+  });
+
   // ── 核心团队 / 协作工具 ──────────────────────────────────────────────────
 
   ctx.tools.register(
@@ -306,6 +337,33 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
         return asJson(state);
       },
       presentCall: present('Start autopilot loop'),
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'autopilot_phase',
+      description:
+        'Read or move a team\'s document-first phase: intake → kickoff_pending_approval → ' +
+        'scaffolding → developing ⇄ replanning. Omit `phase` to just read the current one. ' +
+        'The daemon only dispatches tasks while the team is in developing or replanning — in ' +
+        'any other phase the loop recovers, triages and deploys but hands out no new work. ' +
+        'Do NOT use this to get past a pending document approval: that transition belongs to ' +
+        'the approval flow (which records who approved and verifies the document hash), and ' +
+        'jumping the phase by hand turns "a human signed off" into an unverified claim.',
+      parameters: {
+        teamId: { type: 'string', required: true },
+        phase: { type: 'string', enum: TEAM_PHASES, description: 'Target phase; omit to query' },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const teamId = args.teamId as string;
+        const phase = args.phase as TeamPhase | undefined;
+        const team = phase === undefined ? service.teamView(teamId) : service.setPhase({ teamId, phase });
+        publish(service, exec);
+        return asJson(team);
+      },
+      presentCall: present('Set team phase'),
     }),
   );
 

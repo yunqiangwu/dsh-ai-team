@@ -25,7 +25,7 @@ touches:
 - **When** 组长 `task_cancel`
 - **Then** `status` 变 `cancelled`，**契约文件仍在 `.tasks/` 且仍在 git 历史里**
 - **And** `.tasks/_board.md` 新增列/分区呈现废弃项（现状只列 `needs-human`，`src/team.ts:146`）
-- **And** `doneContracts` 不再把它当前置，也不再让它无限阻塞下游（依赖判定复用 M0 的 `blocked-dependency`）
+- **And** `doneContracts` 不再把它当前置，也不再让它无限阻塞下游：M0 落地的判定在 `escalateBlockedDependency`（`src/service.ts`），当前只把「前置在看板上不存在」与「前置 `needs-human`」判死，`cancelled` **必须显式加进这个判定**，否则废弃态会退回到 §6.4 描述的静默阻塞
 
 ### 场景二：变更分级，不是每个小改动都发邮件
 

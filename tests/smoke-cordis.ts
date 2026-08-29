@@ -62,6 +62,7 @@ describe('smoke: cordis Loader contract', () => {
       [
         'autopilot_init',
         'autopilot_pause',
+        'autopilot_phase',
         'autopilot_resume',
         'autopilot_run',
         'autopilot_status',

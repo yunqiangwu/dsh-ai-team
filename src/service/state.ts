@@ -21,6 +21,7 @@ import type {
   ReviewVerdict,
   Role,
   TaskStatus,
+  TeamPhase,
 } from '../view.js';
 
 /** 仓库内任务契约目录。 */
@@ -142,6 +143,13 @@ export function emptyTeamMetrics(): TeamMetrics {
   };
 }
 
+/**
+ * 团队阶段的**唯一**缺省口径：老 state.json 里没有 `phase`，一律按 `developing`
+ * 处理 —— 那正是本字段出现之前唯一可能的行为。收敛成一个函数而不是三处各写
+ * `?? 'developing'`，否则读盘、出视图、判派发迟早会用到不同的默认值。
+ */
+export const teamPhase = (team: Pick<TeamRecord, 'phase'>): TeamPhase => team.phase ?? 'developing';
+
 /** 一个团队的内存记录：成员、任务、评审与学习记录都随它整体落盘。 */
 export interface TeamRecord {
   id: string;
@@ -149,6 +157,12 @@ export interface TeamRecord {
   repoPath: string;
   workspaceRoot: string;
   baseBranch: string;
+  /**
+   * 文档先行的团队阶段。可选：老 state.json 里没有这个字段，`load()` 一律
+   * `?? 'developing'` 兜底（同 metrics / learnings 的兼容约定），因此升级插件
+   * 不会把正在跑的团队冻住。
+   */
+  phase?: TeamPhase | undefined;
   branches: string[];
   members: MemberRecord[];
   tasks: TaskRecord[];

@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import type { SlotProps, Translator } from './contract.js';
 import type { AutopilotProjection, DeployView, EscalationView, LearningView, MemberView, TaskView, TeamView } from '../view.js';
-import { TASK_STATUSES } from '../view.js';
+import { DISPATCHABLE_PHASES, TASK_STATUSES } from '../view.js';
 
 function LoopLamp({ state, t }: { state: AutopilotProjection['loopState']; t: Translator }) {
   return (
@@ -161,6 +161,31 @@ function LearningList({ learnings, t }: { learnings: LearningView[]; t: Translat
   );
 }
 
+/**
+ * 当前卡住的任务（等人工分诊 / 等组长澄清 / 卡死 / 门红）。
+ *
+ * `projection.blocked` 一直有值，却从没被渲染过：面板只在升级流里显示"已升级"，
+ * 于是最常见的两种卡（依赖别人、阶段不派发）在界面上完全不可见。
+ * 这里存的是任务 id 或 contractId，两个键都试一次；都对不上就原样显示 ——
+ * 一条对不上号的记录也是信号，不该因为查不到标题就把它吞掉。
+ */
+function BlockedList({ ids, team, t }: { ids: string[]; team: TeamView; t: Translator }) {
+  if (ids.length === 0) return <span className="dsh-ai-team__empty">{t('blocked.empty')}</span>;
+  return (
+    <div className="dsh-ai-team__members">
+      {ids.map((id) => {
+        const task = team.tasks.find((candidate) => candidate.id === id || candidate.contractId === id);
+        return (
+          <span key={id} className="dsh-ai-team__member" title={task?.description ?? id}>
+            <span>{task?.title ?? id}</span>
+            {task !== undefined ? <span className="dsh-ai-team__role">{t(`status.${task.status}`)}</span> : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 /** 团队累计运行指标：一行计数 + 非零升级原因直方图（无人值守试点的观测面）。 */
 function MetricsList({ team, t }: { team: TeamView; t: Translator }) {
   const metrics = team.metrics;
@@ -188,7 +213,7 @@ function MetricsList({ team, t }: { team: TeamView; t: Translator }) {
   );
 }
 
-function TeamBody({ team, t }: { team: TeamView; t: Translator }) {
+function TeamBody({ team, blocked, t }: { team: TeamView; blocked: string[]; t: Translator }) {
   return (
     <>
       <section>
@@ -219,6 +244,10 @@ function TeamBody({ team, t }: { team: TeamView; t: Translator }) {
         </div>
       </section>
       <section>
+        <h4 className="dsh-ai-team__section-title">{t('section.blocked')}</h4>
+        <BlockedList ids={blocked} team={team} t={t} />
+      </section>
+      <section>
         <h4 className="dsh-ai-team__section-title">{t('section.learnings')}</h4>
         <LearningList learnings={team.learnings} t={t} />
       </section>
@@ -243,6 +272,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
   if (team === undefined) return null;
   const busy = team.members.filter((member) => member.status !== 'idle').length;
   const openTasks = team.tasks.filter((task) => task.status !== 'done').length;
+  const dispatchable = DISPATCHABLE_PHASES.includes(team.phase);
   return (
     <div className={open ? 'dsh-ai-team dsh-ai-team--open' : 'dsh-ai-team'}>
       <button
@@ -252,6 +282,13 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
         onClick={() => setOpen((value) => !value)}
       >
         <LoopLamp state={projection.loopState} t={t} />
+        {/* 不派发阶段用「等待」色：人对着一个不动的看板猜原因，是无人值守最贵的浪费。 */}
+        <span
+          className={dispatchable ? 'dsh-ai-team__role' : 'dsh-ai-team__badge dsh-ai-team__badge--pending'}
+          title={dispatchable ? undefined : t('phase.notDispatching')}
+        >
+          {t(`phase.${team.phase}`)}
+        </span>
         <span className="dsh-ai-team__title">{t('panel.title', { team: team.name })}</span>
         <span className="dsh-ai-team__summary">
           {t('panel.summary', {
@@ -265,7 +302,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       </button>
       {open ? (
         <div className="dsh-ai-team__body">
-          <TeamBody team={team} t={t} />
+          <TeamBody team={team} blocked={projection.blocked} t={t} />
           <section>
             <h4 className="dsh-ai-team__section-title">{t('section.escalations')}</h4>
             <EscalationFeed escalations={projection.escalations} t={t} />

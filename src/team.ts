@@ -62,24 +62,53 @@ function toStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
-/** 加载 <repoPath>/.tasks 里的每个任务契约（以 .md 结尾，排除 _board）。 */
-export async function loadTaskContracts(repoPath: string): Promise<TaskContract[]> {
+/** 一个被跳过而没有收养的契约文件：路径 + 失败原因。 */
+export interface RejectedContract {
+  path: string;
+  error: string;
+}
+
+export interface ContractLoadResult {
+  contracts: TaskContract[];
+  /**
+   * 解析失败、被逐个跳过的文件。**一个坏文件只该弄坏它自己**：早先这里让
+   * `parseTaskContract` 直接抛穿，调用方一律 `.catch(() => [])`，于是
+   * `.tasks/` 里少一个 frontmatter 就把整块看板清空 —— 全部任务从盘上"消失"，
+   * 而日志里什么都看不出来。
+   */
+  rejected: RejectedContract[];
+}
+
+/**
+ * 加载 `<repoPath>/.tasks` 里的每个任务契约（`.md`，排除 `_` 前缀）。
+ * 永不调用方抛错：目录不存在是正常的首次运行，逐文件失败则记进 `rejected`。
+ */
+export async function loadTaskContracts(repoPath: string): Promise<ContractLoadResult> {
   const dir = join(repoPath, '.tasks');
+  const rejected: RejectedContract[] = [];
   let entries: string[];
   try {
     entries = await readdir(dir);
-  } catch {
-    return [];
+  } catch (error) {
+    // 目录不存在 = 这个项目还没开始用契约，静默；其它读取失败必须出声。
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { contracts: [], rejected };
+    return { contracts: [], rejected: [{ path: dir, error: errorMessageOf(error) }] };
   }
   const contracts: TaskContract[] = [];
   for (const entry of entries) {
     if (!entry.endsWith('.md') || entry.startsWith('_')) continue;
     const path = join(dir, entry);
-    const content = await readFile(path, 'utf8');
-    contracts.push(parseTaskContract(path, content));
+    try {
+      const content = await readFile(path, 'utf8');
+      contracts.push(parseTaskContract(path, content));
+    } catch (error) {
+      rejected.push({ path, error: errorMessageOf(error) });
+    }
   }
-  return contracts.toSorted((a, b) => a.id.localeCompare(b.id));
+  return { contracts: contracts.toSorted((a, b) => a.id.localeCompare(b.id)), rejected };
 }
+
+const errorMessageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 interface FrontmatterPatch {
   status?: TaskStatus;

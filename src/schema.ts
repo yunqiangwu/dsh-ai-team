@@ -25,6 +25,7 @@ import {
   REVIEW_VERDICTS,
   ROLES,
   TASK_STATUSES,
+  TEAM_PHASES,
 } from './vocab.js';
 
 export const gateResultSchema = zod.object({
@@ -111,6 +112,9 @@ export const teamViewSchema = zod.object({
   name: zod.string(),
   repoPath: zod.string(),
   baseBranch: zod.string(),
+  // v6 才新增的字段：文档先行的团队阶段。旧 session 重放出的事件负载里没有这个
+  // 键，缺省补 'developing'（= 本字段出现之前的唯一行为），而不是抛错。
+  phase: zod.enum(TEAM_PHASES).default('developing'),
   branches: zod.array(zod.string()),
   members: zod.array(memberViewSchema),
   tasks: zod.array(taskViewSchema),

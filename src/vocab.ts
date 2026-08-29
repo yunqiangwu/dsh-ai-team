@@ -46,6 +46,29 @@ export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 export const LOOP_STATES = ['stopped', 'running', 'paused', 'escalated', 'completed'] as const;
 export type LoopState = (typeof LOOP_STATES)[number];
 
+/**
+ * 团队阶段：与 `loopState` 正交的维度 —— loopState 说"循环在不在转"，phase 说
+ * "转到哪一步了"（见 DESIGN-INTERACTION.md §2）。
+ *
+ * `dispatch` 只在 `developing` / `replanning` 下工作。这条门必须存在：否则组长刚
+ * 把 PRD 草稿写出来、人还没确认，契约就已经被派出去了。
+ *
+ * 默认值是 `developing`，不是 `intake` —— 存量团队与"init → 加成员 → run"的既有
+ * 用法必须一字不变地继续跑。"新团队从 intake 起步"是文档先行策略的一部分，随 M1
+ * 的流程工具与配置开关一起引入，不在这里悄悄改行为。
+ */
+export const TEAM_PHASES = [
+  'intake',
+  'kickoff_pending_approval',
+  'scaffolding',
+  'developing',
+  'replanning',
+] as const;
+export type TeamPhase = (typeof TEAM_PHASES)[number];
+
+/** 允许派发任务的阶段。其余阶段 dispatch 直接返回。 */
+export const DISPATCHABLE_PHASES: readonly TeamPhase[] = ['developing', 'replanning'];
+
 export const CI_STATUSES = ['pending', 'success', 'failure', 'unknown'] as const;
 export type CiStatus = (typeof CI_STATUSES)[number];
 
@@ -76,6 +99,12 @@ export const ESCALATION_REASONS = [
   'review-rounds-exceeded',
   /** 单个任务的改动体量超过 daemon.maxDiffLines / maxDiffFiles：该拆任务而不是放行。 */
   'change-too-large',
+  /**
+   * 前置依赖**永不可能**满足：引用了看板上不存在的 id，或前置停在 needs-human。
+   * 与"还没完成"是两回事 —— 后者正常等待，前者若不出声，下游会无限静默不派发，
+   * 既不报错也不升级，还永远凑不出"全部 done"的完成报告。
+   */
+  'blocked-dependency',
   'task-stuck',
   /** 单任务墙钟超过 daemon.maxTaskHours 仍未完成：活跃空转（区别于 task-stuck 的空闲），烧钱失控信号。 */
   'budget-exceeded',

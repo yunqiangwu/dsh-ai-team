@@ -89,8 +89,12 @@ import type {
   Role,
   TaskStatus,
   TaskView,
+  TeamPhase,
   TeamView,
 } from './view.js';
+// 阶段枚举经 view.ts 门面取自唯一词表（与 tools.ts 同一惯例）：手抄一份漏掉新值，
+// 编译器和测试都不响。
+import { DISPATCHABLE_PHASES } from './view.js';
 import type { AutopilotOptions } from './service/options.js';
 import {
   clip,
@@ -101,6 +105,7 @@ import {
   oneLine,
   shortId,
   TASKS_DIR,
+  teamPhase,
 } from './service/state.js';
 import type {
   MemberRecord,
@@ -143,6 +148,12 @@ const MAX_IDLE_BACKOFF_FACTOR = 4;
 export class AutopilotService {
   private teams = new Map<string, TeamRecord>();
   private listeners = new Set<() => void>();
+  /**
+   * 由插件层登记的「带外快照推送」回调（见 setSnapshotPublisher）。
+   * 放在这里而不是并入 listeners：listeners 每次状态变更都会响，而工具调用栈里
+   * 的变更已经由 publish() 顺带推过一遍了，重复推只是给 session 日志灌水。
+   */
+  private snapshotPublisher: (() => void) | undefined;
   private activeTeamId: string | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -155,6 +166,12 @@ export class AutopilotService {
   private notificationServer: TicketServer | null = null;
   private deploys: DeployView[] = [];
   private recoveredOnce = false;
+  /**
+   * 已经进过 `contract-rejected` 事件的坏契约路径。去重是必需的：坏文件每拍都会
+   * 被重新扫到，若每拍都塞一条事件，`report.events` 就永远非空，空闲退避
+   * （runLoop 里的 idleTicks）再也不会生效。
+   */
+  private readonly reportedRejectedContracts = new Set<string>();
   private abortController: AbortController | null = null;
   private loopPromise: Promise<void> | null = null;
 
@@ -280,6 +297,9 @@ export class AutopilotService {
     await this.applyHumanDecision(record, answer);
     record.notification.autoResumed = this.options.notification?.autoResume === true;
     this.changed();
+    // changed() 只管落盘与内部监听；快照事件要靠在插件层登记的发布器推出去，
+    // 否则这条答复要等到下一次工具调用才看得见。
+    this.snapshotPublisher?.();
     return { ok: true };
   }
 
@@ -398,6 +418,8 @@ export class AutopilotService {
     }
     await this.flush();
     this.listeners.clear();
+    // 卸载后 session 可能已经销毁，留着发布器等于留着一个会炸的句柄。
+    this.snapshotPublisher = undefined;
   }
 
   // ── 持久化 ────────────────────────────────────────────────────────────────
@@ -482,6 +504,18 @@ export class AutopilotService {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * 登记/取消「带外快照推送」回调。
+   *
+   * 存在的理由是有一类变更不在任何工具调用栈里：工单答卷由 TicketServer 的 HTTP
+   * 回调处理，那时没有 `exec`，也就没人往 session 追加 `autopilot/update` —— 人答完
+   * 问卷，面板要等到下一次工具调用才刷新。插件层（唯一看得见 session 的地方）在这里
+   * 登记回调，核心侧只认一个无参函数，不 import 任何 session 类型。
+   */
+  setSnapshotPublisher(publish: (() => void) | undefined): void {
+    this.snapshotPublisher = publish;
+  }
+
   private changed(teamId?: string): void {
     if (teamId !== undefined) this.activeTeamId = teamId;
     this.persist();
@@ -543,6 +577,7 @@ export class AutopilotService {
       name: team.name,
       repoPath: team.repoPath,
       baseBranch: team.baseBranch,
+      phase: teamPhase(team),
       branches: [...team.branches],
       members: team.members.map((member) => this.memberView(member)),
       tasks: team.tasks.map((task) => this.taskView(team, task)),
@@ -685,8 +720,9 @@ export class AutopilotService {
 
   /** 重新生成 .tasks/_board.md（best effort）。 */
   private async syncBoard(team: TeamRecord): Promise<void> {
-    const contracts = await loadTaskContracts(team.repoPath).catch(() => null);
-    if (contracts !== null) await regenerateBoard(team.repoPath, contracts).catch(() => {});
+    // loadTaskContracts 现在自己就不抛错（坏文件逐个进 rejected），这层壳不再需要。
+    const { contracts } = await loadTaskContracts(team.repoPath);
+    await regenerateBoard(team.repoPath, contracts).catch(() => {});
   }
 
   /**
@@ -861,6 +897,9 @@ export class AutopilotService {
       repoPath,
       workspaceRoot,
       baseBranch: this.options.baseBranch,
+      // 显式落盘而不是留给 ?? 兜底：state.json 里的 phase 应当是事实，
+      // 而不是"缺省所以没写"。新团队从 intake 起步属 M1 的流程策略。
+      phase: 'developing',
       branches: await listBranches(repoPath),
       members: [],
       tasks: [],
@@ -1020,7 +1059,7 @@ export class AutopilotService {
   }
 
   private async requireContract(team: TeamRecord, contractId: string): Promise<TaskContract> {
-    const contracts = await loadTaskContracts(team.repoPath);
+    const { contracts } = await loadTaskContracts(team.repoPath);
     const contract = contracts.find((candidate) => candidate.id === contractId);
     if (contract === undefined) {
       throw new Error(
@@ -1059,7 +1098,8 @@ export class AutopilotService {
     if (input.note !== undefined && input.note !== '' && task.contractId !== null) {
       // 必须先确认绑定了契约：无契约时 contractPathFor 会拼出一个不存在的路径，
       // 而 appendTaskNote 是"读失败当空文件再写"，会凭空造出一个没有 frontmatter
-      // 的 .md —— loadTaskContracts 解析它抛错、上层 catch 成空数组，看板整个清空。
+      // 的 .md —— 它会被 loadTaskContracts 判为坏文件跳过并升级告警（见 syncContracts），
+      // 但一个凭空多出来的契约文件仍然会污染看板和后续收养。
       const author = input.actorId === undefined ? 'human' : this.memberOf(team, input.actorId).name;
       const kind = heldForClarification ? 'clarify-answer' : 'note';
       await appendTaskNote(
@@ -1825,6 +1865,22 @@ export class AutopilotService {
     }
   }
 
+  /**
+   * 切换团队阶段（`autopilot_phase` 的后端）。
+   *
+   * 这是编排用的裸开关：任何阶段都能设，供人处置故障或组长推进流程。但它**不是**
+   * 文档升格的合法路径 —— 从 `kickoff_pending_approval` 往前走应当由 M1 的
+   * `doc_approve` 完成，那条路径带审批人记录与 `sha256` 比对（DESIGN-INTERACTION
+   * §4.2、§8-10）。用本工具绕过去等于把"人批过了"变成一句模型自己的话。
+   */
+  setPhase(input: { teamId: string; phase: TeamPhase }): TeamView {
+    const team = this.teamOf(input.teamId);
+    if (team.phase === input.phase) return this.teamView(team.id);
+    team.phase = input.phase;
+    this.changed(team.id);
+    return this.teamView(team.id);
+  }
+
   private sleepMs(): number {
     return this.options.tickSleepMs ?? this.options.daemon.pollIntervalSeconds * 1000;
   }
@@ -1894,8 +1950,14 @@ export class AutopilotService {
     for (const team of this.teams.values()) {
       if (signal?.aborted === true) break;
       // 契约只扫一遍，同时供分诊与派发使用：派发时要按最新的契约正文重建任务
-      // 描述（见 dispatch 内的说明）。
-      const contracts = await loadTaskContracts(team.repoPath).catch(() => [] as TaskContract[]);
+      // 描述（见 dispatch 内的说明）。坏文件只跳过它自己并进 events —— 以前这里
+      // `.catch(() => [])` 会把解析失败当成"一个契约都没有"，整块看板静默清空。
+      const { contracts, rejected } = await loadTaskContracts(team.repoPath);
+      for (const item of rejected) {
+        if (this.reportedRejectedContracts.has(item.path)) continue;
+        this.reportedRejectedContracts.add(item.path);
+        report.events.push(`contract-rejected:${item.path}`);
+      }
       await this.syncContracts(team, contracts, report);
       await this.dispatch(team, report, contracts, signal);
       await this.checkReviewRounds(team, report);
@@ -1970,8 +2032,14 @@ export class AutopilotService {
     contracts: TaskContract[],
     signal?: AbortSignal,
   ): Promise<void> {
-    const doneContracts = new Set(
-      team.tasks.filter((task) => task.status === 'done').map((task) => task.contractId ?? task.id),
+    // 阶段门（DESIGN-INTERACTION §2）：非开发阶段一律不派发。缺了这条，组长刚把
+    // PRD 草稿写进仓库、人还没确认，契约就已经被派出去了。
+    if (!DISPATCHABLE_PHASES.includes(teamPhase(team))) return;
+    // 依赖判定要区分"还没完成"与"永不可能完成"，所以要看到任务本身而不只是 done 集合。
+    // 键沿用 contractId ?? id（派发来的任务未必绑契约）；存记录而不是状态快照，是为了
+    // 让同一轮里刚被升级成 needs-human 的前置立刻对下游可见，级联不用等下一个 tick。
+    const tasksByKey = new Map<string, TaskRecord>(
+      team.tasks.map((task) => [task.contractId ?? task.id, task]),
     );
     const lockedTouches = team.tasks
       .filter((task) => task.status === 'in_progress' || task.status === 'in_review')
@@ -1981,7 +2049,12 @@ export class AutopilotService {
       if (task.status !== 'pending') continue;
       if (await this.escalateCrossDomain(task, report)) continue;
       if (await this.escalateForbiddenTouches(task, report)) continue;
-      if (!task.dependsOn.every((dep) => doneContracts.has(dep))) continue;
+      if (!task.dependsOn.every((dep) => tasksByKey.get(dep)?.status === 'done')) {
+        // 曾经这里是静默 `continue`：前置若是 needs-human 或根本不存在，下游会
+        // 无限不派发、不报错、也永远凑不出"全部 done"，于是循环在空转降频里一直转。
+        await this.escalateBlockedDependency(task, report, tasksByKey);
+        continue;
+      }
       if (task.touches.length > 0 && touchesOverlap(task.touches, lockedTouches)) continue;
       const developers = team.members.filter(
         (member) => member.role === 'developer' && member.status === 'idle' && member.currentTaskId === null,
@@ -2015,6 +2088,39 @@ export class AutopilotService {
       report.dispatched.push(task.id);
       report.events.push(`dispatched:${task.id}`);
     }
+  }
+
+  /**
+   * 前置**永不可能**满足时升级，区别于"还没完成"。
+   *
+   * 不可满足只有两种：看板上查无此 id（契约写错或前置被删），或前置停在
+   * `needs-human`（等人分诊，自己动不了）。`needs-clarification` 刻意不算 ——
+   * 那是 leader 答一句就解的中间态，按这条升级会把人叫来看一件机器能自己处理的事。
+   * 判定不出问题时安静返回，正常等待由后续 tick 继续。
+   */
+  private async escalateBlockedDependency(
+    task: TaskRecord,
+    report: TickReport,
+    tasksByKey: Map<string, TaskRecord>,
+  ): Promise<void> {
+    const blockers: string[] = [];
+    for (const dep of task.dependsOn) {
+      const depTask = tasksByKey.get(dep);
+      if (depTask === undefined) blockers.push(`${dep}（看板上不存在该任务/契约）`);
+      else if (depTask.status === 'needs-human') blockers.push(`${dep}（停在 needs-human）`);
+    }
+    if (blockers.length === 0) return;
+    report.escalated.push(task.id);
+    report.events.push(`blocked-dependency:${task.id}`);
+    await this.escalateTask({
+      taskId: task.id,
+      reason: 'blocked-dependency',
+      message:
+        `task "${task.title}" can never be dispatched: unsatisfiable dependency on ${blockers.join(', ')}; ` +
+        `it has been waiting while its blockers are not going to finish on their own`,
+      suggestion:
+        'triage the blocking task(s) first, then fix or drop the dependency in the contract and requeue this task with task_update',
+    });
   }
 
   /**

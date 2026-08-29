@@ -20,6 +20,8 @@ pnpm add dsh-ai-team
 
 在 dsh 配置里以插件方式加载（见下方配置示例），或在对话中直接调用工具即可跑通全流程。
 
+> 「模糊需求 → 澄清 → PRD → 规范 → 拆任务 → 最小框架 → 测试先行 → 并行开发」这条人机交互链路的设计与分期，见 [DESIGN-INTERACTION.md](DESIGN-INTERACTION.md)。
+
 ## 功能特性
 
 | 协作与工程模型 | 无人值守与交付闭环 |
@@ -29,6 +31,7 @@ pnpm add dsh-ai-team
 | 任务看板 + `task/<id>` 分支 | `.tasks/*.md` 任务契约集成（frontmatter 真相源 + `_board.md` 自动生成） |
 | `code_review` 审查门控，按画像策略合入 | **知识回路**：自动捕获评审打回与升级 → 注入后续任务描述 → `learnings.md` 台账（落 stateDir，不入库）；升格进项目文档由人裁决 |
 | **`task_clarify`**：契约含糊退回 leader，不消耗返工轮次 | 主循环：崩溃恢复、依赖/域锁派发、卡死检测、空转降频、完成报告 |
+| **团队阶段（phase）**：`intake → 文档待批准 → 脚手架 → 开发 ⇄ 重排`，非派发阶段不把任务交出去 | **依赖死锁**单列 `blocked-dependency`：只有前置不存在或已 needs-human 才判死，同一拍级联 |
 | session 事件 + 投影 + Web 看板 | 升级机制：`needs-human` 打标 + 任务单留言 + webhook 通知 + 粒度化暂停 |
 | — | 前置门：派发期 `touches ∩ forbidden` 自洽校验、评审期改动体量门（`maxDiffLines`/`maxDiffFiles`） |
 | — | 部署闭环：健康检查（指数退避）+ 自动回滚 + 部署历史（纯 `.tasks/` 提交不触发部署） |
@@ -194,14 +197,14 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 
 1. **恢复检查**：读 state.json + heartbeat 重建内存态；上次崩溃时仍 `in_progress` 的任务在首拍被报告进 `recovered`，**状态与接手者都不动**（抢回 pending 会把同一任务分支二次派给别人）—— 真正的收敛来自同拍的卡死检测：无新 git 活动即升级 `needs-human` 交人分诊。恢复的循环状态：持久化为 `running` 的一律降为 `paused`，等待 `autopilot_resume`。state.json 解析失败时先改名留存为 `state.json.corrupt-<时间戳>` 再空启动，不会静默覆盖掉唯一一份历史。
 2. **分诊挂起态**：`needs-human` 与 `needs-clarification` 都属"等人/等 leader 动一下"；人工把任务单状态改回 `pending`（或调用 `escalation_resolve`、leader 用 `task_update` 带 `note` 回答）→ 任务回到待派发，关联升级标记 resolved。
-3. **派发**：`depends_on` 全部 done 且 `status=pending` 的任务，先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
+3. **派发**：先看**团队阶段**——`intake`/`kickoff_pending_approval`/`scaffolding` 不派发（契约仍照采纳、门照跑，只是不把任务交出去），`developing`/`replanning` 才继续。然后 `depends_on` 全部 done 且 `status=pending` 的任务，先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
 4. **审查闸门**：reviewer 调 `code_review` approve 前必须 `gates_run` 全绿（`pushRequiresGates`）；有远端 CI 且 `requireCiGreen` 时 CI 必须绿，且必须真验证过（未 `pr_sync` 视为未验证 → 拒）；配了 `daemon.maxDiffLines`/`maxDiffFiles` 时改动体量超限也拒（升级 `change-too-large`）；合并前还要查分支相对 base 的 diff 是否触及禁区，命中即拒绝并升级 `needs-human`。都过了才按画像策略合入 base；合并冲突拒绝并保持 `in_review`。
 5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
 6. **卡死与预算**：任务 `stuckMinutes` 无 git 活动 → escalate（空闲失控）；派发后超过 `daemon.maxTaskHours`（默认关闭）仍未完成 → 升级 `budget-exceeded`（活跃空转）。插件看不见成员 agent 的 token 消耗，墙钟预算是唯一可靠的烧钱护栏。
 7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
 8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done → 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待升格清单**）并停机等待。
 
-**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
+**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 前置依赖永远等不到（`blocked-dependency`）/ 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
 
 ## 任务契约（.tasks/*.md）
 
@@ -225,6 +228,7 @@ Given/When/Then 验收标准……
 - `task_assign` 传 `contractId` 时校验任务单存在且状态为 `pending`，title/depends_on/touches 以任务单为准。
 - `forbidden` 不只是给人看的注释：派发期会拿它和 `touches` 求交（两个方向都算，`touches: [app/]` 命中 `forbidden: [app/server/]` 同样违规），违规立刻升级，而不是白跑一轮门和评审才被 CI 拦下。
 - 每次状态变更回写 frontmatter 并重新生成 `.tasks/_board.md`（自动生成，勿手改），改动以插件身份提交在 base 分支，保持集成检出干净。
+- **一个坏文件不拖垮整块看板**：契约是逐文件解析的，某个 `.md` frontmatter 写坏了只跳过它并上报一次 `contract-rejected`（同一文件不重复报，否则每拍都产生事件、空转降频永远生效不了），其余契约照常采纳。以前这里是一处 `throw`——模型手滑写坏一个文件，整块看板就会被静默清空。
 - **评审与澄清都留痕在任务单里**：`request_changes` 的意见、`task_clarify` 的提问、leader 的 `clarify-answer` 都以带时间戳的留言追加进正文 —— 换人接手或换场会话，接得上上下文。
 - `<stateDir>/learnings.md` 同为生成物（程序全量重写），见下节。
 - developer 的 DoD：质量门全绿 + 每条验收标准的验证证据写入 PR 描述。
@@ -262,13 +266,29 @@ Given/When/Then 验收标准……
 
 **团队与协作**：`team_create` / `team_add_member` / `team_list` / `team_status` / `team_branch` / `task_assign` / `task_update` / `task_clarify` / `code_review`。
 
-**无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_status` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run`。
+**无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_phase`（读/切团队阶段，见下）/ `autopilot_status` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run`。
 
 **知识回路**：`learning_record`（记一条坑） / `learning_list`（查台账与待升格清单） / `learning_promote`（人落文档后标记，或否掉一条）。
 
+### 团队阶段（phase）与依赖死锁
+
+`autopilot_phase` 不带 `phase` 参数时读当前阶段，带参数时切换。阶段是与运行状态灯**正交**的另一维度，表示团队走到流程的哪一步：
+
+| phase | 含义 | 是否派发任务 |
+| --- | --- | --- |
+| `intake` | 正在问需求、写文档，还没开工 | 否 |
+| `kickoff_pending_approval` | 文档等人确认 | 否 |
+| `scaffolding` | 搭最小可跑框架 | 否 |
+| `developing` | 正常开发（**默认值**） | 是 |
+| `replanning` | 需求变更中，重排任务 | 是 |
+
+非派发阶段下，循环照跑、`.tasks/*.md` 契约照采纳进看板、质量门照跑，只有「把 pending 任务交到开发者手上」这一步被关掉——所以文档没定稿之前，契约先写出来是安全的。新建团队与旧状态文件都默认 `developing`，升级插件不会悄悄改变既有团队的行为。
+
+依赖死锁单独成类：`depends_on` 指向的契约**看板上不存在**（写错 id）或**已经 needs-human**，这条任务永远等不到，就按 `blocked-dependency` 升级并列出挡路的任务；只有「前置还没做完」才是正常等待，留在 `pending` 不动。同一拍内级联（A 判死 → 依赖 A 的 B 也判死），人修一处即可。面板的**卡住的任务**小节会直接显示这几个 id，不用人去猜看板为什么不动。
+
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）、七列看板（含 needs-human 与 needs-clarification）、质量门徽标与 CI 徽标、升级事件流、部署历史、**已知教训**（按被印证次数排序，含已升格标记）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色）、七列看板（含 needs-human 与 needs-clarification）、质量门徽标与 CI 徽标、升级事件流、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
 
 另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片（`settings.plugin.item` 键控命名空间）。它绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段（`remote.url`、`baseBranch`、`bootstrap.enabled`、`gates.commands`、`daemon.maxReviewRounds`/`stuckMinutes`/`maxDiffLines`、`learnings.enabled`）供编辑保存，写入用户设置层；服务端通过 `installSettingsSection` 让插件读到生效配置（无设置服务时回退到 entry config）。因命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
 
