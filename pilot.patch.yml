@@ -1,5 +1,10 @@
-# L0 试点首跑配置（dogfood：目标仓库 = 本仓库）。
+# L0 试点首跑配置（目标仓库 = 私有 Gitea + act-runner）。
 # 字段语义见 README「配置」；操作顺序见 PILOT.md。密钥一律环境变量名，值绝不写进本文件。
+#
+# 平台事实（service.ts:1560）：PR 创建与 CI 状态查询只实现了 github；
+# Gitea 用 generic → pr_sync 退化为纯推送、看板无 PR/CI 徽标，审查靠本地门 + reviewer。
+# act-runner 照常跑 CI，但插件看不见红绿 —— 所以 requireCiGreen 必须为 false，
+# 否则「从未验证视为未通过」会永久阻塞 approve。
 - insert:
     - id: autopilot
       name: dsh-ai-team
@@ -7,15 +12,16 @@
         rootDir: .dsh-ai-team
         baseBranch: main
         remote:
-          url: git@github.com:yunqiangwu/dsh-ai-team.git
-          sshKeyEnv: AUTOPILOT_GIT_KEY
-          platform: github
-          apiTokenEnv: GITHUB_TOKEN
+          # Gitea SSH 地址。非 22 端口必须写全 ssh:// 形式（短形式带不了端口），按需改：
+          #   ssh://git@git.example.local:2222/owner/repo.git
+          url: ssh://git@git.example.local/owner/repo.git
+          sshKeyEnv: AUTOPILOT_GIT_KEY   # Gitea 仓库设置 → 部署密钥，勾选「可写」
+          platform: generic              # 无 gitea 选项；generic = 纯 git 语义，最诚实
         bootstrap:
-          enabled: false            # 本仓库没有 setup/e2e:local 脚本；首跑跳过引导
+          enabled: false            # 目标仓库没有 setup/verify 脚本时保持关闭
         gates:
           commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
-          requireCiGreen: true
+          requireCiGreen: false     # 非 github 平台必须显式关（见文件头说明）
           timeoutMinutes: 30
         daemon:
           maxReviewRounds: 3
@@ -32,6 +38,8 @@
           enabled: false            # 首跑不部署；部署在 L2 通过后单独验证
         security:
           forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']
+          # Gitea Actions 的 workflow 请放 .gitea/workflows/（不在禁区）；
+          # 默认禁区含 .github/，AI 团队碰不了放那里的 workflow。
           commandAllowlist: [pnpm]  # gates 只跑 pnpm 脚本 → 白名单收到最小；勿放 sh/node/docker
           pushRequiresGates: true
         learnings:

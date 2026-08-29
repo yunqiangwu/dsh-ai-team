@@ -24,7 +24,10 @@
 ## 1. 前置清单
 
 - [ ] Linux VPS 一台，Node ≥ 22.19，插件跑在**普通用户**下（bootstrap 走 rootless 安装）。
-- [ ] 目标仓库首选 **GitHub 私有仓**：CI 状态只有 github 平台查得到；cnb/gitlab/generic 无 CI 门，`requireCiGreen` 必须显式置 false（否则它只在 github 上保护你）。
+- [ ] 平台能力先对齐预期：**PR 创建与 CI 状态查询只实现了 github**（其它平台 `pr_sync` 退化为纯推送、看板无 PR/CI 徽标）。
+  - GitHub 私有仓：`platform: github` + `requireCiGreen: true`，全功能。
+  - 私有 Gitea（+ act-runner）：`platform: generic`，`requireCiGreen` 必须**显式置 false**——插件查不到 Gitea 的 CI，留着它会让「从未验证视为未通过」永久阻塞 approve。act-runner 照常跑 CI，只是红绿不作为插件门；workflow 放 `.gitea/workflows/`（默认禁区含 `.github/`，放那里的 workflow AI 团队碰不了）。SSH 非 22 端口时 `remote.url` 写全 `ssh://git@host:PORT/owner/repo.git`。
+  - cnb/gitlab 同属 generic 语义。
 - [ ] 目标仓库的 human-only 区（默认 `.github/`、`AGENTS.md`、`LICENSE`）已确认不需要 AI 团队动；契约 `touches` 不要写进去。
 
 **密钥与环境变量**——全部只配环境变量名，值绝不进任何 yml。注意区分两类 env：下面的表是 **dsh 进程本身**的环境变量（systemd `EnvironmentFile=` 或等效私有 env 文件注入）；`bootstrap.envFile` 是给**目标仓库应用**生成 .env，两回事。
