@@ -177,7 +177,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 ## 测试约定
 
 - `tests/test-integration.ts` 全流程生命周期（clone → 派发 → 门 → 审查 → 合并 → push → 部署）。
-- `tests/test-unattended.ts` 循环分支（崩溃恢复、依赖/域锁、卡死、返工上限、完成报告）+ 安全硬规则。
+- `tests/test-unattended.ts` 循环分支（崩溃恢复、依赖/域锁、卡死、返工上限、完成报告、重规划）+ 安全硬规则。
 - `tests/test-notification.ts` 真 mock SMTP（net）+ 真工单端口，验证通知闭环。⚠️ 其中一条顺带是**凭据不漏进视图**的守门人：投影里的 `ticketUrl` 必须无 `?t=`，token 只活在 `state.json` 的旁路表 `ticketTokens` 里。
 - `tests/test-profile.ts` / `test-bootstrap.ts` / `test-cache.ts` / `test-learnings.ts` 各适配层与纯逻辑模块。
 - `tests/test-exec.ts` **shell runner 的行为锁定**：超时折算成 exitCode 1、只有 abort 才 reject、`CI=true`、日志尾保留最后 4000 字符。改 `exec.ts` 时这组必须一条不改地通过，才是「纯搬家没改行为」。
