@@ -52,15 +52,19 @@
             fromEnv: AUTOPILOT_SMTP_FROM      # optional; defaults to user
           mailTo: ops@example.com
           ticket:
-            # 工单端点没有任何鉴权：谁能访问它，谁就能替你做「人工确认」这个决定。
-            # 默认只监听回环，需要从别处打开时走 SSH 隧道（ssh -L 8080:127.0.0.1:8080 …），
-            # 确认已在反向代理后面加了鉴权，才改成 0.0.0.0。
+            # 这个端口只服务邮件里的链接：读写都必须带 ?t=<token>（每张工单单独铸造，
+            # 只出现在发给你的那份文案里，不进投影、不进日志）。未知 id 与凭据不对返回
+            # **逐字节相同**的 404，所以工单号枚举不出来。
+            # 非回环地址是**直接拒绝启动**，不是"反代加好鉴权就改成 0.0.0.0"的事：
+            # 远程访问请走 SSH 隧道（`ssh -L 8080:127.0.0.1:<webPort>` 打通宿主 web
+            # 端口就够了 —— 面板和 /autopilot/ticket 同源路由一起能用）。
             host: 127.0.0.1            # bind host for the local ticket endpoint
             port: 8080                 # 0 = ephemeral port
+            # 两重语义：邮件里展示的工单根地址 + 它的 authority 被登记为面板那条同源
+            # 路由（/autopilot/ticket）的可信 Host。反代换了域名就必须配它。
             publicBaseUrl: http://server.example.com   # used to build the ticket URL in email
           # 开启后，工单被答复即清除升级并把任务退回 pending、恢复无人值守循环。
-          # 与可被外部访问的 ticket 端点组合起来 = 任何人都能放行升级。
-          # 只有在端点确认受保护之后才建议打开。
+          # 答复 = 替 AI 团队做决策：默认关着，先确认带 token 的那条链接只在你手里。
           autoResume: false            # answer → write back + auto-clear escalation
         deploy:
           enabled: false

@@ -3,11 +3,16 @@
  * 内容包括循环状态指示灯、成员名单、带质量门徽章的任务看板、升级事件流
  * 和部署历史。projection 席位是响应式的：每次 `autopilot/update` 会话事件
  * 都会实时重绘面板。
+ *
+ * 面板也是**作答入口**（M2 / INT-3）：待答问卷与未 resolve 的升级各自带一张内联
+ * 表单，提交走同源相对路径 `<TICKET_ROUTE_PREFIX>/<id>/answer`，凭据是宿主那套
+ * 同源围栏 —— 所以投影里那条 `ticketUrl` 不需要（也不允许）带访问凭据。
  */
 import { useState } from 'react';
 import type { SlotProps, Translator } from './contract.js';
 import type { AutopilotProjection, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
-import { DISPATCHABLE_PHASES, TASK_STATUSES } from '../view.js';
+import { DISPATCHABLE_PHASES, TASK_STATUSES, TICKET_ROUTE_PREFIX } from '../view.js';
+import { escalationFields, fieldsOfQuestions, normalizeOption, type TicketField } from '../formmodel.js';
 
 function LoopLamp({ state, t }: { state: AutopilotProjection['loopState']; t: Translator }) {
   return (
@@ -77,11 +82,206 @@ function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: Questionnai
   );
 }
 
+// ── 面板内作答（M2 / INT-3）───────────────────────────────────────────────────
+
+type AnswerValues = Record<string, string | string[]>;
+
+interface SubmitResult {
+  ok: boolean;
+  message?: string;
+  missing?: string[];
+  /** 诊断线索（HTTP 状态、网络异常），只进 title，不当成人话文案。 */
+  detail?: string;
+}
+
+/**
+ * 把答卷发去同源工单路由。**从不抛**：网络层失败与服务端 4xx 汇成同一个形状，
+ * 调用处只管「保留已填内容 + 说清缺什么」（INT-3 场景一）。
+ */
+async function postAnswer(ticketId: string, answers: AnswerValues): Promise<SubmitResult> {
+  try {
+    const response = await fetch(`${TICKET_ROUTE_PREFIX}/${encodeURIComponent(ticketId)}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answers }),
+    });
+    const payload = (await response.json().catch(() => null)) as SubmitResult | null;
+    // 被拒的请求（无凭据、未知 id）走的是纯文本 404，没有可解析的答复体。
+    if (payload !== null && typeof payload.ok === 'boolean') return payload;
+    return { ok: false, detail: `HTTP ${String(response.status)}` };
+  } catch {
+    return { ok: false, detail: 'network' };
+  }
+}
+
+/**
+ * 预勾选项即默认答案：人不改就是接受推荐方案。服务端工单页也预勾同样的东西
+ * （`fieldsOfQuestions`），两张表单必须给出同一个默认值，否则同一组问题会因
+ * 为答题的那张卡片不同而得出不同答案。
+ */
+function initialValues(fields: TicketField[]): AnswerValues {
+  const out: AnswerValues = {};
+  for (const field of fields) {
+    const checked = (field.options ?? []).map(normalizeOption).filter((option) => option.checked === true);
+    if (field.type === 'multiselect') out[field.name] = checked.map((option) => option.value);
+    else out[field.name] = checked.length === 0 ? '' : checked[0]!.value;
+  }
+  return out;
+}
+
+function AnswerField({
+  field,
+  value,
+  disabled,
+  onChange,
+  t,
+}: {
+  field: TicketField;
+  value: string | string[] | undefined;
+  disabled: boolean;
+  onChange: (next: string | string[]) => void;
+  t: Translator;
+}) {
+  const options = (field.options ?? []).map(normalizeOption);
+  const placeholder = field.placeholder ?? '';
+
+  if (field.type === 'multiselect' && options.length > 0) {
+    const picked = Array.isArray(value) ? value : [];
+    return (
+      <div className="dsh-ai-team__field">
+        <span className="dsh-ai-team__field-label">{field.label}</span>
+        <span className="dsh-ai-team__choices">
+          {options.map((option) => (
+            <label key={option.value} className="dsh-ai-team__choice" title={option.impact}>
+              <input
+                type="checkbox"
+                disabled={disabled}
+                checked={picked.includes(option.value)}
+                onChange={(event) =>
+                  onChange(
+                    event.target.checked
+                      ? [...picked, option.value]
+                      : picked.filter((item) => item !== option.value),
+                  )
+                }
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </span>
+      </div>
+    );
+  }
+  if (options.length > 0) {
+    const current = typeof value === 'string' ? value : '';
+    // 没有预勾选项时补一个空的「请选择」：否则 required 形同虚设，闭着眼睛就交了第一项。
+    const needsBlank = current === '' && !options.some((option) => option.value === '');
+    return (
+      <label className="dsh-ai-team__field">
+        <span className="dsh-ai-team__field-label">{field.label}</span>
+        <select
+          className="dsh-ai-team__config-input"
+          disabled={disabled}
+          value={current}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          {needsBlank ? <option value="">{placeholder === '' ? t('questionnaire.choose') : placeholder}</option> : null}
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.impact === undefined || option.impact === '' ? option.label : `${option.label} — ${option.impact}`}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+  const text = typeof value === 'string' ? value : '';
+  return (
+    <label className="dsh-ai-team__field">
+      <span className="dsh-ai-team__field-label">
+        {field.label}
+        {field.required !== true ? <em className="dsh-ai-team__field-optional">{t('questionnaire.optional')}</em> : null}
+      </span>
+      {field.type === 'textarea' ? (
+        <textarea
+          className="dsh-ai-team__config-input dsh-ai-team__config-area"
+          rows={3}
+          disabled={disabled}
+          value={text}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      ) : (
+        <input
+          className="dsh-ai-team__config-input"
+          type={field.type === 'password' ? 'password' : 'text'}
+          disabled={disabled}
+          value={text}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+    </label>
+  );
+}
+
+/**
+ * 一张工单的作答表单。升级分诊与问卷共用它 —— 两者在服务端本来就汇成同一个入口
+ * （`submitTicketAnswer`），界面上也没有理由长成两样。
+ *
+ * 重播种靠**父级 `key={ticketId}`**，不用 `useEffect`：投影每个 tick 都是新对象，
+ * 按字段内容做依赖会把人正在打的字冲掉。
+ */
+function AnswerForm({ ticketId, fields, t }: { ticketId: string; fields: TicketField[]; t: Translator }) {
+  const [values, setValues] = useState<AnswerValues>(() => initialValues(fields));
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<SubmitResult | null>(null);
+  // 一个往返只允许一次提交：翻转靠服务端推回来的快照，不靠这里改状态。
+  const busy = pending;
+
+  async function submit() {
+    setPending(true);
+    setResult(null);
+    setResult(await postAnswer(ticketId, values));
+    setPending(false);
+  }
+
+  const missing = result?.missing ?? [];
+  return (
+    <div className="dsh-ai-team__form">
+      {fields.map((field) => (
+        <AnswerField
+          key={field.name}
+          field={field}
+          value={values[field.name]}
+          disabled={busy}
+          onChange={(next) => setValues((previous) => ({ ...previous, [field.name]: next }))}
+          t={t}
+        />
+      ))}
+      {result !== null && !result.ok ? (
+        <p className="dsh-ai-team__form-error" role="alert" title={result.detail}>
+          {result.message ?? t('questionnaire.failed')}
+          {missing.length > 0 ? <>{t('questionnaire.missing', { missing: missing.join('、') })}</> : null}
+        </p>
+      ) : null}
+      {/* 成功不在这里就地改状态：卡片转成「已答复」靠的是那份回推的快照，
+          乐观更新会在答复其实被拒时留下一张已经消失的卡片。 */}
+      {result !== null && result.ok ? <p className="dsh-ai-team__form-ok">{t('questionnaire.submitted')}</p> : null}
+      <div className="dsh-ai-team__form-row">
+        <button type="button" disabled={busy || fields.length === 0} onClick={() => void submit()}>
+          {pending ? t('questionnaire.submitting') : t('questionnaire.submit')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function EscalationFeed({ escalations, t }: { escalations: EscalationView[]; t: Translator }) {
   if (escalations.length === 0) return <span className="dsh-ai-team__empty">{t('escalations.empty')}</span>;
   const recent = escalations.toReversed().slice(0, 20);
   return (
-    <div className="dsh-ai-team__feed">
+    <div className="dsh-ai-team__feed dsh-ai-team__feed--with-form">
       {recent.map((escalation) => {
         const notify = escalation.notification;
         const notifyStatus = notify === null ? 'disabled' : notify.status;
@@ -102,15 +302,15 @@ function EscalationFeed({ escalations, t }: { escalations: EscalationView[]; t: 
                 <span className={`dsh-ai-team__badge dsh-ai-team__badge--${notifyStatus}`}>
                   {t(`notify.${notifyStatus}`)}
                 </span>
-                {notify.ticketUrl !== null ? (
-                  <a href={notify.ticketUrl} target="_blank" rel="noreferrer">
-                    {t('notify.ticket')}
-                  </a>
-                ) : null}
                 {notify.submittedAt !== null ? (
                   <span className="dsh-ai-team__feed-check">{t('notify.submitted')}</span>
                 ) : null}
               </span>
+            ) : null}
+            {/* 投影里的 ticketUrl 刻意不带凭据，独立端口无 token 一律 404 ——
+                所以这里不再放链接，直接把分诊表单内联进来（同源路由作答）。 */}
+            {escalation.resolvedAt === null ? (
+              <AnswerForm ticketId={escalation.id} fields={escalationFields()} t={t} />
             ) : null}
           </div>
         );
@@ -120,37 +320,55 @@ function EscalationFeed({ escalations, t }: { escalations: EscalationView[]; t: 
 }
 
 /**
- * 问卷流水（只读）。M1 的作答入口是浏览器里的工单页，不是这张面板 ——
- * 面板只负责让人一眼看出「现在轮到谁了」，尤其要区分异步问卷答完之后
- * 那段时间：那时球在组长脚下，而插件唤不醒它。
+ * 「等你决策」区块：待答问卷就地作答。
+ *
+ * 它和升级流分成两块是 INT-3 场景三的全部内容 —— 一张待答问卷没有任何东西坏掉
+ * （异步那张答完还得有人说一声「继续」），而红底告警会把人推向「去查故障」的动作。
+ */
+function AwaitingList({ items, t }: { items: QuestionnaireView[]; t: Translator }) {
+  if (items.length === 0) return <span className="dsh-ai-team__empty">{t('awaiting.empty')}</span>;
+  return (
+    <div className="dsh-ai-team__awaiting-list">
+      {items.toReversed().map((item) => (
+        <div key={item.id} className="dsh-ai-team__awaiting">
+          <div className="dsh-ai-team__awaiting-head">
+            <span className="dsh-ai-team__badge">{t(`questionnaire.kind.${item.kind}`)}</span>
+            <span className="dsh-ai-team__card-title">{item.title}</span>
+          </div>
+          {/* 模式要说得出：interactive 是「这一轮卡住了」，async 是「答完记得回会话里说继续」。 */}
+          <p className="dsh-ai-team__awaiting-hint">{t(`questionnaire.mode.${item.mode}`)}</p>
+          <AnswerForm ticketId={item.id} fields={fieldsOfQuestions(item.questions)} t={t} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 问卷历史（已答 / 已过期 / 已取消，只读）。待答的那些住在上面那个区块里，因为
+ * 它们现在能直接作答 —— 混在一起等于把输入框塞进一条滚动流水里。
+ *
+ * 异步问卷答完之后没人接着跑的那段时间最容易看漏，所以它单独一句话。
  */
 function QuestionnaireFeed({ items, t }: { items: QuestionnaireView[]; t: Translator }) {
-  if (items.length === 0) return <span className="dsh-ai-team__empty">{t('questionnaires.empty')}</span>;
-  const recent = items.toReversed().slice(0, 10);
+  const history = items.filter((item) => item.status !== 'open').toReversed().slice(0, 10);
+  if (history.length === 0) return <span className="dsh-ai-team__empty">{t('questionnaires.empty')}</span>;
   return (
     <div className="dsh-ai-team__feed">
-      {recent.map((item) => {
-        const waiting = item.status === 'open';
-        const badge = waiting ? 'pending' : item.status === 'answered' ? 'pass' : 'fail';
-        // 异步问卷答完之后没人接着跑，是最容易看漏的一段：单独给一句话。
+      {history.map((item) => {
+        const badge = item.status === 'answered' ? 'pass' : 'fail';
         const label =
           item.status === 'answered' && item.mode === 'async'
             ? t('questionnaire.awaitingLeader')
             : t(`questionnaire.${item.status}`);
+        const answers = item.questions
+          .map((question) => `${question.label} = ${item.answers[question.name]?.value ?? '-'}`)
+          .join('\n');
         return (
-          <div
-            key={item.id}
-            className={waiting ? 'dsh-ai-team__feed-item' : 'dsh-ai-team__feed-item dsh-ai-team__feed-item--resolved'}
-            title={`${item.questions.map((question) => question.label).join('\n')}\n${t(`questionnaire.mode.${item.mode}`)}`}
-          >
+          <div key={item.id} className="dsh-ai-team__feed-item dsh-ai-team__feed-item--resolved" title={answers}>
             <span className="dsh-ai-team__feed-reason">{t(`questionnaire.kind.${item.kind}`)}</span>
             <span>{item.title}</span>
             <span className={`dsh-ai-team__badge dsh-ai-team__badge--${badge}`}>{label}</span>
-            {item.ticketUrl !== null ? (
-              <a href={item.ticketUrl} target="_blank" rel="noreferrer">
-                {t('notify.ticket')}
-              </a>
-            ) : null}
           </div>
         );
       })}
@@ -298,13 +516,19 @@ function TeamBody({ team, blocked, questionnaires, t }: { team: TeamView; blocke
           })}
         </div>
       </section>
+      {/* 排在卡住与告警之前：无人值守时面板的第一问是「现在轮到谁」，
+          而"轮到我"和"坏了"是两件事，答案不该由颜色决定。 */}
       <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.questionnaires')}</h4>
-        <QuestionnaireFeed items={questionnaires} t={t} />
+        <h4 className="dsh-ai-team__section-title">{t('section.awaiting')}</h4>
+        <AwaitingList items={questionnaires.filter((item) => item.status === 'open')} t={t} />
       </section>
       <section>
         <h4 className="dsh-ai-team__section-title">{t('section.blocked')}</h4>
         <BlockedList ids={blocked} team={team} t={t} />
+      </section>
+      <section>
+        <h4 className="dsh-ai-team__section-title">{t('section.questionnaires')}</h4>
+        <QuestionnaireFeed items={questionnaires} t={t} />
       </section>
       <section>
         <h4 className="dsh-ai-team__section-title">{t('section.learnings')}</h4>
@@ -332,6 +556,8 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
   const busy = team.members.filter((member) => member.status !== 'idle').length;
   const openTasks = team.tasks.filter((task) => task.status !== 'done').length;
   const dispatchable = DISPATCHABLE_PHASES.includes(team.phase);
+  const questionnaires = projection.questionnaires.filter((item) => item.teamId === team.id);
+  const awaiting = questionnaires.filter((item) => item.status === 'open').length;
   return (
     <div className={open ? 'dsh-ai-team dsh-ai-team--open' : 'dsh-ai-team'}>
       <button
@@ -348,6 +574,12 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
         >
           {t(`phase.${team.phase}`)}
         </span>
+        {/* 折叠时只剩这一行，所以「轮到你」必须在收起状态也看得见。 */}
+        {awaiting > 0 ? (
+          <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting" title={t('awaiting.hint')}>
+            {t('awaiting.count', { count: awaiting })}
+          </span>
+        ) : null}
         <span className="dsh-ai-team__title">{t('panel.title', { team: team.name })}</span>
         <span className="dsh-ai-team__summary">
           {t('panel.summary', {
@@ -361,12 +593,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       </button>
       {open ? (
         <div className="dsh-ai-team__body">
-          <TeamBody
-            team={team}
-            blocked={projection.blocked}
-            questionnaires={projection.questionnaires.filter((item) => item.teamId === team.id)}
-            t={t}
-          />
+          <TeamBody team={team} blocked={projection.blocked} questionnaires={questionnaires} t={t} />
           <section>
             <h4 className="dsh-ai-team__section-title">{t('section.escalations')}</h4>
             <EscalationFeed escalations={projection.escalations} t={t} />

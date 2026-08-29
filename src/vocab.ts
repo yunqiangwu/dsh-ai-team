@@ -99,6 +99,15 @@ export type QuestionnaireMode = (typeof QUESTIONNAIRE_MODES)[number];
 export const QUESTION_TYPES = ['select', 'multiselect', 'text', 'textarea'] as const;
 export type QuestionType = (typeof QUESTION_TYPES)[number];
 
+/**
+ * 多选答案的序列化分隔符：选项值本身不允许含它（创建时校验）。
+ *
+ * 住在这里而不是 `questionnaire.ts`，是因为 M2 之后两端都要用它 —— 面板把复选框组
+ * 发成字符串数组、工单端点把它序列化成同一个形状。而 `questionnaire.ts` 导入了
+ * `node:crypto`，浏览器产物碰不得；词表是两端唯一都能安全 import 的模块。
+ */
+export const MULTI_VALUE_SEP = ', ';
+
 /** 答案从哪儿来。`ticket` = 工单页 POST；`tool` = 会话里人直接调 answer_questionnaire。 */
 export const ANSWER_SOURCES = ['ticket', 'tool'] as const;
 export type AnswerSource = (typeof ANSWER_SOURCES)[number];
@@ -176,3 +185,12 @@ export const LEARNING_BUCKETS = [
   'other',
 ] as const;
 export type LearningBucket = (typeof LEARNING_BUCKETS)[number];
+
+/**
+ * 面板内作答用的工单路由前缀，挂在宿主 `ctx.webServer` 上（同源，见
+ * docs/design-interaction.md §7.1）。服务端注册路由与客户端 `fetch` 必须是同一个
+ * 字符串，而这个前缀住在 `src/` 根、两端都会 import 它 —— 词表是本仓库唯一
+ * 既零依赖又浏览器安全的模块（`view.ts` 整体 re-export，客户端产物因此带上它，
+ * 但绝不会带上 node）。写死两份必然漂移，漂一次的后果是面板按钮静默 404。
+ */
+export const TICKET_ROUTE_PREFIX = '/autopilot/ticket';

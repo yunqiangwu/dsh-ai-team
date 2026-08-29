@@ -131,5 +131,8 @@ describe('smoke: cordis Loader contract', () => {
     // 词表是运行时需要，必须确实在产物里（否则面板的枚举渲染会静默空掉）
     expect(bundle).toContain('needs-clarification');
     expect(bundle).toContain('rollback-failed');
+    // 面板作答靠这个同源前缀发请求：它定义在 vocab.ts，服务端与客户端共用。
+    // 常量没带出来，面板就会往 `undefined/<id>/answer` 提交。
+    expect(bundle).toContain('/autopilot/ticket');
   });
 });

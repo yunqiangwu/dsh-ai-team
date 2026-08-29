@@ -1,9 +1,9 @@
 # 设计文档：需求采集 → 文档先行 → 并行开发 → 重规划
 
-> 状态：**M0 / M1 已实施，M2 / M3 仍是提案**（2026-08-29）。M0 = `.tasks/INT-1.md`、M1 = `INT-2.md` 已落代码，`stateVersion` 随之 5 → 7；其余章节仍是待实施的规格真相源。
+> 状态：**M0 / M1 / M2 已实施，M3 仍是提案**（2026-08-29）。M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md` 已落代码，`stateVersion` 随之 5 → 7（M2 只加内部记录字段，没动视图，所以仍是 7）；M3 章节仍是待实施的规格真相源。
 > 两处与 §3 / §9 的口径不同，已知且有意：
 > ① **`_board.md` 没有「等人回答」列**（§3.1 场景一原本要求"看板与面板都显示"）。看板由 `team.ts` 从 `.tasks/*.md` 单向生成且要求字节稳定，把只活在 `state.json` 里的问卷状态混进去，等于给它第二个真相源；等待信息已由面板与 `autopilot_status` 的 `awaitingHuman` 覆盖。
-> ② **问卷投递的 webhook 与 `EscalationManager.deliverWebhook` 是两份实现**。INT-2 明令 `escalate` 一字不改，所以没有顺手合并；等 M2 再抽公共投递层。
+> ② **问卷投递的 webhook 与 `EscalationManager.deliverWebhook` 仍是两份实现**。M2 抽出了共用的工单 HTTP 层（`src/ticket-handler.ts`），但 webhook 投递没顺手合并——它不在 INT-2/INT-3 的字面要求里，且两份的文案与凭据语义已经分叉（推送的是带 token 的那份链接）。
 > 配置字段语义仍以 [../README.md](../README.md) 为准，试点操作仍以 [../PILOT.md](../PILOT.md) 为准。
 > 行号引用基于 `1.0.3`，实施时会漂移，只作为定位辅助。
 
@@ -240,19 +240,22 @@ approvedAt: null
 
 ## 7. 客户端交互通道
 
-`SlotProps` 现状只有 `{ sessionId?, useProjection, t }`（`src/client/contract.ts:13-18`）——**面板发不出任何东西**。三个候选：
+`SlotProps` 现状只有 `{ sessionId?, useProjection, t }`（`src/client/contract.ts:13-18`）——**面板发不出任何东西**（M2 之前的现状；本表下方的方案已落地，注意它**没有**靠给宿主契约加 prop 来解决，面板用 `fetch` 打同源相对路径）。三个候选：
 
 | 方案 | 评估 |
 | --- | --- |
-| 复用插件自己的工单 HTTP 服务，面板 `fetch POST` | **选它**。改动全在自己手里，服务端已有表单渲染与回写闭环，只需补 §7.1 三项 |
+| **同源挂在宿主 `webServer` 上，面板 `fetch` 相对路径**（M2 选它） | 一份 `TicketHandler` 两个挂载点：独立端口只服务邮件链接，宿主路由服务面板。改动全在自己手里，服务端已有的表单渲染与回写闭环复用一份 |
 | `ctx.approval`（`@deepseek-ai/dsh-user-approval`） | 只能表达 `allowed-once/rejected/cancelled`，**不携带工具参数**，且要求"属于一个尚未结束的 agent 轮次"。可用于 `doc_approve` 的 yes/no，装不下问卷 |
 | 借 `settingsScope` 写入再由服务端监听 | 语义误用，否决 |
 
-### 7.1 选定的方案要补的三件事
+### 7.1 选定方案要补的三件事（M2 已落地）
 
-1. **CORS**：面板与工单服务不同源（不同端口），需要带白名单的 `OPTIONS` 预检与 `Access-Control-Allow-Origin`。dsh web 走 HTTPS 时还有混合内容问题——工单服务需支持同源反代路径。
-2. **URL 带 token**：工单端点现状**完全无鉴权**（README 已警告，默认只绑 `127.0.0.1`）。问卷答案=替 AI 做决策，必须把"谁都能按的按钮"变成"只有拿到链接的人能按"。
-3. **修一个既有 bug**：提交答卷只调了 `this.changed()`（`src/service.ts:282`），而 `service.onChange` 从未被订阅去发 `autopilot/update` —— 面板要等到下一次工具调用才刷新。问卷闭环对刷新时机敏感，这个必须先修。
+1. ~~**CORS + 混合内容**~~ —— **前提本身不成立，两件事都被同源挂载消掉了**。
+   - dsh web 面板自己就是明文 `node:http`：宿主 `lib/index.js` 打印的是 `http://127.0.0.1:<port>`，`@deepseek-ai/dsh-host-webserver` 在"已知限制"里写明**不提供 TLS、认证或来源策略**。所以默认部署下面板与工单端口只是"不同源"，不是"HTTPS 页面里发 http 请求"。
+   - 混合内容只在**读者自己往前面架 TLS 反代**时出现——而那恰恰是同源相对路径能自动骑过去、独立端口方案永远骑不过去的那一种。于是面板发 `fetch('/autopilot/ticket/<id>/answer')`：不需要 CORS，不需要 `OPTIONS` 白名单，浏览器同源压根不发预检；也不需要把实际监听端口纳入投影（原 INT-3「前置说明」的担心随之作废）。
+   - ⚠️ 残留边界：反代若把面板挂在**子路径**下（`/dsh/`），根绝对路径会指错。同源路由是本轮最优解不是全能解，已写进 README 限制。
+2. **URL 带 token**：工单/问卷端点从"完全无鉴权"变成"只有拿到链接的人能按"。凭据只进邮件与 webhook 文案，**不进任何视图**——它存在 `state.json` 的旁路表 `ticketTokens`（内部记录字段，所以 `stateVersion` 不动）。面板因此走同源信任围栏，见 §8-9。
+3. **修一个既有 bug**（M0 已修）：提交答卷只调了 `this.changed()`，而 `service.onChange` 从未被订阅去发 `autopilot/update` —— 面板要等到下一次工具调用才刷新。问卷闭环对刷新时机敏感，这条必须先修。
 
 ## 8. 安全边界（不可协商项）
 
@@ -260,7 +263,7 @@ approvedAt: null
 
 7. **AI 写文档只进 draft 区**，升格必须有 `doc_approve` 记录（审批人 + `sha256`）。
 8. **问卷不改变命令白名单、不改变禁区**。用户"同意"不能解锁 `LICENSE`——禁区是配置决定的边界，不是一个可以被批准跨越的门（`AGENTS.md` / `.github/` 已于 2026-08-29 移出默认禁区，见 §4.1）。
-9. **工单/问卷端点无鉴权 → 默认只绑回环**，远程访问必须走 SSH 隧道；`autoResume` 在端点加鉴权前保持 `false`。
+9. **工单端点两道凭据，都不挡本机进程**。独立端口只绑 `127.0.0.1` 且读写**强制** `?t=<token>`；宿主同源路由接受"信任围栏 **或** token"，围栏三段判据整抄宿主 `isTrustedApiRequest`（`Host` 是回环或命中可信 authority → `sec-fetch-site !== cross-site` → 有 `Origin` 时其 host 必须等于 `Host`）。诚实边界与 `AGENTS.md` 安全硬规则 2 同一定位：**这道门挡的是端口扫描、跨站表单和 DNS rebinding，挡不住已被注入的 agent**——本机任意进程都带得动 header，`curl` 还会自己设 `Host`。远程访问仍必须走 SSH 隧道；`autoResume` 默认 `false`。
 10. **任何审批类状态转换不得由模型自己调用工具伪造**。`doc_approve` 只接受两条来源：本地端点 POST 或人直接在会话里调；组长与开发只能 `ask_human`。
 
 ## 9. 改动清单与里程碑
@@ -271,7 +274,7 @@ approvedAt: null
 | --- | --- | --- | --- |
 | **M0 先修（不做则一切白搭）** | phase 字段 + `dispatch` 门；补 §6.4 不可满足依赖 → `blocked-dependency`；修 §7.1-3 事件不发布；契约解析失败不再清空看板 | `vocab.ts` `schema.ts` `service.ts` `projection.ts` | `test-unattended.ts` 加分支 |
 | **M1 能问、能写** | `src/questionnaire.ts` + 工单服务从 escalation 解耦；新工具 `ask_human` / `answer_questionnaire` / `doc_write` / `doc_approve` / `contract_create`；`TicketField` 补 `multiselect`；`roles.ts` 组长提示词重写（draft/升格，**不是**简单删除禁令） | `escalate.ts` 同级新文件、`notification.ts` `tools.ts` `team.ts` `roles.ts` | 新增 `test-questionnaire.ts` |
-| **M2 卡片** | §7.1 三件事；面板渲染问卷卡片与 `awaiting-human` 态（顺带补现状**从未被渲染**的 `projection.blocked`） | `client/AutopilotPanel.tsx` `schema.ts` | `smoke-cordis.ts` 断言 client 产物无 zod / 无 `node:`（架构铁律 5） |
+| **M2 卡片（已实施）** | §7.1 三件事；请求处理从"服务器"里抽成可挂载的纯 handler，一份两个挂载点；token 走 `state.json` 旁路表；面板渲染问卷/升级内联表单与「等你决策」区块（`projection.blocked` 早已渲染，这里只补视觉可区分） | `ticket-handler.ts` `formmodel.ts` `notification.ts` `vocab.ts` `index.ts` `client/AutopilotPanel.tsx` `client/styles.ts` | 新增 `test-ticket-http.ts`（含 rebinding、404 逐字节相同、413）；`smoke-cordis.ts` 断言 client 产物无 zod / 无 `node:` **且** `/autopilot/ticket` 真在产物里（架构铁律 5） |
 | **M3 重规划** | `cancelled` + `priority` + `replan_*` 工具 + §6.2 分级表 + §6.3 三种处置 + 频率上限；`_board.md` 加列 | `vocab.ts` `team.ts` `service.ts` `tools.ts` | `test-unattended.ts` 重规划分支 |
 
 四个里程碑已落成任务契约：M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md`、M3 = `INT-4.md`，依赖链 `INT-1 → INT-2 → INT-3`，且 `INT-4` 只依赖 `INT-1`。所以 M3 在依赖图上与 M2 可并行——但两者 `touches` 都含 `src/`，域锁实际仍会把它俩串行化（§10.1）。

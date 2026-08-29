@@ -12,6 +12,7 @@
  * 状态落到 <stateDir>/state.json（防抖写入），每个循环 tick 再写一次心跳文件；
  * dispose() 做最终 flush。
  */
+import { randomBytes } from 'node:crypto';
 import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative as pathRelative, resolve } from 'node:path';
 import {
@@ -42,7 +43,16 @@ import { runGates } from './gates.js';
 import { runDeploy } from './deploy.js';
 import { checkRunStatus, githubRepoSlug, upsertPullRequest } from './github.js';
 import { EscalationManager, type EscalationInput } from './escalate.js';
-import { Mailer, postHumanWebhook, TicketServer, type TicketStore } from './notification.js';
+import { Mailer, postHumanWebhook } from './notification.js';
+import {
+  TICKET_PATH_PREFIX,
+  TicketHandler,
+  TicketServer,
+  ticketUrlWithToken,
+  type TicketStore,
+  type TicketTrust,
+} from './ticket-handler.js';
+import { escalationFields } from './formmodel.js';
 import {
   decisionNotes,
   newApprovalCode,
@@ -132,7 +142,7 @@ import type {
 } from './view.js';
 // 阶段枚举经 view.ts 门面取自唯一词表（与 tools.ts 同一惯例）：手抄一份漏掉新值，
 // 编译器和测试都不响。
-import { DISPATCHABLE_PHASES } from './view.js';
+import { DISPATCHABLE_PHASES, TICKET_ROUTE_PREFIX } from './view.js';
 import type { AutopilotOptions } from './service/options.js';
 import {
   clip,
@@ -278,6 +288,16 @@ export class AutopilotService {
   private lastDeployBaseSha: string | null = null;
   private notificationMailer: Mailer | null = null;
   private notificationServer: TicketServer | null = null;
+  /**
+   * 工单凭据（ticket id → token）的**旁路表**。刻意既不在记录里也不在视图里：
+   * 全量快照会进模型读得到的 session 日志，而默认命令白名单里有 `node`（AGENTS.md
+   * 安全硬规则 2：那等价于能起任意进程），拿到 token 就等于模型可以自己答掉一张
+   * 等人的工单 —— 与 `approvalCode` 同一条理由（见 schema.ts）。
+   *
+   * key 覆盖 `qn_` 与 `esc_` 两个 id 空间：作答入口是共用的（`submitTicketAnswer`），
+   * 凭据表也就只有一张。
+   */
+  private readonly ticketTokens = new Map<string, string>();
   private deploys: DeployView[] = [];
   private recoveredOnce = false;
   /**
@@ -351,34 +371,117 @@ export class AutopilotService {
   // ── 人工通知回路 ──────────────────────────────────────────────────────────
 
   /**
-   * 接通人工通知回路（SMTP 邮件 + 本地工单端点）。
-   * 尽力而为：配置有问题绝不能拖垮守护进程，只会在升级记录上记一次发送失败。
+   * 接通人工通知回路（出向的 SMTP 邮件 + 入向的本地工单端点）。
+   *
+   * 两种失败刻意不同处理：
+   *
+   * - **绑定地址不是回环 → 抛**（`TicketServer.start()` 同步拒绝，一路穿到插件装载
+   *   失败）。这个端点收的答案等于替 AI 团队做决策，开放在网段上时"决策由人来做"
+   *   这条前提就作废了（docs/design-interaction.md §8-9），不是能降级继续的东西。
+   * - **listen 失败（端口被占）→ 记一条告警后继续**。后果只是邮件里的工单链接打不开，
+   *   而面板同源路由与 `answer_questionnaire` 都还在，守护进程不该因此起不来。
    */
   private initNotification(): void {
     const config = this.options.notification;
     if (config?.enabled !== true) return;
-    try {
-      this.notificationMailer = Mailer.create({
-        host: config.smtp.host,
-        port: config.smtp.port,
-        secure: config.smtp.secure,
-        startTls: config.smtp.startTls,
-        userEnv: config.smtp.userEnv,
-        passEnv: config.smtp.passEnv,
-        fromEnv: config.smtp.fromEnv ?? config.fromEnv,
-        redactor: this.redactor,
-      });
-      const server = new TicketServer({
-        host: config.ticket.host,
-        port: config.ticket.port,
-        store: this.ticketStore(),
-      });
-      void server.start().catch(() => {});
-      this.notificationServer = server;
-    } catch {
-      this.notificationMailer = null;
+    this.notificationMailer = Mailer.create({
+      host: config.smtp.host,
+      port: config.smtp.port,
+      secure: config.smtp.secure,
+      startTls: config.smtp.startTls,
+      userEnv: config.smtp.userEnv,
+      passEnv: config.smtp.passEnv,
+      fromEnv: config.smtp.fromEnv ?? config.fromEnv,
+      redactor: this.redactor,
+    });
+    const server = new TicketServer({
+      host: config.ticket.host,
+      port: config.ticket.port,
+      handler: this.buildTicketHandler(TICKET_PATH_PREFIX, 'token-only'),
+    });
+    this.notificationServer = server;
+    void server.start().catch((error: unknown) => {
+      // 置空即退回"没有工单端点"：notify* 因此不会在邮件里写一条打不开的链接。
       this.notificationServer = null;
-    }
+      this.warn('notification: 本地工单端点未能监听，邮件里的工单链接将不可用', error);
+    });
+  }
+
+  /** 面向运维的告警出口：由插件层接到 `ctx.logger.warn`（核心不碰 cordis）。 */
+  private warn(message: string, error?: unknown): void {
+    this.options.warn?.(message, error);
+  }
+
+  /**
+   * 造一个挂载点用的 handler。两个挂载点只差 `basePath` 与接受哪种凭据，其余
+   * （数据源、token 表、可信 authority 清单）必须是同一份 —— 否则同一张工单在
+   * 两处会画出两张脸。
+   */
+  private buildTicketHandler(
+    basePath: string,
+    trust: TicketTrust,
+    trustedHosts?: () => readonly string[],
+  ): TicketHandler {
+    return new TicketHandler({
+      basePath,
+      store: this.ticketStore(),
+      trust,
+      tokenOf: (id) => this.ticketTokenOf(id),
+      // 运维声明"人从哪个地址访问我们"的那一处配置，加上插件层递过来的宿主自带
+      // 可信清单（Host 改写的反代与 `--host 0.0.0.0` 的局域网地址各占一头）。
+      trustedAuthorities: () => {
+        const publicBaseUrl = this.options.notification?.ticket.publicBaseUrl;
+        return [...(publicBaseUrl === undefined || publicBaseUrl === '' ? [] : [publicBaseUrl]), ...(trustedHosts?.() ?? [])];
+      },
+      warn: (message, error) => this.warn(message, error),
+    });
+  }
+
+  /**
+   * 面板作答那条通道的 handler：由插件层 `register` 到宿主 `webServer` 的
+   * `TICKET_ROUTE_PREFIX` 前缀上（装配住在 index.ts，本服务不认识 cordis）。
+   *
+   * 与独立端口那份的唯一区别是 `trust`：面板手里没有 token（token 刻意不在投影里），
+   * 所以这条路由额外接受宿主那套同源围栏。`trustedHosts` 由插件层提供 —— 那是宿主
+   * 自己的可信 Host 清单，本服务只把它当作一串 authority 字符串，不认识它从哪来。
+   */
+  panelTicketHandler(trustedHosts?: () => readonly string[]): TicketHandler {
+    return this.buildTicketHandler(TICKET_ROUTE_PREFIX, 'fence-or-token', trustedHosts);
+  }
+
+  // ── 工单凭据 ──────────────────────────────────────────────────────────────
+
+  /**
+   * 铸造（或复用）一张工单的凭据。**只在要给人的文案里出现时调用** —— 面板那条
+   * 走围栏，不需要 token。
+   */
+  private mintTicketToken(id: string): string {
+    const existing = this.ticketTokens.get(id);
+    if (existing !== undefined) return existing;
+    const token = randomBytes(16).toString('hex');
+    this.ticketTokens.set(id, token);
+    return token;
+  }
+
+  /**
+   * handler 唯一的读取口。对**还答得动**的记录惰性补铸，这样「每张开放工单都有
+   * token」是个不变量，而不取决于某条通知路径有没有跑到（老 state.json 恢复出来的
+   * 开放问卷就属于后者，不需要数据迁移）。
+   */
+  private ticketTokenOf(id: string): string | undefined {
+    const existing = this.ticketTokens.get(id);
+    if (existing !== undefined) return existing;
+    if (!this.ticketAnswerable(id)) return undefined;
+    const token = this.mintTicketToken(id);
+    this.changed();
+    return token;
+  }
+
+  /** 这张工单还答得动吗：问卷要 `open`，升级要未 resolve。 */
+  private ticketAnswerable(id: string): boolean {
+    const questionnaire = this.questionnaires.byId(id);
+    if (questionnaire !== undefined) return questionnaire.status === 'open';
+    return this.escalationById(id)?.resolvedAt === null;
   }
 
   /**
@@ -395,21 +498,7 @@ export class AutopilotService {
           return {
             title: `人工确认：${this.escalationSubject(record)}`,
             notice: 'AI 团队卡住了，需要你分诊。这不是正常流程里的提问 —— 有东西坏了或互相矛盾。',
-            fields: [
-              {
-                name: 'decision',
-                label: '请确认如何处理该问题（填写你的决策）',
-                type: 'textarea' as const,
-                required: true,
-                placeholder: '例如：同意该方案 / 更换密钥 / 变更需求……',
-              },
-              {
-                name: 'note',
-                label: '补充说明（可选；密钥请通过环境变量提供，勿直接粘贴）',
-                type: 'text' as const,
-                placeholder: '任何需要 AI 团队知道的上下文',
-              },
-            ],
+            fields: escalationFields(),
           };
         }
         const questionnaire = this.questionnaires.byId(id);
@@ -418,6 +507,7 @@ export class AutopilotService {
         return { title: `等你决策：${questionnaire.title}`, notice, fields };
       },
       handleSubmit: (id, answers) => this.submitTicketAnswer(id, answers),
+      hasTicket: (id) => this.escalationById(id) !== undefined || this.questionnaires.byId(id) !== undefined,
     };
   }
 
@@ -485,7 +575,10 @@ export class AutopilotService {
     const config = this.options.notification;
     if (config?.enabled !== true) return null;
     const baseUrl = config.ticket.publicBaseUrl.replace(/\/+$/, '');
-    const ticketUrl = this.notificationServer === null ? null : `${baseUrl}/ticket/${record.id}`;
+    // 记录里那份**不带凭据**（它进投影，而投影进模型读得到的 session 日志）；
+    // 只有给人的文案才拼上 `?t=` —— 独立工单端口现在无 token 一律 404。
+    const ticketUrl = this.notificationServer === null ? null : `${baseUrl}${TICKET_PATH_PREFIX}/${record.id}`;
+    const link = ticketUrl === null ? null : ticketUrlWithToken(ticketUrl, this.mintTicketToken(record.id));
     const initial: EscalationNotification = {
       status: 'sent',
       mailTo: config.mailTo,
@@ -511,7 +604,7 @@ export class AutopilotService {
       ``,
       `建议动作: ${record.suggestion}`,
       ``,
-      ticketUrl === null ? `（未配置工单端点，请在 dsh 面板查看）` : `请填写工单以继续：${ticketUrl}`,
+      link === null ? `（未配置工单端点，请在 dsh 面板查看）` : `请填写工单以继续：${link}`,
       ``,
       `回答会回写到任务单；如需密钥请用环境变量提供，勿粘贴明文。`,
     ].join('\n');
@@ -664,7 +757,10 @@ export class AutopilotService {
   private async notifyQuestionnaire(record: QuestionnaireRecord): Promise<{ ticketUrl: string | null; mailDelivered: boolean }> {
     const config = this.options.notification;
     const baseUrl = (config?.ticket.publicBaseUrl ?? '').replace(/\/+$/, '');
-    const ticketUrl = this.notificationServer === null || baseUrl === '' ? null : `${baseUrl}/ticket/${record.id}`;
+    // 与 notifyEscalation 同一分工：记录里那份不带凭据（它进投影、进工具结果，
+    // 那些都在模型读得到的 session 日志里），只有给人的渠道才拼 `?t=`。
+    const ticketUrl = this.notificationServer === null || baseUrl === '' ? null : `${baseUrl}${TICKET_PATH_PREFIX}/${record.id}`;
+    const link = ticketUrl === null ? null : ticketUrlWithToken(ticketUrl, this.mintTicketToken(record.id));
     const lines: string[] = [`[dsh-ai-team] AI 团队需要你做一个决策：${record.title}`, ''];
     if (record.kind === 'approval') {
       lines.push('这是一次文档审批。批准前请自己读一遍 draft 区里的内容 —— 文档改写没有客观质量门可验证。');
@@ -685,7 +781,7 @@ export class AutopilotService {
     });
     lines.push(
       '',
-      ticketUrl === null ? '（未配置工单端点：请回到 dsh 会话里直接作答）' : `请填写工单：${ticketUrl}`,
+      ticketUrl === null ? '（未配置工单端点：请回到 dsh 会话里直接作答）' : `请填写工单：${link}`,
       record.mode === 'interactive'
         ? `这条提问正卡在那一轮里等人回答，最长 ${this.options.questionnaire.timeoutMinutes} 分钟；超时后按各题默认方案继续。`
         : '这是异步提问：答完请回会话里说一句「继续」，组长才会往下走（插件无法自行唤醒 agent）。',
@@ -700,7 +796,8 @@ export class AutopilotService {
     await postHumanWebhook({
       urlEnv: this.options.escalation.webhookUrlEnv,
       text: `[dsh-ai-team] 等你决策: ${record.title}`,
-      payload: { questionnaire: questionnaireViewOf(record), ticketUrl },
+      // webhook 是给人的渠道，所以推带凭据的那份；记录里的 ticketUrl 仍无凭据。
+      payload: { questionnaire: questionnaireViewOf(record), ticketUrl: link },
       redactor: this.redactor,
       ...(this.options.fetchFn !== undefined ? { fetchFn: this.options.fetchFn } : {}),
     });
@@ -1295,6 +1392,9 @@ export class AutopilotService {
       this.escalations.restore(state.escalations ?? []);
       // 问卷带着审批码一起恢复：那次审批可能正等人批，作废它等于把人做的事抹掉。
       this.questionnaires.restore(state.questionnaires ?? []);
+      // 凭据表同样要跨重启存活：邮件里那条链接已经发出去了，换一枚 token 就等于
+      // 把已经叫来的人关在门外。老 state.json 没这个字段，`?? {}` 兜底。
+      for (const [id, token] of Object.entries(state.ticketTokens ?? {})) this.ticketTokens.set(id, token);
       this.deploys = state.deploys ?? [];
       // 崩崩恢复的硬规则：持久化的 running 一律降级为 paused，等人来 resume。
       this.loopState = state.loopState === 'running' ? 'paused' : (state.loopState ?? 'stopped');
@@ -1314,6 +1414,7 @@ export class AutopilotService {
       this.activeTeamId = null;
       this.escalations.restore([]);
       this.questionnaires.restore([]);
+      this.ticketTokens.clear();
       this.deploys = [];
       this.lastDeployBaseSha = null;
       await rename(this.stateFile, `${this.stateFile}.corrupt-${Date.now()}`).catch(() => {});
@@ -1327,6 +1428,10 @@ export class AutopilotService {
       activeTeamId: this.activeTeamId,
       escalations: [...this.escalations.all],
       questionnaires: [...this.questionnaires.all],
+      // 只写还答得动的工单：答完、过期、作废之后，token 留着只是给未来的攻击面
+      // 留库存，而记录本身要留在 state.json 里做审计。派生而不是原地删，是为了
+      // 让"内存里那把表"与"磁盘上那份视图"各自清楚。
+      ticketTokens: Object.fromEntries([...this.ticketTokens].filter(([id]) => this.ticketAnswerable(id))),
       deploys: this.deploys,
       loopState: this.loopState,
       tick: this.tick,

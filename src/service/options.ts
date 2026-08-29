@@ -104,15 +104,28 @@ export interface AutopilotOptions {
     mailTo: string;
     /** 本地工单端点监听地址。 */
     ticket: {
+      /**
+       * 绑定地址。**非回环一律拒绝启动**（`TicketServer.start()` 直接抛）——
+       * 这个端点收的答案等于替 AI 团队做决策，见 docs/design-interaction.md §8-9。
+       * 远程访问请走 SSH 隧道（PILOT.md）。
+       */
       host: string;
       port: number;
-      /** 邮件里展示给人的访问基址（例如 http://server:8080）。 */
+      /**
+       * 人从哪个地址访问我们（例如 http://server:8080）。两重语义：
+       * ① 邮件/webhook 里展示的工单链接的根；② 同源围栏的可信 `Host` 清单 ——
+       * Host 改写的反代只有配在这里才过得了面板那条路由的门。
+       */
       publicBaseUrl: string;
     };
     /**
      * 自动恢复：工单被答复后直接回写答案并清除升级（任务回到 pending），
-     * 无需再等一次 escalation_resolve。⚠️ 工单端点本身无鉴权，只有确认它
-     * 不可被未授权方访问（默认只绑 127.0.0.1）时才应开启。
+     * 无需再等一次 escalation_resolve。
+     *
+     * ⚠️ 残余风险不在鉴权而在本机：独立工单端口现在要求 `?t=<token>`，面板那条
+     * 同源路由要求过宿主那套围栏，但**围栏挡不住本机任意进程**（`node` 自己就能
+     * 把 `Host` 设成 127.0.0.1）—— 与命令白名单同一定位（AGENTS.md 安全硬规则 2）。
+     * 所以默认只绑 127.0.0.1 这件事仍然是这条开关的主要防线。
      */
     autoResume: boolean;
     /** "From" 头的环境变量名；缺省回落到 smtp.fromEnv。 */
@@ -156,4 +169,12 @@ export interface AutopilotOptions {
   tickSleepMs?: number | undefined;
   /** 测试钩子：注入 fetch，用于 webhook / CI / 健康检查调用。 */
   fetchFn?: typeof fetch | undefined;
+  /**
+   * 面向运维的告警出口：由插件层接到 `ctx.logger.warn`。
+   *
+   * 本服务不认识 cordis（架构铁律 1），所以"这事不致命但人该知道"的几处 ——
+   * 工单端点没能监听、表单渲染抛错、同源路由挂载冲突 —— 一律走这里，而不是
+   * 静默吞掉，也不是抛出去拖垮守护进程。
+   */
+  warn?: (message: string, error?: unknown) => void;
 }

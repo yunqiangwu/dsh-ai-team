@@ -281,10 +281,17 @@ export const autopilotProjectionSchema = zod.object({
    * 进模型读得到的日志，写进视图等于让组长自己批准自己的文档（§8-10）。码只活在
    * 服务侧记录 + 工单页 / 邮件里，那两个出口只有人都碰得着。
    *
-   * 边界要说清：`ticketUrl` 在视图里，而清单里有 `node` 时模型理论上能自己抓那个页面
-   * 把码读出来 —— 所以这道门挡的是「顺手绕过」，不是「已被注入的模型」，与全仓库的
-   * 命令白名单同一个定位（见 AGENTS.md 安全硬规则 2）。要硬保证请自己收紧
-   * `security.commandAllowlist` 与工单端点的绑定地址。
+   * 工单**访问凭据（`?t=<token>`）同理**：视图里的 `ticketUrl` 是无凭据那一份，
+   * 带 token 的只出现在邮件与 webhook 文案里，token 本身住在 `AutopilotService`
+   * 的旁路表（`state.json` 的 `ticketTokens`，不是视图字段）。同源面板路由因此只
+   * 放开「作答」这一条写侧，读侧（表单页）仍然要 token —— 否则本机进程拿围栏就能
+   * 换到一张写着审批码的页面。
+   *
+   * 边界要说清：读侧现在谁都绕不过（无 token 抓不到页面），但**写侧的围栏挡不住本机
+   * 进程** —— `node` 在默认命令白名单里，它自己就能把 `Host` 设成 `127.0.0.1` 走过
+   * 围栏，替一张 id 已知的工单写答案。所以这道门挡的是网络侧攻击者、跨站表单与「顺手
+   * 绕过」，不挡已被注入的模型，与全仓库的命令白名单同一个定位（见 AGENTS.md 安全硬
+   * 规则 2）。要硬保证请自己收紧 `security.commandAllowlist` 与工单端点的绑定地址。
    */
   questionnaires: zod.array(questionnaireViewSchema).default([]),
   deploys: zod.array(deployViewSchema),

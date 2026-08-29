@@ -132,10 +132,10 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
             startTls: true                    # 非 465 端口走 STARTTLS
           mailTo: ops@example.com             # 收件人（可逗号分隔多个）
           ticket:
-            host: 127.0.0.1                   # 端点无鉴权：默认只绑回环，远程访问请走 SSH 隧道
-            port: 8080                        # 0=自动分配端口
-            publicBaseUrl: http://server.example.com  # 邮件里展示的工单根地址
-          autoResume: false                   # 工单答复后自动回写并解除升级；端点受保护后再开
+            host: 127.0.0.1                   # 只绑回环；配成非回环**拒绝启动**（不是告警）。远程访问走 SSH 隧道
+            port: 8080                        # 0=自动分配端口。此端口只服务邮件里的链接；notification.enabled=false 时不监听（面板作答走宿主同源路由，不依赖它）
+            publicBaseUrl: http://server.example.com  # 两重语义：邮件里展示的工单根地址 + 它的 authority 被登记为同源路由的可信 Host
+          autoResume: false                   # 工单答复后自动回写并解除升级；默认仍关着（答复=替 AI 做决策，别一上来就放行）
         deploy:
           enabled: false
           command: 'docker build -t app . && docker push ... && ssh ... docker compose up -d'
@@ -255,7 +255,9 @@ Given/When/Then 验收标准……
 
 无人值守时一旦升级（needs-human），插件会通过配置的通知通道把人"叫来"：
 
-1. **本地问卷工单端点**：插件用 `node:http` 起一个本地端点，`GET /ticket/<id>` 渲染一个表单（原因、说明、建议动作 + 用户填写决策/补充），`POST /ticket/<id>` 接收答复。
+1. **工单端点（一份 handler，两个挂载点）**：`GET /ticket/<id>` 渲染一个表单（原因、说明、建议动作 + 用户填写决策/补充），`POST /ticket/<id>` 接收答复。
+   - **独立端口**（`notification.ticket.*`，`node:http`）：只服务邮件里的链接，读写都**必须**带 `?t=<token>`。`notification.enabled: false` 时这个端口根本不监听。
+   - **宿主同源路由** `/autopilot/ticket/<id>`：服务 Web 面板，提交走 `POST /autopilot/ticket/<id>/answer`（JSON）。凭"同源信任围栏"放行，不需要 token；这条路由与 SMTP 无关，**没配邮件也能在面板里作答**。
 2. **SMTP 邮件通知**：按 `smtp.*` 配置发信到 `mailTo`，正文包含任务、原因、建议动作与工单链接。凭证只取环境变量名并在日志中脱敏，绝不落盘。
 3. **答复闭环**：用户提交后，答复被回写到任务单（`.tasks/<id>.md`），并在 `autoResume: true` 时自动解除升级、把任务改回 `pending`、继续主循环；`autoResume: false` 则保持 `needs-human`，等你主动 `escalation_resolve`。
 
@@ -270,11 +272,14 @@ Given/When/Then 验收标准……
 
 - **interactive 模式**：`ask_human` 这一轮 agent 不断线，真的 await 到你答完（或 `questionnaire.timeoutMinutes` 到期）。你在工单页提交后组长立刻继续，不需要回会话说话。超时按各题 `defaultValue` 兜底并如实标 `expired`，**不会**把没人做过的决策写进文档。
 - **async 模式**：问卷登记后立即返回，你答完**要回会话说一句「继续」** —— 插件没有「向会话投一条消息唤醒 agent」的写入口，这条边界不是工程能绕过的。
-- **审批问卷**（`kind: approval`）：邮件/工单页里带一个**一次性审批码**，只有读到那封邮件的人拿得到。你带着码在会话里调 `doc_approve`（或自己直接调，不带 `actorId`）即完成升格；组长自己批不了自己的文档。工单页的审批下拉**预选「不批准」**（超时兜底也是它）——一张表单不该因为有人懒得点一下就交出授权。
+- **审批问卷**（`kind: approval`）：邮件/工单页里带一个**一次性审批码**，只有读到那封邮件的人拿得到。你带着码在会话里调 `doc_approve`（或自己直接调，不带 `actorId`）即完成升格；组长自己批不了自己的文档。工单页的审批下拉**预选「不批准」**（超时兜底也是它）——一张表单不该因为有人懒得点一下就交出授权。⚠️ 面板里作答走的是同一个 `ticket` 来源，因此**不再重复要码**：码保护的是"邮件链接流到了别人手里"，不保护你自己的本机控制台（能打开面板的人本来就能在会话里直接调 `doc_approve`）。
 
 > 流程规格（阶段怎么推进、答案怎么回写、为什么这样切分）见 [docs/design-interaction.md](docs/design-interaction.md)；本节只讲配置与人要做什么。
 
-> ⚠️ 工单端点**没有任何鉴权**：能访问它的人就能替你做「人工确认」这个决定。默认只绑 `127.0.0.1`，远程访问优先走 SSH 隧道（`ssh -L 8080:127.0.0.1:8080 …`）。确需公网可达，必须先自行反代加鉴权（basic auth / IP 白名单 / 签名 URL），再考虑开 `autoResume`——否则「答复即放行」是任何人都按得动的按钮。`ticket.publicBaseUrl` 只决定邮件里展示的工单根地址。
+> ⚠️ **工单鉴权（M2 起）**：每张工单铸造一个不可猜测 token（`randomBytes(16)`），它**只出现在发给你的那份文案里**（邮件、webhook），不进投影、不进日志、不进记录 —— 落盘位置是 `state.json` 的旁路表 `ticketTokens`。独立端口读写都强制带 token；**未知 id、缺 token、token 不符三者返回逐字节相同的 404**（绝不 403，否则工单号能被枚举）。`ticket.host` 配成非回环地址会**直接拒绝启动**，不是告警。
+> 面板走宿主同源路由 `/autopilot/ticket/…`，那里没有 token，靠的是**信任围栏**（判据整抄宿主 `isTrustedApiRequest`）：`Host` 是回环或命中可信 authority → `sec-fetch-site !== 'cross-site'` → 有 `Origin` 时它的 host 必须等于 `Host`。这三段挡的是端口扫描、跨站表单和 DNS rebinding（少了第一段，`Host: evil.com` 与 `Origin: http://evil.com` 在 rebinding 下**相等**，光比 Origin 形同虚设）。确需公网可达宿主 web 端口，先自行反代加鉴权（basic auth / IP 白名单 / 签名 URL），再考虑开 `autoResume`。
+> **诚实边界**：围栏不挡本机进程 —— 同一个用户下任意程序都能带上这些 header，`curl` 还会自己设 `Host`。这与命令白名单同一定位：防误配和顺手绕过，不防已被注入的 agent。
+> `ticket.publicBaseUrl` 现在是**两重语义**：邮件里展示的工单根地址 **且** 它的 authority 被登记为同源路由的可信 `Host`（反代换了域名才答得动）。远程访问仍优先走 SSH 隧道（`ssh -L 8080:127.0.0.1:<webPort> …`：隧道打通宿主 web 端口，面板和 `/autopilot/ticket/…` 一起就都能用了；只有坚持点邮件链接才需要再单独隧道化 `ticket.port`）。⚠️ 反代若把面板挂在**子路径**下（如 `/dsh/`），根绝对路径 `/autopilot/ticket/...` 会指错，面板内作答失效 —— 请挂在域名根，或继续用邮件链接作答。
 
 ## 安全模型
 
@@ -313,9 +318,9 @@ Given/When/Then 验收标准……
 
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色）、七列看板（含 needs-human 与 needs-clarification，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你回答**（问卷流水：`等你回答` / `已答复，等组长继续` / `已超时`，带工单链接）、升级事件流、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、七列看板（含 needs-human 与 needs-clarification，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
 
-> 面板上的问卷是**只读**的（M1 口径）：作答入口是浏览器里的工单页，或会话里直接调 `answer_questionnaire`。面板内可作答的问卷卡片属 M2。
+> **面板内直接作答（M2）**：提交打到同源相对路径 `POST /autopilot/ticket/<id>/answer`，不需要外部浏览器、也不需要知道工单端口。漏必填项时**保留你已填的内容**并重述缺失项；成功后卡片等服务端推回来的新快照翻「已答复」，不做乐观更新。面板上**不再有跳外部的工单链接** —— 投影里的 `ticketUrl` 刻意不带凭据，从面板点过去必然 404，那是我们自己发布坏按钮；要在面板外作答请用邮件里的链接（带 token）或在会话里直接调 `answer_questionnaire`。
 
 另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片（`settings.plugin.item` 键控命名空间）。它绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段（`remote.url`、`baseBranch`、`bootstrap.enabled`、`gates.commands`、`daemon.maxReviewRounds`/`stuckMinutes`/`maxDiffLines`、`learnings.enabled`）供编辑保存，写入用户设置层；服务端通过 `installSettingsSection` 让插件读到生效配置（无设置服务时回退到 entry config）。因命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
 

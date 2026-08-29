@@ -20,9 +20,11 @@
   },
   // view.ts 是类型门面：值依赖 vocab.ts（零依赖、浏览器安全），类型依赖
   // schema.ts（只有 `export type { ... } from`，zod 不会进客户端产物）。
+  // formmodel.ts 是题面→表单控件的纯映射，服务端工单页与面板卡片共用，同样只碰门面。
   "include": [
     "src/client/**/*.ts",
     "src/client/**/*.tsx",
+    "src/formmodel.ts",
     "src/view.ts",
     "src/vocab.ts",
     "src/schema.ts"

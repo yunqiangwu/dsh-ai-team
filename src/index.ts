@@ -4,6 +4,7 @@
  * 仅使用具名导出（name / inject / Config / apply）：当混入 default 导出时，
  * Loader 的默认解包行为会丢掉 Config schema。
  */
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import z from '@deepseek-ai/schemastery';
 import type { Context } from '@deepseek-ai/cordis';
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
@@ -18,8 +19,24 @@ import type { LearningOptions } from './learnings.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
 import type { QuestionnaireMode } from './view.js';
+import { TICKET_ROUTE_PREFIX } from './view.js';
 
 export const name = 'dsh-ai-team';
+
+/**
+ * 宿主 `webServer` 服务在本插件里用到的那一小块。
+ *
+ * 刻意不 import `@deepseek-ai/dsh-host-webserver`：那是宿主自己的装配，跟它的
+ * 版本一起被钉住毫无收益。形状对齐该包的 `WebRoute`（`kind` + 绝对路径 +
+ * 拥有整个响应生命周期的 handler），`register` 返回 disposer。
+ */
+interface HostWebServer {
+  register(route: {
+    kind: 'exact' | 'prefix';
+    path: string;
+    handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
+  }): () => void;
+}
 
 /** 看板面板中渲染的、自动创建的演示团队名称。 */
 const DEMO_TEAM_NAME = 'demo';
@@ -439,6 +456,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     questionnaire: effective.questionnaire,
     docs: effective.docs,
     profile: resolveProjectProfile(effective.profile, effective.gates.commands),
+    // 核心的告警出口：它不认识 cordis，所以这句"不致命但人该知道"要由插件层落地。
+    warn: (message, error) => ctx.logger.warn(message, error),
   });
   // 把服务暴露给其它插件（以及驱动 host 的测试）。
   ctx.provide('autopilot', service);
@@ -456,6 +475,33 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }).agentPresets;
     const userRoot = presets.roots.filter((root) => root.trust === 'user').pop()?.path;
     void ensureAutopilotTeamPreset(userRoot);
+  });
+  // 面板内作答（docs/design-interaction.md §7.1）：把工单端点也挂到宿主自己的
+  // webServer 上，面板就只需发相对路径 —— 不需要知道实际端口（`ticket.port` 默认 0
+  // 是运行时才知道的），不会有混合内容（跟着页面同一个 scheme 走），也不必为一个刚
+  // 加上鉴权的端点开 CORS。
+  // 走 ctx.inject 而不是顶层 `export const inject`：后者是硬依赖，无头 profile 会
+  // 直接起不来。`webRuntime` 是宿主 web-app 提供的可信 Host 清单，与它对 /api 用的
+  // 同一份 —— 面板能调到 /api 就必须能答工单，否则面板一半能用一半 404。
+  ctx.inject(['webServer', 'webRuntime'], (webCtx) => {
+    const { webServer, webRuntime } = webCtx as unknown as {
+      webServer: HostWebServer;
+      /** 宿主自带的可信 Host 清单（与它对 /api 用的同一份），缺席即只认回环。 */
+      webRuntime?: { trustedHosts?: string[] };
+    };
+    const handler = service.panelTicketHandler(() => webRuntime?.trustedHosts ?? []);
+    try {
+      const dispose = webServer.register({
+        kind: 'prefix',
+        path: TICKET_ROUTE_PREFIX,
+        handler: (request, response) => handler.handle(request, response),
+      });
+      webCtx.effect(() => dispose, 'autopilot: ticket route');
+    } catch (error) {
+      // 重复 (kind, path) 会抛（HMR / 双装载）。挂载失败只是面板内作答没了，
+      // 邮件工单与会话内 answer_questionnaire 都还在，不该把插件拖死。
+      webCtx.logger.warn('autopilot: 工单路由挂载失败，面板内作答不可用', error);
+    }
   });
   // 自动供给的用户体验：当某个 session 选用 `autopilot-team` agent preset 时，
   // 确保演示团队存在，并把 projection 推送给该 session，让看板面板立即点亮——

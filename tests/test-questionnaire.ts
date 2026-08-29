@@ -12,8 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AutopilotService } from '../src/service.js';
-import { TicketServer } from '../src/notification.js';
-import type { TicketStore } from '../src/notification.js';
+import { TICKET_PATH_PREFIX, TicketHandler, TicketServer, type TicketStore } from '../src/ticket-handler.js';
 import { ticketFieldsOf } from '../src/questionnaire.js';
 import type { QuestionnaireRecord } from '../src/questionnaire.js';
 import { hashBody, parseDoc, renderDoc } from '../src/docdraft.js';
@@ -106,8 +105,15 @@ async function firstOpenQuestionnaire(service: AutopilotService): Promise<Questi
   throw new Error('no open questionnaire appeared');
 }
 
+/** 测试自己的工单凭据：真实 token 的铸造与比对由 test-ticket-http.ts 锁。 */
+const TEST_TICKET_TOKEN = 'test-ticket-token-00000000000000000000000000';
+
 /** 真实 HTTP 工单端点：数据源指向服务侧记录，作答走 submitTicketAnswer 同一条漏斗。 */
-async function serveTickets(service: AutopilotService): Promise<{ base: string; close: () => Promise<void> }> {
+async function serveTickets(service: AutopilotService): Promise<{
+  base: string;
+  token: string;
+  close: () => Promise<void>;
+}> {
   const store: TicketStore = {
     renderTicket: async (id) => {
       const record = service.questionnaires.byId(id);
@@ -116,12 +122,24 @@ async function serveTickets(service: AutopilotService): Promise<{ base: string; 
       return { title: `等你决策：${record.title}`, notice, fields };
     },
     handleSubmit: (id, answers) => service.submitTicketAnswer(id, answers),
+    hasTicket: (id) => service.questionnaires.byId(id) !== undefined,
   };
-  const server = new TicketServer({ host: '127.0.0.1', port: 0, store });
+  const server = new TicketServer({
+    host: '127.0.0.1',
+    port: 0,
+    handler: new TicketHandler({
+      basePath: TICKET_PATH_PREFIX,
+      store,
+      trust: 'token-only',
+      // 与生产同形：只有还开着的单子有凭据，答完即失效。
+      tokenOf: (id) => (service.questionnaires.byId(id)?.status === 'open' ? TEST_TICKET_TOKEN : undefined),
+    }),
+  });
   await server.start();
   const bound = server.address!;
   return {
     base: `http://${bound.host}:${bound.port}`,
+    token: TEST_TICKET_TOKEN,
     close: () => server.close(),
   };
 }
@@ -263,7 +281,7 @@ describe('questionnaire: 工单表单（场景二）', () => {
       });
       const id = asked.questionnaire.id;
 
-      const page = await fetch(`${tickets.base}/ticket/${id}`);
+      const page = await fetch(`${tickets.base}/ticket/${id}?t=${tickets.token}`);
       expect(page.status).toBe(200);
       const html = await page.text();
       expect(html).toContain('AI 团队需要你做一个决策');
@@ -277,7 +295,7 @@ describe('questionnaire: 工单表单（场景二）', () => {
       // 不做条件分段：四道题平铺，没有 depends-on 之类的隐藏结构。
       expect((html.match(/<fieldset/g) ?? [])).toHaveLength(1);
 
-      const partial = await fetch(`${tickets.base}/ticket/${id}`, {
+      const partial = await fetch(`${tickets.base}/ticket/${id}?t=${tickets.token}`, {
         method: 'POST',
         body: 'platform=docker-single',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -291,8 +309,13 @@ describe('questionnaire: 工单表单（场景二）', () => {
       const half = ctx.service.questionnaires.byId(id)!;
       expect(half.status).toBe('open');
       expect(half.answers.platform?.value).toBe('docker-single');
+      // 无凭据必须与"未知 id"逐字节相同（此时单子还开着，404 只可能是凭据挡的）：
+      // 响应差别一旦不同，工单号就能被枚举出来。
+      const withoutToken = await fetch(`${tickets.base}/ticket/${id}`);
+      expect(withoutToken.status).toBe(404);
+      expect(await withoutToken.text()).toBe('ticket not found');
 
-      const full = await fetch(`${tickets.base}/ticket/${id}`, {
+      const full = await fetch(`${tickets.base}/ticket/${id}?t=${tickets.token}`, {
         method: 'POST',
         body: 'secrets=ssh-key&secrets=ssh-key&secrets=api-token&rollback=auto&note=%E6%97%A0',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -319,7 +342,7 @@ describe('questionnaire: 工单表单（场景二）', () => {
     try {
       await ctx.service.docWrite({ teamId: ctx.teamId, path: 'docs/drafts/prd.md', body: PRD_BODY });
       const asked = await ctx.service.askHuman({ teamId: ctx.teamId, title: '开工包批不批', kind: 'approval', questions: [] });
-      const page = await fetch(`${tickets.base}/ticket/${asked.questionnaire.id}`);
+      const page = await fetch(`${tickets.base}/ticket/${asked.questionnaire.id}?t=${tickets.token}`);
       const html = await page.text();
       expect(html).toContain('<option value="reject" selected>不批准：退回继续改草稿 — 阶段回到 intake，团队不开工');
       expect(html).not.toContain('<option value="approve" selected');

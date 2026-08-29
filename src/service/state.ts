@@ -184,6 +184,13 @@ export interface PersistedState {
   escalations: EscalationView[];
   /** 可选：老 state.json 没这个字段，`load()` 用 `?? []` 兜底。 */
   questionnaires?: QuestionnaireRecord[];
+  /**
+   * 工单凭据（ticket id → token）。可选：老 state.json 没这个字段，`load()` 用
+   * `?? {}` 兜底，所以它是**内部记录字段而不是视图字段** —— 投影与 `stateVersion`
+   * 都不受影响。为什么不能进视图：见 `AutopilotService` 里 `ticketTokens` 的注释
+   * （快照会进模型读得到的 session 日志）。
+   */
+  ticketTokens?: Record<string, string>;
   deploys: DeployView[];
   loopState: LoopState;
   tick: number;

@@ -94,7 +94,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
           enabled: true
 ```
 
-换真实项目时的增量改动：`bootstrap.enabled: true` + 真实 `setupCommand`/`verifyCommand`/`toolchain`；`commandAllowlist` 按项目门命令收窄；`notification` 打开（邮件 + 工单，工单端点保持 `127.0.0.1`，远程看板走 `ssh -L 8080:127.0.0.1:8080`）；部署放在 L2 通过后单独开。
+换真实项目时的增量改动：`bootstrap.enabled: true` + 真实 `setupCommand`/`verifyCommand`/`toolchain`；`commandAllowlist` 按项目门命令收窄；`notification` 打开（邮件 + 工单；工单独立端口保持 `127.0.0.1`，配成非回环会**拒绝启动**）。远程只需**一条**隧道打通宿主 web 端口（`ssh -L 8080:127.0.0.1:<webPort>`）—— 面板内作答走同源路由，一起就通了；只有坚持点邮件里的链接，才需要再单独隧道化 `ticket.port`。部署放在 L2 通过后单独开。
 
 ## 3. 启动与首跑
 
@@ -138,7 +138,7 @@ autopilot_status      # 随时查看循环 / 看板 / 升级 / 部署
 
 ## 6. 升级分诊表
 
-放行手段（三选一，等价）：工单页面答复（`autoResume: true` 时自动回写放行）/ 对话调 `escalation_resolve` / 把任务单 status 改回 `pending`。升级记录里带 logTail，先看它再动手。
+放行手段（四选一，等价）：面板内联表单直接答复（同源路由，无需凭据）/ 邮件里带 token 的工单页答复（`autoResume: true` 时自动回写放行）/ 对话调 `escalation_resolve` / 把任务单 status 改回 `pending`。升级记录里带 logTail，先看它再动手。
 
 | 原因 | 多半意味着 | 处置 |
 | --- | --- | --- |
@@ -173,6 +173,8 @@ autopilot_status      # 随时查看循环 / 看板 / 升级 / 部署
 | `setupCommand` / `verifyCommand` 指向不存在的脚本 | `autopilot_init` 直接 escalate + throw | 启动前手动预演（§1） |
 | 非 github 平台开着 `requireCiGreen` | 以为有 CI 门，其实没有 | 非 github 显式置 false，并知情 |
 | 白名单含 `sh` / `node` / `docker` | 白名单形同虚设（`node -e` 即任意执行） | 收窄到门命令真正需要的首 token |
-| 工单端点公网可达 | 任何人都能替你按「放行」 | 保持 `127.0.0.1` + SSH 隧道 |
+| 工单端点公网可达 | 任何人都能替你按「放行」 | 独立端口保持 `127.0.0.1`（配非回环**直接拒启**）+ SSH 隧道；宿主 web 端口要公网可达，先自架反代加鉴权 |
+| 以为同源围栏能挡本机进程 | 本机任意程序都能带上那几个 header（`curl` 还自己设 `Host`） | 围栏挡的是端口扫描 / 跨站表单 / DNS rebinding，**不挡已被注入的 agent** —— 与命令白名单同一定位，见 README「工单鉴权」 |
+| 反代把面板挂在子路径（`/dsh/`） | 作答请求打到根绝对路径 `/autopilot/ticket/…`，404 | 挂域名根；否则改用邮件链接（带 token）作答 |
 | 设置卡片改配置 | 不生效 | 带 `--patch` 重启服务端 |
 | 测完不 build 就启动 | 跑的是旧产物 | 源码方式启动前 `pnpm build` |

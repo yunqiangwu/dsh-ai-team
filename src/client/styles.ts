@@ -42,6 +42,8 @@ const CSS = `
 .dsh-ai-team__badge--fail { color: #ef4444; border-color: #ef4444; }
 .dsh-ai-team__badge--pending { color: #eab308; border-color: #eab308; }
 .dsh-ai-team__feed { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; }
+/* 升级流里内联了分诊表单，140px 会把输入框和提交按钮一起裁掉。 */
+.dsh-ai-team__feed--with-form { max-height: none; overflow-y: visible; }
 .dsh-ai-team__feed-item { padding: 6px 8px; border-left: 3px solid #ef4444; background: rgba(239,68,68,.08); border-radius: 4px; }
 .dsh-ai-team__feed-item--resolved { opacity: .5; border-left-color: #9ca3af; background: rgba(127,127,127,.08); }
 .dsh-ai-team__feed-reason { font-weight: 600; margin-right: 6px; }
@@ -49,6 +51,23 @@ const CSS = `
 .dsh-ai-team__feed-check { color: #22c55e; }
 .dsh-ai-team__deploy { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed rgba(127,127,127,.2); }
 .dsh-ai-team__empty { opacity: .5; font-style: italic; }
+/* ── 等你决策（面板内作答）：琥珀色是"轮到你了"，红色留给"有东西坏了" ── */
+.dsh-ai-team__awaiting-list { display: flex; flex-direction: column; gap: 10px; }
+.dsh-ai-team__awaiting { border: 1px solid rgba(234,179,8,.45); border-left: 3px solid #eab308; background: rgba(234,179,8,.08); border-radius: 8px; padding: 8px 10px; }
+.dsh-ai-team__awaiting-head { display: flex; align-items: baseline; gap: 6px; }
+.dsh-ai-team__awaiting-hint { margin: 2px 0 6px; font-size: 11px; opacity: .65; }
+.dsh-ai-team__badge--awaiting { color: #b45309; border-color: #eab308; background: rgba(234,179,8,.12); font-weight: 600; }
+.dsh-ai-team__form { display: flex; flex-direction: column; gap: 8px; }
+.dsh-ai-team__field { display: flex; flex-direction: column; gap: 3px; }
+.dsh-ai-team__field-label { font-size: 12px; font-weight: 600; }
+.dsh-ai-team__field-optional { font-style: normal; font-size: 10px; opacity: .55; font-weight: 400; margin-left: 4px; }
+.dsh-ai-team__choices { display: flex; flex-direction: column; gap: 2px; }
+.dsh-ai-team__choice { display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 400; }
+.dsh-ai-team__form-row { display: flex; justify-content: flex-end; gap: 8px; }
+.dsh-ai-team__form-row button { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid transparent; border-radius: 8px; padding: 5px 14px; background: rgba(234,179,8,.9); color: #1f2329; font-weight: 600; }
+.dsh-ai-team__form-row button:disabled { opacity: .45; cursor: default; }
+.dsh-ai-team__form-error { margin: 0; font-size: 11px; color: #ef4444; }
+.dsh-ai-team__form-ok { margin: 0; font-size: 11px; color: #22c55e; }
 /* ── 插件设置卡片（settings.plugin.item / autopilot namespace） ── */
 .dsh-ai-team__config { display: flex; flex-direction: column; gap: 12px; }
 .dsh-ai-team__config-intro { margin: 0 0 2px; font-size: 12px; opacity: .6; }

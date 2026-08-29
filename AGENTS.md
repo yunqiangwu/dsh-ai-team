@@ -37,7 +37,7 @@ src/
     contracts.ts  contract_create 的写前校验与渲染（id / 悬空依赖 / 成环 / 禁区 / 域数），纯函数不碰盘
     report.ts     完成报告渲染（落在 <stateDir>/completion.md）
   tools.ts        模型可见工具（defineTool 注册），每次变更 publish 一次快照
-  vocab.ts        运行时枚举词表（ROLES / TASK_STATUSES / ESCALATION_REASONS …）：零依赖、浏览器安全
+  vocab.ts        运行时枚举词表（ROLES / TASK_STATUSES / ESCALATION_REASONS …）+ `TICKET_ROUTE_PREFIX`（服务端路由与面板 fetch 唯一共用的事实）：零依赖、浏览器安全
   schema.ts       zod 形状真相 + `z.infer` 派生视图类型：视图与投影校验的唯一来源，只依赖 zod 与 vocab
   view.ts         类型门面：`export * from './vocab.js'` + 纯类型 re-export（禁 node、禁值引用 schema）
   events.ts       session 事件与投影的类型声明合并（唯一词汇表）
@@ -50,7 +50,9 @@ src/
   escalate.ts     升级记录：打标、写任务单留言、发 webhook
   questionnaire.ts 问卷实体（与 escalate 平级、绝不合并）：题目校验 / 答案归一 / 状态推进 / 画成工单字段
   docdraft.ts     文档先行：draft 区读写与 frontmatter、章节定位回写、sha256 钉与升格、禁区比对
-  notification.ts Mailer（自研 SMTP，仅用 node:net/tls）+ TicketServer（本地问卷工单）
+  ticket-handler.ts 工单 HTTP 层的唯一实现（node 侧，不进客户端产物）：前缀剥离 + id 锚死的路由、信任围栏、定长 token 比对、表单渲染与两种提交形态
+  formmodel.ts    题面 → 表单控件的纯映射（浏览器安全，禁 zod / `node:`）：服务端工单页与面板内联卡片共用同一份题面
+  notification.ts Mailer（自研 SMTP，仅用 node:net/tls）+ TicketServer（独立端口那层壳，只 start/close，逻辑在 ticket-handler）
   secrets.ts      密钥唯一出口：env 引用解析 + SecretRedactor 脱敏
   learnings.ts    知识回路纯逻辑：捕获去重 / 有界注入 / learnings.md 渲染（落 stateDir，真相源在 state.json）
   roles.ts        四角色的 system prompt 模板
@@ -61,7 +63,7 @@ src/
   client/         Web 端：面板、设置卡片、i18n 字典、样式、宿主契约（React 18，CJS 产物）
 preset/
   autopilot-team/ 插件自带的 agent preset 模板（agent.cordis.yml + preset.yml），随包发布，运行时拷到用户级预设根
-tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict / questionnaire 十二个测试文件 + smoke-cordis 冒烟（含预设落盘断言）
+tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict / questionnaire / ticket-http 十三个测试文件 + smoke-cordis 冒烟（含预设落盘断言）
 ```
 
 ## 运行时拓扑
@@ -103,6 +105,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：`pr_sync`（比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）。触及禁区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。默认禁区现在只剩 `['LICENSE']`（2026-08-29 变更，`AGENTS.md` / `.github/` 已移出）。⚠️ 移出 `.github/` 的代价：AI 团队改得了把关自己的 CI workflow，`requireCiGreen` 的考卷和答卷在同一支笔下面 —— 这条保护从「禁区硬阻断」降级为「单独成变更 + 人复核」，需要硬保证的项目请自己把 `.github/` 配回 `security.forbiddenPaths`。
 4. **门不过不合并**：`pushRequiresGates` 时门红禁 push/approve；`requireCiGreen` 是**另一道独立的门**（不再被 `pushRequiresGates` 短路），且 `ciStatus === null`（从未 `pr_sync`）视为未验证 → 禁 approve。注意：CI 状态只有 github 平台查得到，其它平台 `pr_sync` 恒置 `unknown`、该门自动不强制 —— 非 github 仓库请显式关掉 `requireCiGreen`，别以为它在保护你。
 5. **禁止破坏性 git**：不 force-push 共享分支（任务/成员分支仅限 `--force-with-lease`）、不 reset 共享分支、不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 `assertSafeRef`：不得以 `-` 开头、不得含空格或 `..`，否则模型传一个 `-D` 就能把 `git branch -D <同事的任务分支>` 拼进 argv 静默删分支。
+6. **工单凭据只活在人手里**：token 存在 service 侧旁路表（`state.json.ticketTokens`，**内部记录字段**，不是视图字段 —— 所以 `stateVersion` 不动），只拼进邮件 / webhook 的文案。任何人往 `EscalationView` / `QuestionnaireView` / 投影上加 token 字段都是在把「谁能答这张工单」写进谁都能抄一份的地方，`tests/test-notification.ts` 会红。三个失败分支（未知 id / 缺凭据 / 围栏不过）**必须返回逐字节相同的 404**，绝不 403 —— 差别一旦不同，工单号就能被枚举。独立端口 `host` 非回环 → 启动即抛，不降级继续。⚠️ 诚实边界：同源信任围栏挡的是端口扫描、跨站表单和 DNS rebinding，**挡不住本机进程和已被注入的 agent**（与硬规则 2 同一定位）。
 
 ## 代码风格
 
@@ -144,6 +147,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 | 新增 Config 字段 | `index.ts` 的 `Config` 接口与 schema → `service/options.ts` 的 `AutopilotOptions` → `apply()` 的映射 → README 配置块 → 需要时 `client/settings-card.tsx` |
 | 改 `profile.ts` 的约定 | 服务端默认值可能与 `ProjectProfile` 分叉，改前先核对 `README` 的 AgentDeploy 说明 |
 | 新增远端平台/PR 能力 | `github.ts` 适配层是否覆盖该平台 → `vocab.ts` 的 `CI_STATUSES`；⚠️ `remote.platform` 的 `'github' \| 'cnb' \| 'gitlab' \| 'generic'` 目前仍手抄在 `index.ts`（唯一残留的双写枚举，且非 github 无 CI 查询实现） |
+| 改工单路由 / 题面与答案形状 | 前缀常量只有 `vocab.ts` 的 `TICKET_ROUTE_PREFIX` 一份（服务端与面板各自 import，写死两份必漂移）→ `ticket-handler.ts` 的前缀剥离与锚死正则 → 面板与服务端表单共用 `src/formmodel.ts`（改控件形态两边一起变）→ 面向人的文案 zh/en **同时**加 |
 | 移动 / 重命名 `.md` 文档 | 全仓库 grep 旧文件名并逐处改引用（README、`.tasks/*.md` 契约、`src/` 注释、`*.patch.yml`）；放哪儿、怎么命名见「文档规范」 |
 
 ## 已知坑
@@ -155,17 +159,19 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 5. **`smoke-cordis` 测的是构建产物**：它 import `../lib/index.js`，改完源码必须先 `pnpm build` 再跑，否则测的是旧产物。
 6. **设置卡片改动需重启**：`autopilot` 命名空间在插件加载时注册，设置页改配置要带 `--patch` 重启服务端才生效。
 7. **`autopilot-team` 预设是随包分发 + 运行时落盘的**：模板在 `preset/autopilot-team/`，`ensureAutopilotTeamPreset()` 在 `apply()` 时拷到用户预设根（缺失才拷、绝不覆盖）。预设目录盘点无缓存，落盘后刷新即见；但**自动建 `demo` 团队**的钩子在宿主 `lib/index.js`，改宿主代码后需重启服务端。
+8. **面板的工单路由是「可选注入」，不是顶层 `inject`**：`src/index.ts` 用 `ctx.inject(['webServer', 'webRuntime'], …)` 注册 prefix 路由。两个原因：顶层 `export const inject = ['tools']` 被 `tests/smoke-cordis.ts` 钉死；而顶层 inject 是**硬依赖**，无宿主 web 的 headless profile 会直接起不来。所以宿主不在 = 只是没有这条路由（独立端口照旧）。挂载外面包了一层 `logger.warn` —— 宿主 `register` 对重复 `(kind, path)` 会抛（HMR / 双装载场景），挂不上不该拖垮整个插件。
 
 ## 测试约定
 
 - `tests/test-integration.ts` 全流程生命周期（clone → 派发 → 门 → 审查 → 合并 → push → 部署）。
 - `tests/test-unattended.ts` 循环分支（崩溃恢复、依赖/域锁、卡死、返工上限、完成报告）+ 安全硬规则。
-- `tests/test-notification.ts` 真 mock SMTP（net）+ 真工单端口，验证通知闭环。
+- `tests/test-notification.ts` 真 mock SMTP（net）+ 真工单端口，验证通知闭环。⚠️ 其中一条顺带是**凭据不漏进视图**的守门人：投影里的 `ticketUrl` 必须无 `?t=`，token 只活在 `state.json` 的旁路表 `ticketTokens` 里。
 - `tests/test-profile.ts` / `test-bootstrap.ts` / `test-cache.ts` / `test-learnings.ts` 各适配层与纯逻辑模块。
 - `tests/test-exec.ts` **shell runner 的行为锁定**：超时折算成 exitCode 1、只有 abort 才 reject、`CI=true`、日志尾保留最后 4000 字符。改 `exec.ts` 时这组必须一条不改地通过，才是「纯搬家没改行为」。
 - `tests/test-allowlist.ts` **白名单判定语义**：命令替换 / 反引号 / 换行 / 裸 `&` 一律不给静默放行（含一条"标记文件没被创建"的证据断言，证明确实没 spawn），而重定向与 glob 仍放行 —— 判据见「安全硬规则 2」。
 - `tests/test-service-modules.ts` `service/` 下纯函数的直接单测（描述预算倒排、完成报告渲染、state 工具）。
 - `tests/test-questionnaire.ts` 问卷闭环：独立实体（不产生升级/教训/直方图）、工单表单渲染与 400 重述、interactive 真 await 与超时兜底、答案 `[decision]` 回写、draft→accepted 审批链（含防「批 A 合 B」）、`contract_create` 写前校验。
+- `tests/test-ticket-http.ts` **工单 HTTP 契约的行为锁定**：前缀剥离（挂 `/autopilot/ticket` 却请求 `/ticket/x` → 404）、未知 id / 缺 token / token 不符**响应体逐字节相同**、DNS rebinding（`Host: evil.com` + 相同 `Origin` → 404）、`sec-fetch-site: cross-site` 拒、`0.0.0.0` 绑定拒启、JSON 400 保留 `missing`、超 body 413。⚠️ 它必须用裸 `node:http` 客户端而不是 `fetch` —— `fetch` 不给设 `Host`，而 `Host` 正是围栏的第一判据。
 - `tests/smoke-cordis.ts` Loader 契约冒烟。⚠️ 它把**注册工具名清单整条锁死**，新增 tool 必须同步那份数组，否则 `pnpm test` 红在这一条上。
 - 新增断言优先用 `AutopilotOptions` 工厂 `testOptions(fixture, overrides)`，别手搓配置对象。
 - ⚠️ 校验顺序必须是 `typecheck && lint && build && test`：`smoke-cordis` 跑的是 `lib/` 产物，把 build 放在 test 之后会拿上一版 lib 测出**假失败**（本轮实测踩过）。

@@ -8,12 +8,15 @@
  * 记成一条根本不存在的教训。
  *
  * 本模块只做实体：题目的合法性、答案的归一化与状态推进、以及「一张问卷画成工单
- * 长什么样」。HTTP 投递在 notification.ts，回写文档在 docdraft.ts，编排（谁在什么
- * 阶段问什么、答案落到哪儿）在 service.ts。
+ * 长什么样」（字段形状本身住在浏览器安全的 formmodel.ts，面板与工单页共用）。
+ * HTTP 投递在 ticket-handler.ts，回写文档在 docdraft.ts，编排（谁在什么阶段问
+ * 什么、答案落到哪儿）在 service.ts。
  */
 import { randomBytes } from 'node:crypto';
 import type { SecretRedactor } from './secrets.js';
-import type { TicketField, TicketOption } from './notification.js';
+import { fieldsOfQuestions } from './formmodel.js';
+import type { TicketField } from './formmodel.js';
+import { MULTI_VALUE_SEP } from './vocab.js';
 import type {
   AnswerSource,
   Question,
@@ -22,9 +25,6 @@ import type {
   QuestionnaireMode,
   QuestionnaireView,
 } from './view.js';
-
-/** 多选答案的序列化分隔符：选项值本身不允许含它（创建时校验）。 */
-export const MULTI_VALUE_SEP = ', ';
 
 /** 一份问卷最多几道题。超过这个数说明该拆成几轮，而不是逼人滚着答完。 */
 export const MAX_QUESTIONS = 12;
@@ -340,26 +340,11 @@ export class QuestionnaireManager {
 }
 
 /**
- * 把一份问卷画成工单字段（§3.3）：选项题用 select / multiselect 并预勾 recommended，
- * 填空题用 text / textarea。带审批码的问卷把码写在说明里 —— 那是它唯一的出口，
- * 投影里没有。
+ * 把一份问卷画成工单字段（§3.3）：字段映射本身在 `formmodel.ts`（面板卡片用同一
+ * 份，两边才不会预勾得不一样），这里只补服务端独有的说明文案 —— 带审批码的问卷
+ * 把码写在说明里，那是它唯一的出口，投影里没有。
  */
 export function ticketFieldsOf(record: QuestionnaireRecord): { notice: string; fields: TicketField[] } {
-  const fields: TicketField[] = record.questions.map((question) => {
-    const options: TicketOption[] = question.options.map((option) => ({
-      value: option.value,
-      label: option.label,
-      checked: option.recommended || option.value === question.defaultValue,
-      ...(option.impact === '' ? {} : { impact: option.impact }),
-    }));
-    return {
-      name: question.name,
-      label: question.label,
-      type: question.type,
-      ...(question.required ? { required: true } : {}),
-      ...(options.length === 0 ? {} : { options }),
-    };
-  });
   const notice =
     record.kind === 'approval'
       ? [
@@ -369,7 +354,7 @@ export function ticketFieldsOf(record: QuestionnaireRecord): { notice: string; f
             : `审批码：${record.approvalCode}；这是一次性凭据，只有读到本页的人才能批准。`,
         ].join(' ')
       : 'AI 团队需要你做一个决策才能继续。这不是故障上报 —— 没有任何东西坏掉，只是这个选择得由人来做。';
-  return { notice, fields };
+  return { notice, fields: fieldsOfQuestions(record.questions) };
 }
 
 /**
