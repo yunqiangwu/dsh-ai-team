@@ -26,6 +26,8 @@ export const AUTOPILOT_KEY_FIELDS: KeyField[] = [
   { path: 'daemon.heartbeatSeconds', label: 'config.heartbeatSeconds', kind: 'number' },
   { path: 'daemon.maxReviewRounds', label: 'config.maxReviewRounds', kind: 'number' },
   { path: 'daemon.stuckMinutes', label: 'config.stuckMinutes', kind: 'number' },
+  { path: 'daemon.maxDiffLines', label: 'config.maxDiffLines', hint: 'maxDiffLinesHint', kind: 'number' },
+  { path: 'learnings.enabled', label: 'config.learningsEnabled', hint: 'learningsEnabledHint', kind: 'boolean' },
 ];
 
 /** 沿点路径遍历普通对象；任一跳缺失则返回 undefined。 */

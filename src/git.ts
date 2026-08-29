@@ -302,18 +302,30 @@ export async function changedFiles(repoPath: string, fromRef: string, toRef: str
   return out === '' ? [] : out.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
+/** 一次 `base..head` 改动的规模（评审前的体量门用它）。 */
+export interface DiffStat {
+  files: number;
+  insertions: number;
+  deletions: number;
+}
+
 /**
- * 推送前守卫（规范 §4.5.3）：当 `fromRef..toRef` 之间任何变更的路径命中禁用前缀
- * （human-only 区）时拒绝。返回违规路径（空数组 = 干净）。
+ * `fromRef..toRef` 的行级改动量（git diff --shortstat）。
+ * 解析不出短统计时返回全 0 —— 体量门把"未知"当作"不拦"，
+ * 绝不允许 git 输出格式的变化把既有评审流程卡死。
  */
-export async function forbiddenPathViolations(
-  repoPath: string,
-  fromRef: string,
-  toRef: string,
-  forbiddenPaths: readonly string[],
-): Promise<string[]> {
-  const files = await changedFiles(repoPath, fromRef, toRef);
-  return files.filter((file) => forbiddenPaths.some((prefix) => file.startsWith(prefix) || file === prefix.replace(/\/$/, '')));
+export async function diffShortstat(repoPath: string, fromRef: string, toRef: string): Promise<DiffStat> {
+  try {
+    const out = await git(['diff', '--shortstat', fromRef, toRef], repoPath);
+    const count = (pattern: RegExp): number => Number.parseInt(pattern.exec(out)?.[1] ?? '0', 10) || 0;
+    return {
+      files: count(/(\d+) files? changed/),
+      insertions: count(/(\d+) insertions?\(\+\)/),
+      deletions: count(/(\d+) deletions?\(-\)/),
+    };
+  } catch {
+    return { files: 0, insertions: 0, deletions: 0 };
+  }
 }
 
 /** `branch` 上从 `sinceRef` 不可达的提交数（git 活动探针）。 */

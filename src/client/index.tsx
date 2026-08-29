@@ -6,13 +6,20 @@ import type { ClientContext } from './contract.js';
 /** 依赖的服务：sessions（projection 席位）、slots、locale、settings scope。 */
 export const inject = ['sessions', 'slots', 'locale', 'settingsScope'];
 
-const zh = {
+/**
+ * 导出是为了让测试能拿枚举交叉断言：面板里的 t() 全是运行时拼出来的 key
+ * （`role.${member.role}` / `reason.${...}` / `status.${...}`），而 Translator
+ * 接受任意字符串 —— 新增枚举值忘了配字典，面板会把原始 key 直接渲染出来，
+ * 编译器和现有测试都不会响。
+ */
+export const zh = {
   'panel.title': '自动驾驶：{team}',
   'panel.summary': '{members} 名成员（{busy} 忙碌） · {tasks} 个进行中任务 · {escalations} 个待处理升级',
   'section.members': '成员与工作空间',
   'section.tasks': '任务看板',
   'section.escalations': '升级事件',
   'section.deploys': '部署历史',
+  'section.learnings': '已知教训',
   'loop.stopped': '已停止',
   'loop.running': '运行中',
   'loop.paused': '已暂停',
@@ -26,6 +33,7 @@ const zh = {
   'status.in_progress': '进行中',
   'status.in_review': '审查中',
   'status.changes_requested': '待修改',
+  'status.needs-clarification': '待澄清',
   'status.done': '已完成',
   'status.needs-human': '待人工',
   'task.round': '第 {round} 轮返工',
@@ -33,8 +41,12 @@ const zh = {
   'ci.pending': 'CI 等待',
   'ci.success': 'CI 通过',
   'ci.failure': 'CI 失败',
+  'ci.unknown': 'CI 未知',
   'escalations.empty': '暂无升级事件',
   'deploys.empty': '暂无部署记录',
+  'learnings.empty': '暂无沉淀的教训',
+  'learnings.hits': '已印证 {hits} 次',
+  'learnings.promoted': '已升格',
   'deploy.running': '部署中',
   'deploy.healthy': '健康',
   'deploy.failed': '失败',
@@ -45,6 +57,7 @@ const zh = {
   'reason.foreign-gate-failure': '非本任务门红',
   'reason.forbidden-paths': '触及禁区',
   'reason.review-rounds-exceeded': '返工超限',
+  'reason.change-too-large': '改动过大',
   'reason.task-stuck': '任务卡死',
   'reason.deploy-failed': '部署失败',
   'reason.bootstrap-failed': '引导失败',
@@ -65,6 +78,10 @@ const zh = {
   'config.heartbeatSeconds': '心跳间隔（秒）',
   'config.maxReviewRounds': '最大返工轮次',
   'config.stuckMinutes': '卡死判定期（分钟）',
+  'config.maxDiffLines': '评审体量上限（行，0=关闭）',
+  'maxDiffLinesHint': '单任务累计增删行超过这个数就不许 approve，改为升级让人决定是拆任务还是放行。',
+  'config.learningsEnabled': '启用知识回路',
+  'learningsEnabledHint': '把评审打回与升级沉淀成教训，注入后续任务描述；只写台账，不改项目文档。',
   'config.overridden': '已覆盖',
   'config.revert': '还原',
   'config.reset': '重置为继承值',
@@ -72,13 +89,14 @@ const zh = {
   'config.save': '保存',
 };
 
-const en: Record<keyof typeof zh, string> = {
+export const en: Record<keyof typeof zh, string> = {
   'panel.title': 'Autopilot: {team}',
   'panel.summary': '{members} members ({busy} busy) · {tasks} open tasks · {escalations} open escalations',
   'section.members': 'Members & workspaces',
   'section.tasks': 'Task board',
   'section.escalations': 'Escalations',
   'section.deploys': 'Deploy history',
+  'section.learnings': 'Known lessons',
   'loop.stopped': 'stopped',
   'loop.running': 'running',
   'loop.paused': 'paused',
@@ -92,6 +110,7 @@ const en: Record<keyof typeof zh, string> = {
   'status.in_progress': 'In progress',
   'status.in_review': 'In review',
   'status.changes_requested': 'Changes requested',
+  'status.needs-clarification': 'Needs clarification',
   'status.done': 'Done',
   'status.needs-human': 'Needs human',
   'task.round': 'round {round}',
@@ -99,8 +118,12 @@ const en: Record<keyof typeof zh, string> = {
   'ci.pending': 'CI pending',
   'ci.success': 'CI green',
   'ci.failure': 'CI failed',
+  'ci.unknown': 'CI unknown',
   'escalations.empty': 'No escalations yet',
   'deploys.empty': 'No deploys yet',
+  'learnings.empty': 'No lessons captured yet',
+  'learnings.hits': '{hits} hits',
+  'learnings.promoted': 'promoted',
   'deploy.running': 'running',
   'deploy.healthy': 'healthy',
   'deploy.failed': 'failed',
@@ -111,6 +134,7 @@ const en: Record<keyof typeof zh, string> = {
   'reason.foreign-gate-failure': 'foreign gate failure',
   'reason.forbidden-paths': 'forbidden paths',
   'reason.review-rounds-exceeded': 'rework limit',
+  'reason.change-too-large': 'change too large',
   'reason.task-stuck': 'task stuck',
   'reason.deploy-failed': 'deploy failed',
   'reason.bootstrap-failed': 'bootstrap failed',
@@ -131,6 +155,10 @@ const en: Record<keyof typeof zh, string> = {
   'config.heartbeatSeconds': 'Heartbeat interval (s)',
   'config.maxReviewRounds': 'Max rework rounds',
   'config.stuckMinutes': 'Stuck threshold (min)',
+  'config.maxDiffLines': 'Review size cap (lines, 0=off)',
+  'maxDiffLinesHint': 'Above this many changed lines a task cannot be approved; it escalates so a human splits it or waives the cap.',
+  'config.learningsEnabled': 'Enable the knowledge loop',
+  'learningsEnabledHint': 'Turns review rejections and escalations into lessons injected into later task descriptions; writes a ledger only, never project docs.',
   'config.overridden': 'overridden',
   'config.revert': 'Revert',
   'config.reset': 'Reset to inherited',

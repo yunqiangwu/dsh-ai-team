@@ -4,17 +4,13 @@ import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-session-projection';
 import './events.js';
 import type { AutopilotProjection } from './view.js';
+import { ESCALATION_REASONS, LEARNING_BUCKETS, LEARNING_KINDS, TASK_STATUSES } from './view.js';
 
 const roleSchema = zod.enum(['leader', 'developer', 'reviewer', 'operator']);
 const memberStatusSchema = zod.enum(['idle', 'working', 'reviewing']);
-const taskStatusSchema = zod.enum([
-  'pending',
-  'in_progress',
-  'in_review',
-  'changes_requested',
-  'done',
-  'needs-human',
-]);
+// 引用 view.ts 的唯一清单，而不是在这里重抄一遍枚举值：重抄漏一个不会编译报错，
+// 只会在运行时表现为 viewSchema 校验静默失败、面板永远拿不到该值。
+const taskStatusSchema = zod.enum(TASK_STATUSES);
 const ciStatusSchema = zod.enum(['pending', 'success', 'failure', 'unknown']);
 
 const gateResultSchema = zod.object({
@@ -73,6 +69,22 @@ const reviewViewSchema = zod.object({
   createdAt: zod.number(),
 });
 
+const learningViewSchema = zod.object({
+  id: zod.string(),
+  kind: zod.enum(LEARNING_KINDS),
+  key: zod.string(),
+  bucket: zod.enum(LEARNING_BUCKETS),
+  summary: zod.string(),
+  domain: zod.string(),
+  touches: zod.array(zod.string()),
+  taskId: zod.string().nullable(),
+  contractId: zod.string().nullable(),
+  hits: zod.number().int().nonnegative(),
+  lastHitAt: zod.number(),
+  createdAt: zod.number(),
+  promoted: zod.boolean(),
+});
+
 const teamViewSchema = zod.object({
   id: zod.string(),
   name: zod.string(),
@@ -82,25 +94,14 @@ const teamViewSchema = zod.object({
   members: zod.array(memberViewSchema),
   tasks: zod.array(taskViewSchema),
   reviews: zod.array(reviewViewSchema),
+  learnings: zod.array(learningViewSchema),
   createdAt: zod.number(),
 });
 
 const escalationViewSchema = zod.object({
   id: zod.string(),
   taskId: zod.string().nullable(),
-  reason: zod.enum([
-    'conflicting-requirements',
-    'cross-domain',
-    'paid-dependency',
-    'foreign-gate-failure',
-    'forbidden-paths',
-    'review-rounds-exceeded',
-    'task-stuck',
-    'deploy-failed',
-    'bootstrap-failed',
-    'gate-failure',
-    'manual',
-  ]),
+  reason: zod.enum(ESCALATION_REASONS),
   message: zod.string(),
   suggestion: zod.string(),
   logTail: zod.string(),
@@ -160,8 +161,9 @@ export function registerAutopilotProjection(ctx: Context): void {
         viewSchema: autopilotProjectionSchema.nullable(),
         view: (state): AutopilotProjection | null => state,
       },
-      // v2：escalation 视图新增了 `notification` 块。变更形状时需递增。
-      stateVersion: 2,
+      // v3：teamView 新增 `learnings`；任务状态新增 `needs-clarification`；
+      // 升级原因新增 `change-too-large`。变更形状时需递增。
+      stateVersion: 3,
     });
   });
 }

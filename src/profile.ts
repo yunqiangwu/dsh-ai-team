@@ -343,11 +343,34 @@ export function effectiveForbiddenRules(
 }
 
 /**
- * 统计任务 touches 的独立"领域"数，复用与领域锁一致的前缀语义：两条路径当
- * 一条是另一条的前缀时属于同一领域。这是"该任务跨了多少个不同插件领域"的
- * 通用代理 —— AgentDeploy 在其超过 `crossDomainThreshold`（默认 3）时升级。
+ * 派发前的契约自洽检查：任务自己声明的 `touches` 是否踩到它自己声明的
+ * `forbidden` 禁区（AgentDeploy 要求二者不相交，此前插件只在 CI 里兜，
+ * 派发期完全不看 —— `TaskContract.forbidden` 解析出来后无人消费）。
+ *
+ * 两个方向都算违规：`touch` 是禁区的前缀（如 touches `app/` 而 forbidden
+ * 声明了 `app/server/`）同样意味着这个任务有权改到禁区里面。
+ * 返回违规的 touches 条目（空数组 = 干净），让调用方能指名报出是哪一条。
  */
-export function distinctDomainCount(touches: readonly string[]): number {
+export function forbiddenTouchesViolation(touches: readonly string[], forbidden: readonly string[]): string[] {
+  const bad: string[] = [];
+  for (const touch of touches) {
+    const left = touch.endsWith('/') ? touch : `${touch}/`;
+    for (const entry of forbidden) {
+      const right = entry.endsWith('/') ? entry : `${entry}/`;
+      if (left.startsWith(right) || right.startsWith(left)) {
+        if (!bad.includes(touch)) bad.push(touch);
+      }
+    }
+  }
+  return bad;
+}
+
+/**
+ * 把任务 touches 折叠成最小覆盖集（前缀语义与领域锁一致：一条是另一条的前缀
+ * 时算同一域）。抽成独立函数是为了让知识回路的「域签名」与跨域阈值统计
+ * 共用同一份前缀语义，绝不允许两套实现分叉。
+ */
+export function distinctDomains(touches: readonly string[]): string[] {
   const normalized = [...new Set(touches.map((touch) => (touch.endsWith('/') ? touch : `${touch}/`)))].filter(
     (touch) => touch !== '/',
   );
@@ -357,7 +380,16 @@ export function distinctDomainCount(touches: readonly string[]): number {
     if (domains.some((domain) => touch.startsWith(domain) || domain.startsWith(touch))) continue;
     domains.push(touch);
   }
-  return domains.length;
+  return domains;
+}
+
+/**
+ * 统计任务 touches 的独立"领域"数，复用与领域锁一致的前缀语义：两条路径当
+ * 一条是另一条的前缀时属于同一领域。这是"该任务跨了多少个不同插件领域"的
+ * 通用代理 —— AgentDeploy 在其超过 `crossDomainThreshold`（默认 3）时升级。
+ */
+export function distinctDomainCount(touches: readonly string[]): number {
+  return distinctDomains(touches).length;
 }
 
 /**

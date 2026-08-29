@@ -27,9 +27,11 @@ pnpm add dsh-ai-team
 | leader / developer / reviewer / **operator** 四角色团队 | **客观质量门**：gates_run 全绿才可 approve/push；远端 CI 绿才可合并 |
 | 每成员一个 git worktree，共享 object store | 远程 git：clone / push / PR（`GIT_SSH_COMMAND` 注入密钥） |
 | 任务看板 + `task/<id>` 分支 | `.tasks/*.md` 任务契约集成（frontmatter 真相源 + `_board.md` 自动生成） |
-| `code_review` 审查门控，`--no-ff` 合入 | 主循环：崩溃恢复、依赖/域锁派发、卡死检测、空转降频、完成报告 |
+| `code_review` 审查门控，按画像策略合入 | **知识回路**：自动捕获评审打回与升级 → 注入后续任务描述 → `_learnings.md` 生成物；升格进项目文档由人裁决 |
+| **`task_clarify`**：契约含糊退回 leader，不消耗返工轮次 | 主循环：崩溃恢复、依赖/域锁派发、卡死检测、空转降频、完成报告 |
 | session 事件 + 投影 + Web 看板 | 升级机制：`needs-human` 打标 + 任务单留言 + webhook 通知 + 粒度化暂停 |
-| — | 部署闭环：健康检查（指数退避）+ 自动回滚 + 部署历史 |
+| — | 前置门：派发期 `touches ∩ forbidden` 自洽校验、评审期改动体量门（`maxDiffLines`/`maxDiffFiles`） |
+| — | 部署闭环：健康检查（指数退避）+ 自动回滚 + 部署历史（纯 `.tasks/` 提交不触发部署） |
 | — | 人工确认：邮件通知 + 问卷工单，答复自动回写、可自动恢复循环 |
 | — | 安全硬规则：密钥只引用不落盘、命令白名单、forbiddenPaths、push 安全 |
 
@@ -109,6 +111,8 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           maxReviewRounds: 3                  # 返工上限，超过升级
           stuckMinutes: 45                    # 无 git 活动超时，升级
           pollIntervalSeconds: 30
+          maxDiffLines: 0                     # 评审体量门：单任务累计增删行上限；超限不许 approve 而是升级 change-too-large。0=关闭
+          maxDiffFiles: 0                     # 同上按变更文件数。默认关闭：大 diff 的浅审是静默失败，但开启会改变既有团队行为
         escalation:
           webhookUrlEnv: AUTOPILOT_WEBHOOK    # 通知 webhook 的环境变量名
           label: needs-human
@@ -135,6 +139,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           healthCheckUrl: https://app.example.com/health
           rollbackCommand: 'ssh ... docker compose rollback'
           secretsEnv: []                      # 部署密钥环境变量名白名单
+          skipTasksOnlyCommits: true          # base 只前进了 .tasks/ 提交（任务单回写/看板重生成）时不部署：这类提交不含代码，误部署还会触发回滚与升级
         security:
           forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']   # human-only 区
           commandAllowlist: [pnpm, git, bun, docker]             # 可执行命令前缀
@@ -142,6 +147,12 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
         buildCache:                           # 可选：构建缓存（默认关闭）
           enabled: true                       # 把 .nuxt/.output/coverage 等软链到共享目录，减少每条任务全量 build
           dirs: ['.nuxt', '.output', 'dist', 'coverage', '.vitest', 'node_modules/.cache']
+        learnings:                            # 可选：知识回路（默认关闭，开启会改变成员看到的提示词）
+          enabled: true                       # 自动捕获评审打回与升级，并把教训注入后续任务描述
+          injectMaxCount: 5                   # 单任务最多注入几条教训（相关域优先，再按被印证次数）
+          injectCharBudget: 1200              # 注入字符预算：描述会整体进投影事件推给前端，必须有界
+          promoteAfterHits: 3                 # 同因被印证这么多次，就值得人写进项目文档（插件绝不代笔改文档）
+          maxEntries: 200                     # 台账上限，超出淘汰"命中少且久未被印证"的记录
         profile:                              # 项目约定适配器（可选，见下方说明）
           preset: agentdeploy                 # 'default' | 'agentdeploy'；留空 = default
           # 其余字段可逐项覆写 preset；缺省回退到 preset 默认值。
@@ -191,15 +202,15 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 每 `pollIntervalSeconds` 一拍（每拍先落心跳到 `<stateDir>/heartbeat.json`）：
 
 1. **恢复检查**：读 state.json + heartbeat 重建内存态；上次崩溃时 `in_progress` 的任务在首拍标记续跑（`recovered`）。恢复的循环状态：持久化为 `running` 的一律降为 `paused`，等待 `autopilot_resume`。
-2. **分诊 needs-human**：人工把任务单状态改回 `pending`（或调用 `escalation_resolve`）→ 任务回到待派发，关联升级标记 resolved。
-3. **派发**：`depends_on` 全部 done 且 `status=pending` 的任务，域锁检查（`in_progress` 任务 `touches` 目录交集为空）→ 派给空闲 developer。
-4. **审查闸门**：reviewer 调 `code_review` approve 前必须 `gates_run` 全绿（`pushRequiresGates`）；有远端 CI 且 `requireCiGreen` 时 CI 也必须绿。`--no-ff` 合入 base；合并冲突拒绝并保持 `in_review`。
-5. **返工上限**：`request_changes` 轮次 ≥ `maxReviewRounds` → escalate（说明任务拆分或理解有误）。
+2. **分诊挂起态**：`needs-human` 与 `needs-clarification` 都属"等人/等 leader 动一下"；人工把任务单状态改回 `pending`（或调用 `escalation_resolve`、leader 用 `task_update` 带 `note` 回答）→ 任务回到待派发，关联升级标记 resolved。
+3. **派发**：`depends_on` 全部 done 且 `status=pending` 的任务，先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
+4. **审查闸门**：reviewer 调 `code_review` approve 前必须 `gates_run` 全绿（`pushRequiresGates`）；有远端 CI 且 `requireCiGreen` 时 CI 也必须绿；配了 `daemon.maxDiffLines`/`maxDiffFiles` 时改动体量超限也拒（升级 `change-too-large`）。按画像策略合入 base；合并冲突拒绝并保持 `in_review`。
+5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
 6. **卡死检测**：任务 `stuckMinutes` 无 git 活动 → escalate。
-7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；健康检查 3 次失败自动 `rollbackCommand` 并升级。
-8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done → 写 `.tasks/_completion.md` 完成报告并停机等待。
+7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级。
+8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done → 写 `.tasks/_completion.md` 完成报告（含本轮教训与**待人工升格清单**）并停机等待。
 
-**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 任务卡死 / 部署连续失败 / 引导失败。
+**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 任务卡死 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
 
 ## 任务契约（.tasks/*.md）
 
@@ -209,18 +220,33 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 ---
 id: CORE-1
 title: set up core module
-status: pending        # pending → in_progress → done；needs-human 阻塞可回 pending
+status: pending        # pending → in_progress → in_review → done
+                       # 分支态：changes_requested / needs-clarification（等 leader）/ needs-human（等人）
 owner: dev-1
 depends_on: [CORE-0]
 touches: [server/core/]
+forbidden: [server/core/legacy/]   # 本任务不得触碰的路径（按任务划分的禁区）
 ---
 
 Given/When/Then 验收标准……
 ```
 
 - `task_assign` 传 `contractId` 时校验任务单存在且状态为 `pending`，title/depends_on/touches 以任务单为准。
+- `forbidden` 不只是给人看的注释：派发期会拿它和 `touches` 求交（两个方向都算，`touches: [app/]` 命中 `forbidden: [app/server/]` 同样违规），违规立刻升级，而不是白跑一轮门和评审才被 CI 拦下。
 - 每次状态变更回写 frontmatter 并重新生成 `.tasks/_board.md`（自动生成，勿手改），改动以插件身份提交在 base 分支，保持集成检出干净。
+- **评审与澄清都留痕在任务单里**：`request_changes` 的意见、`task_clarify` 的提问、leader 的 `clarify-answer` 都以带时间戳的留言追加进正文 —— 换人接手或换场会话，接得上上下文。
+- `.tasks/_learnings.md` 同为生成物（程序全量重写），见下节。
 - developer 的 DoD：质量门全绿 + 每条验收标准的验证证据写入 PR 描述。
+
+## 知识回路（learnings）
+
+要解决的问题很朴素：**同一个坑被不同任务反复踩**。让人写文档当然对，但 agent 每任务的上下文里不会去读 `docs/` —— 所以坑必须落到**任务描述**里才真正生效。默认关闭，`learnings.enabled: true` 开启。
+
+- **捕获**：两个自动来源（`code_review` 的 request_changes 意见、每一次 escalate，部署失败也已经收敛到升级这一条漏斗）+ 一个显式入口 `learning_record`（成员主动记一条）。原文与结论入库前统一过 `SecretRedactor` 并截断。
+- **去重**：键 = `(来源, 域, 意图桶)`，其中域沿用领域锁那套前缀折叠的最小覆盖集，桶是封闭词表且优先从升级原因等封闭来源推导（不让模型自由措辞做分桶，否则永远合不到一条）。同因反复出现只累加 `hits`，并保留最新结论。
+- **注入**：派发那一刻按 `touches` 相关性打分（同域 > 被印证次数 > 新鲜度），条数与字符双重预算，超出留一行指向 `learning_list`。域所有权硬规则始终留在描述最末尾。
+- **升格归人**：`hits ≥ promoteAfterHits` 的条目进入"待人工升格"清单（`learning_list` 与完成报告都会列出）。**插件绝不代笔改 `AGENTS.md` / `docs/`** —— 那些是 human-only 区，而且删除型改动没有任何客观门可以验证。人落地后再用 `learning_promote` 标记，它便不再参与注入。
+- 生成物 `.tasks/_learnings.md` 只是给人看的便利视图；真相源在 `state.json`，所以目标仓库没有 `.tasks/` 时写盘静默跳过，注入照常工作。
 
 ## 人工确认与问卷工单（notification）
 
@@ -236,19 +262,22 @@ Given/When/Then 验收标准……
 
 1. **密钥只引用不落盘**：Config 只存环境变量名；运行时读 `process.env`；所有日志（门输出、部署输出、webhook 负载、升级记录）经 SecretRedactor 强制脱敏。
 2. **命令白名单**：gates / bootstrap / deploy 的每条命令必须命中 `commandAllowlist` 前缀，否则拒绝执行并提示走升级。
-3. **forbiddenPaths**：push 前检查分支 diff，触及 human-only 区直接拒绝并升级。
-4. **门不过不合并**：`pushRequiresGates=true` 时，门未绿禁止 push 与 approve；`requireCiGreen` 时远端 CI 不绿禁止 approve。
+3. **forbiddenPaths**：派发期就检查 `touches` 是否踩到契约自声明的禁区；push 前再检查分支实际 diff，触及 human-only 区直接拒绝并升级。
+4. **门不过不合并**：`pushRequiresGates=true` 时，门未绿禁止 push 与 approve；`requireCiGreen` 时远端 CI 不绿禁止 approve；配了 `daemon.maxDiff*` 时改动体量超限也拒。
 5. **破坏性 git 操作禁止**：不 force-push 共享分支（任务/成员分支仅允许 `--force-with-lease`），不 reset 共享分支，不删 base 分支。
+6. **知识沉淀不改文档**：教训只进台账与任务描述；`AGENTS.md` / `docs/` 仍属 human-only 区，插件没有任何"改写项目文档"的能力。
 
 ## 工具一览
 
-**团队与协作**：`team_create` / `team_add_member` / `team_list` / `team_status` / `team_branch` / `task_assign` / `task_update` / `code_review`。
+**团队与协作**：`team_create` / `team_add_member` / `team_list` / `team_status` / `team_branch` / `task_assign` / `task_update` / `task_clarify` / `code_review`。
 
 **无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_status` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run`。
 
+**知识回路**：`learning_record`（记一条坑） / `learning_list`（查台账与待升格清单） / `learning_promote`（人落文档后标记，或否掉一条）。
+
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）、六列看板（含 needs-human）、质量门徽标与 CI 徽标、升级事件流、部署历史。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）、七列看板（含 needs-human 与 needs-clarification）、质量门徽标与 CI 徽标、升级事件流、部署历史、**已知教训**（按被印证次数排序，含已升格标记）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
 
 另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片（`settings.plugin.item` 键控命名空间）。它绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段（`remote.url`、`baseBranch`、`bootstrap.enabled`、`gates.commands`、`daemon.heartbeatSeconds`/`maxReviewRounds`/`stuckMinutes`）供编辑保存，写入用户设置层；服务端通过 `installSettingsSection` 让插件读到生效配置（无设置服务时回退到 entry config）。因命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
 

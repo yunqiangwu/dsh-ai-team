@@ -6,7 +6,7 @@
  */
 import { useState } from 'react';
 import type { SlotProps, Translator } from './contract.js';
-import type { AutopilotProjection, DeployView, EscalationView, MemberView, TaskView, TeamView } from '../view.js';
+import type { AutopilotProjection, DeployView, EscalationView, LearningView, MemberView, TaskView, TeamView } from '../view.js';
 import { TASK_STATUSES } from '../view.js';
 
 function LoopLamp({ state, t }: { state: AutopilotProjection['loopState']; t: Translator }) {
@@ -139,6 +139,28 @@ function DeployHistory({ deploys, t }: { deploys: DeployView[]; t: Translator })
   );
 }
 
+function LearningList({ learnings, t }: { learnings: LearningView[]; t: Translator }) {
+  if (learnings.length === 0) return <span className="dsh-ai-team__empty">{t('learnings.empty')}</span>;
+  // 命中次数优先：被反复印证的坑才是值得先看的。
+  const ranked = learnings.toSorted((a, b) => b.hits - a.hits || b.lastHitAt - a.lastHitAt).slice(0, 10);
+  return (
+    <div>
+      {ranked.map((learning) => (
+        <div key={learning.id} className="dsh-ai-team__deploy" title={learning.summary}>
+          <span
+            className={`dsh-ai-team__badge ${learning.promoted ? 'dsh-ai-team__badge--pass' : 'dsh-ai-team__badge--pending'}`}
+          >
+            {learning.bucket}
+          </span>
+          <span>{learning.summary}</span>
+          <span>{t('learnings.hits', { hits: learning.hits })}</span>
+          {learning.promoted ? <span>{t('learnings.promoted')}</span> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TeamBody({ team, t }: { team: TeamView; t: Translator }) {
   return (
     <>
@@ -168,6 +190,10 @@ function TeamBody({ team, t }: { team: TeamView; t: Translator }) {
             );
           })}
         </div>
+      </section>
+      <section>
+        <h4 className="dsh-ai-team__section-title">{t('section.learnings')}</h4>
+        <LearningList learnings={team.learnings} t={t} />
       </section>
     </>
   );

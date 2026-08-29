@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AutopilotOptions } from '../src/service.js';
 import { defaultProfile } from '../src/profile.js';
+import { DEFAULT_LEARNINGS } from '../src/learnings.js';
 
 export function sh(command: string, args: string[], cwd: string): string {
   return execFileSync(command, args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
@@ -55,10 +56,11 @@ export async function seedRemote(
 
 export async function writeContract(
   path: string,
-  contract: { id: string; title: string; dependsOn?: string[]; touches?: string[] },
+  contract: { id: string; title: string; dependsOn?: string[]; touches?: string[]; forbidden?: string[] },
 ): Promise<void> {
   const depends = (contract.dependsOn ?? []).map((dep) => `  - ${dep}`).join('\n');
   const touches = (contract.touches ?? []).map((dir) => `  - ${dir}`).join('\n');
+  const forbidden = (contract.forbidden ?? []).map((dir) => `  - ${dir}`).join('\n');
   const content = [
     '---',
     `id: ${contract.id}`,
@@ -66,6 +68,7 @@ export async function writeContract(
     'status: pending',
     ...(depends === '' ? [] : ['depends_on:', depends]),
     ...(touches === '' ? [] : ['touches:', touches]),
+    ...(forbidden === '' ? [] : ['forbidden:', forbidden]),
     '---',
     '',
     `# ${contract.title}`,
@@ -95,9 +98,18 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
       requireCiGreen: false,
       timeoutMinutes: 1,
     },
-    daemon: { heartbeatSeconds: 1, maxReviewRounds: 3, stuckMinutes: 45, pollIntervalSeconds: 1 },
+    daemon: {
+      heartbeatSeconds: 1,
+      maxReviewRounds: 3,
+      stuckMinutes: 45,
+      pollIntervalSeconds: 1,
+      // 0 = 关闭评审体量门：既有断言 approve 成功的用例行为保持不变。
+      maxDiffLines: 0,
+      maxDiffFiles: 0,
+    },
     escalation: { label: 'needs-human', pauseOnEscalation: 'task' },
-    deploy: { enabled: false, secretsEnv: [] },
+    deploy: { enabled: false, secretsEnv: [], skipTasksOnlyCommits: true },
+    learnings: { ...DEFAULT_LEARNINGS },
     security: {
       forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE'],
       commandAllowlist: ['git', 'pnpm', 'sh', 'echo'],

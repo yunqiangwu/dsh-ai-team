@@ -13,6 +13,8 @@ import { AUTOPILOT_TEAM_PRESET_ID } from './preset.js';
 import { resolveProjectProfile } from './profile.js';
 import type { ProjectProfileInput } from './profile.js';
 import { DEFAULT_CACHE_DIRS } from './cache.js';
+import { DEFAULT_LEARNINGS } from './learnings.js';
+import type { LearningOptions } from './learnings.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
 
@@ -54,6 +56,10 @@ export interface Config {
     maxReviewRounds: number;
     stuckMinutes: number;
     pollIntervalSeconds: number;
+    /** 单个任务允许的最大累计增删行数，超限不许 approve；0 = 关闭该门。 */
+    maxDiffLines: number;
+    /** 单个任务允许的最大变更文件数；0 = 关闭该门。 */
+    maxDiffFiles: number;
   };
   escalation: {
     webhookUrlEnv: string;
@@ -85,6 +91,8 @@ export interface Config {
     healthCheckUrl: string;
     rollbackCommand: string;
     secretsEnv: string[];
+    /** base 只前进了 `.tasks/` 提交时跳过部署（默认开）。 */
+    skipTasksOnlyCommits: boolean;
   };
   security: {
     forbiddenPaths: string[];
@@ -99,6 +107,12 @@ export interface Config {
     enabled: boolean;
     dirs: string[];
   };
+  /**
+   * 知识回路：把评审意见、升级与部署失败沉淀成跨任务教训，并在派发时注入新任务
+   * 描述。默认关闭 —— 开启会改变成员看到的提示词。`.tasks/_learnings.md` 是它的
+   * 全量生成物；升格进项目文档始终由人做。
+   */
+  learnings?: LearningOptions | undefined;
   /**
    * 项目 profile 适配器（见 src/profile.ts）：把目标仓库的协作约定编码进来
    * （branch/PR 命名、合并策略、条件化 gates、禁区策略、ownership 路由）。
@@ -171,8 +185,18 @@ export const Config: z<Config> = z.object({
       maxReviewRounds: z.number().step(1).min(1).default(3),
       stuckMinutes: z.number().step(1).min(1).default(45),
       pollIntervalSeconds: z.number().step(1).min(1).default(30),
+      // 0 = 关闭该门：评审体量上限对既有团队是行为变更，必须显式开启。
+      maxDiffLines: z.number().step(1).min(0).default(0),
+      maxDiffFiles: z.number().step(1).min(0).default(0),
     })
-    .default({ heartbeatSeconds: 60, maxReviewRounds: 3, stuckMinutes: 45, pollIntervalSeconds: 30 }),
+    .default({
+      heartbeatSeconds: 60,
+      maxReviewRounds: 3,
+      stuckMinutes: 45,
+      pollIntervalSeconds: 30,
+      maxDiffLines: 0,
+      maxDiffFiles: 0,
+    }),
 
   escalation: z
     .object({
@@ -223,8 +247,16 @@ export const Config: z<Config> = z.object({
       healthCheckUrl: z.string().default(''),
       rollbackCommand: z.string().default(''),
       secretsEnv: z.array(z.string()).default([]),
+      skipTasksOnlyCommits: z.boolean().default(true),
     })
-    .default({ enabled: false, command: '', healthCheckUrl: '', rollbackCommand: '', secretsEnv: [] }),
+    .default({
+      enabled: false,
+      command: '',
+      healthCheckUrl: '',
+      rollbackCommand: '',
+      secretsEnv: [],
+      skipTasksOnlyCommits: true,
+    }),
 
   security: z
     .object({
@@ -244,6 +276,17 @@ export const Config: z<Config> = z.object({
       dirs: z.array(z.string()).default(DEFAULT_CACHE_DIRS),
     })
     .default({ enabled: false, dirs: DEFAULT_CACHE_DIRS }),
+
+  learnings: z
+    .object({
+      // 默认关闭：开启会改变成员每任务看到的提示词，属于行为变更。
+      enabled: z.boolean().default(DEFAULT_LEARNINGS.enabled),
+      injectMaxCount: z.number().step(1).min(1).default(DEFAULT_LEARNINGS.injectMaxCount),
+      injectCharBudget: z.number().step(1).min(100).default(DEFAULT_LEARNINGS.injectCharBudget),
+      promoteAfterHits: z.number().step(1).min(2).default(DEFAULT_LEARNINGS.promoteAfterHits),
+      maxEntries: z.number().step(1).min(1).default(DEFAULT_LEARNINGS.maxEntries),
+    })
+    .default({ ...DEFAULT_LEARNINGS }),
 
   profile: z
     .object({
@@ -349,9 +392,17 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       healthCheckUrl: effective.deploy.healthCheckUrl === '' ? undefined : effective.deploy.healthCheckUrl,
       rollbackCommand: effective.deploy.rollbackCommand === '' ? undefined : effective.deploy.rollbackCommand,
       secretsEnv: effective.deploy.secretsEnv,
+      skipTasksOnlyCommits: effective.deploy.skipTasksOnlyCommits,
     },
     security: effective.security,
     buildCache: { enabled: effective.buildCache?.enabled ?? false, dirs: effective.buildCache?.dirs ?? DEFAULT_CACHE_DIRS },
+    learnings: {
+      enabled: effective.learnings?.enabled ?? DEFAULT_LEARNINGS.enabled,
+      injectMaxCount: effective.learnings?.injectMaxCount ?? DEFAULT_LEARNINGS.injectMaxCount,
+      injectCharBudget: effective.learnings?.injectCharBudget ?? DEFAULT_LEARNINGS.injectCharBudget,
+      promoteAfterHits: effective.learnings?.promoteAfterHits ?? DEFAULT_LEARNINGS.promoteAfterHits,
+      maxEntries: effective.learnings?.maxEntries ?? DEFAULT_LEARNINGS.maxEntries,
+    },
     profile: resolveProjectProfile(effective.profile, effective.gates.commands),
   });
   // 把服务暴露给其它插件（以及驱动 host 的测试）。

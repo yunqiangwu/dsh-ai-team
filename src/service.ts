@@ -24,6 +24,7 @@ import {
   countNewCommits,
   createBranch,
   deleteBranch,
+  diffShortstat,
   ensureRepo,
   fetchRemote,
   git,
@@ -47,6 +48,7 @@ import {
   distinctDomainCount,
   effectiveForbiddenRules,
   enrichDescriptionWithOwnership,
+  forbiddenTouchesViolation,
   ownerRoleForTouches,
   renderBranchName,
   renderPrBody,
@@ -64,6 +66,17 @@ import {
   type TaskContract,
 } from './team.js';
 import { defaultMemberName, isRole, systemPromptFor } from './roles.js';
+import {
+  applyLearning,
+  DEFAULT_LEARNINGS,
+  renderLearningsFile,
+  renderLearningsSection,
+  selectLearnings,
+  viewOf,
+  type LearningInput,
+  type LearningOptions,
+  type LearningRecord,
+} from './learnings.js';
 import type {
   CiStatus,
   DeployView,
@@ -71,6 +84,9 @@ import type {
   EscalationView,
   GateSummary,
   HeartbeatView,
+  LearningBucket,
+  LearningKind,
+  LearningView,
   LoopState,
   MemberStatus,
   MemberView,
@@ -96,6 +112,30 @@ const TASKS_DIR = '.tasks';
 /** 全部任务完成后的完成报告文件名。 */
 const COMPLETION_FILE = '_completion.md';
 
+/**
+ * 学习记录的全量生成物（与 `_board.md` 同族：程序重写、勿手改）。
+ * 下划线前缀正是靠 `loadTaskContracts` 的跳过规则避免被当成任务契约收养。
+ */
+const LEARNINGS_FILE = '_learnings.md';
+
+/** 单条学习记录原文（评审意见 / 升级消息 / 日志尾）的截断长度。 */
+const LEARNING_DETAIL_LIMIT = 400;
+
+/**
+ * 任务描述的总长度上限：注入 learnings 与 ownership 小节之后仍需有界 ——
+ * description 会随 autopilot/update 事件整体推给前端，并进每一次工具返回。
+ */
+const DESCRIPTION_TOTAL_LIMIT = 6000;
+
+/**
+ * 「挂起等待」状态：needs-human 等人分诊，needs-clarification 等 leader 回答契约。
+ * 投影的 blocked 清单与 syncContracts 的人工分诊共用这一份，避免两处判断分叉。
+ *
+ * 注意：进入这些状态时**必须把契约文件一起回写**，否则 syncContracts 会看到
+ * 「内存挂着、契约没挂」而把它当人工放行重开一遍。
+ */
+const HELD_STATUSES: readonly TaskStatus[] = ['needs-human', 'needs-clarification'];
+
 /** 连续空闲多少个 tick 后开始放大轮询间隔。 */
 const IDLE_BACKOFF_TICKS = 5;
 
@@ -104,6 +144,16 @@ const MAX_IDLE_BACKOFF_FACTOR = 4;
 
 /** 生成短 id（team_xxxxxxxx / task_xxxxxxxx / m_xxxxxxxx / rev_xxxxxxxx）。 */
 const shortId = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;
+
+/** 截断到上限并留省略号：注入后的描述与记录原文都必须有硬边界。 */
+const clip = (text: string, limit: number): string => (text.length <= limit ? text : `${text.slice(0, limit - 1)}…`);
+
+/** 取第一行非空文本并折叠空白：把多行评审意见压成一行可注入的结论。 */
+const oneLine = (text: string): string =>
+  text
+    .split('\n')
+    .map((line) => line.trim().replace(/^[-*>#]+\s*/, ''))
+    .find((line) => line !== '') ?? '';
 
 /** 成员的个人分支名：任务之外成员默认停留在这里。 */
 const memberBranch = (memberId: string) => `member/${memberId}`;
@@ -149,6 +199,12 @@ export interface AutopilotOptions {
     maxReviewRounds: number;
     stuckMinutes: number;
     pollIntervalSeconds: number;
+    /**
+     * 评审通过前的改动体量门：单个任务的 base..branch 累计增删行数 / 变更文件数
+     * 上限，超限不许 approve（只能升级让人决定是拆任务还是放行）。0 = 关闭。
+     */
+    maxDiffLines: number;
+    maxDiffFiles: number;
   };
   escalation: {
     webhookUrlEnv?: string | undefined;
@@ -190,6 +246,12 @@ export interface AutopilotOptions {
     healthCheckUrl?: string | undefined;
     rollbackCommand?: string | undefined;
     secretsEnv: string[];
+    /**
+     * base 自上次部署以来只前进了 `.tasks/` 提交（任务单状态回写、看板重生成）时
+     * 跳过部署。这些提交不含任何代码变更，跑一次部署既无意义又可能因健康检查抖动
+     * 触发回滚与 deploy-failed 升级。缺省即开（消费侧用 `!== false` 判定）。
+     */
+    skipTasksOnlyCommits?: boolean | undefined;
   } | undefined;
   security: {
     forbiddenPaths: string[];
@@ -207,6 +269,11 @@ export interface AutopilotOptions {
    * 位置，让相邻任务复用上一次产物而不是从头构建。尽力而为，默认关闭。
    */
   buildCache?: { enabled: boolean; dirs: string[] } | undefined;
+  /**
+   * 知识回路：把评审意见、升级与部署失败沉淀成跨任务可复用的教训，并在派发时
+   * 注入新任务描述。默认关闭 —— 开启会改变 agent 看到的提示词，属于行为变更。
+   */
+  learnings?: LearningOptions | undefined;
   /** 测试钩子：缩短循环中的 sleep/退避时长。 */
   tickSleepMs?: number | undefined;
   /** 测试钩子：注入 fetch，用于 webhook / CI / 健康检查调用。 */
@@ -244,6 +311,12 @@ interface TaskRecord {
   reviewRound: number;
   dependsOn: string[];
   touches: string[];
+  /**
+   * 契约自己声明的禁区（派发前自洽校验用）。可选：老 state.json 里没这个字段，
+   * 读取处一律 `?? []`。dispatch 只拿得到任务记录、拿不到磁盘契约，所以必须在
+   * 建记录时从契约带过来。
+   */
+  forbidden?: string[] | undefined;
   gates: GateSummary | null;
   prUrl: string | null;
   ciStatus: CiStatus | null;
@@ -261,6 +334,7 @@ interface ReviewRecord {
   createdAt: number;
 }
 
+/** 一个团队的内存记录：成员、任务、评审与学习记录都随它整体落盘。 */
 interface TeamRecord {
   id: string;
   name: string;
@@ -271,6 +345,11 @@ interface TeamRecord {
   members: MemberRecord[];
   tasks: TaskRecord[];
   reviews: ReviewRecord[];
+  /**
+   * 跨任务教训。可选：老 state.json 里没有这个字段，读取处一律 `?? []` 兜底
+   * （同 TaskRecord.contractPath）。`.tasks/_learnings.md` 是它的全量生成物。
+   */
+  learnings?: LearningRecord[] | undefined;
   createdAt: number;
 }
 
@@ -695,6 +774,7 @@ export class AutopilotService {
       members: team.members.map((member) => this.memberView(member)),
       tasks: team.tasks.map((task) => this.taskView(team, task)),
       reviews: team.reviews.map((review) => this.reviewView(team, review)),
+      learnings: (team.learnings ?? []).map((record) => viewOf(record)),
       createdAt: team.createdAt,
     };
   }
@@ -708,7 +788,7 @@ export class AutopilotService {
     const blocked: string[] = [];
     for (const team of this.teams.values()) {
       for (const task of team.tasks) {
-        if (task.status === 'needs-human') blocked.push(task.id);
+        if (HELD_STATUSES.includes(task.status)) blocked.push(task.id);
       }
     }
     return {
@@ -1112,23 +1192,33 @@ export class AutopilotService {
           `split it into per-domain tasks or escalate for a cross-domain change`,
       );
     }
+    // 契约自洽检查：touches 不得踩到契约自己声明的 forbidden 禁区。
+    // TaskContract.forbidden 此前解析出来零消费者 —— 违规任务要白跑一整轮
+    // 派发 + 门 + 评审才被远端 CI 拦下。
+    const forbiddenHits = forbiddenTouchesViolation(contract?.touches ?? [], contract?.forbidden ?? []);
+    if (forbiddenHits.length > 0) {
+      throw new Error(
+        `task "${contract?.title ?? input.title}" touches paths its own contract declares forbidden: ${forbiddenHits.join(', ')} — narrow the touches, or split the forbidden change into a separately approved contract`,
+      );
+    }
     const branch = renderBranchName(this.options.profile.branchTemplate, destination, contract?.title ?? input.title);
     await createBranch(team.repoPath, branch, team.baseBranch);
     await checkout(assignee.workspacePath, branch);
     const now = Date.now();
-    const rawDescription = input.description ?? contract?.body.slice(0, CONTRACT_BODY_LIMIT) ?? '';
+    const rawDescription = input.description ?? contract?.body ?? '';
     const task: TaskRecord = {
       id,
       contractId: contract?.id ?? null,
       contractPath: contract?.path,
       title: contract?.title ?? input.title,
-      description: enrichDescriptionWithOwnership(rawDescription, contract?.touches ?? [], this.options.profile.ownership),
+      description: this.buildDescription(team, rawDescription, contract?.touches ?? []),
       assigneeId: assignee.id,
       status: 'pending',
       branch,
       reviewRound: 0,
       dependsOn: contract?.dependsOn ?? [],
       touches: contract?.touches ?? [],
+      forbidden: contract?.forbidden ?? [],
       gates: null,
       prUrl: null,
       ciStatus: null,
@@ -1162,14 +1252,103 @@ export class AutopilotService {
 
   /**
    * 手动推进任务状态。只允许在 pending / in_progress / in_review 之间切换：
-   * done 与 changes_requested 归评审流程所有，needs-human 归升级流程所有。
+   * done 与 changes_requested 归评审流程所有，needs-human 归升级流程所有，
+   * needs-clarification 由 task_clarify 进入、由 leader 在这里回答后退出。
+   *
+   * `note` 会作为留言写进任务契约 —— leader 的澄清答案就靠这条落地。
    */
-  async updateTask(input: { taskId: string; status: 'pending' | 'in_progress' | 'in_review' }): Promise<TaskView> {
+  async updateTask(input: {
+    taskId: string;
+    status: 'pending' | 'in_progress' | 'in_review';
+    note?: string;
+    /** 操作者（成员 id）。从待澄清解回 pending 时校验必须是 leader。 */
+    actorId?: string;
+  }): Promise<TaskView> {
     const { team, task } = this.findTask(input.taskId);
+    const heldForClarification = task.status === 'needs-clarification';
+    if (heldForClarification) {
+      // 澄清只能由提出方之外的角色回答：developer 自己把任务解回去，就等于
+      // 用「问一句」绕过了返工轮次预算。未传 actorId 视为人工在直接操作。
+      if (input.actorId !== undefined) {
+        const actor = this.memberOf(team, input.actorId);
+        if (actor.role !== 'leader') {
+          throw new Error(`task "${task.title}" is waiting for the leader to clarify; only leader (or a human) can answer`);
+        }
+      }
+    }
+    if (input.note !== undefined && input.note !== '' && task.contractId !== null) {
+      // 必须先确认绑定了契约：无契约时 contractPathFor 会拼出一个不存在的路径，
+      // 而 appendTaskNote 是"读失败当空文件再写"，会凭空造出一个没有 frontmatter
+      // 的 .md —— loadTaskContracts 解析它抛错、上层 catch 成空数组，看板整个清空。
+      const author = input.actorId === undefined ? 'human' : this.memberOf(team, input.actorId).name;
+      const kind = heldForClarification ? 'clarify-answer' : 'note';
+      await appendTaskNote(
+        this.contractPathFor(team, task),
+        ['', `> [${kind}] ${new Date().toISOString()} ${author}`, ...this.lines(this.redactor.redact(input.note))].join('\n'),
+      ).catch(() => {});
+    }
     task.status = input.status;
+    this.touchTask(task);
+    if (heldForClarification) {
+      // 必须把契约一起回写：否则 syncContracts 看到「内存已解、契约还挂着」，
+      // 会把它当人工放行再重开一遍。updateContractStatus 顺带刷看板并提交。
+      await this.updateContractStatus(team, task, input.status, null);
+    }
+    this.changed(team.id);
+    return this.taskView(team, task);
+  }
+
+  /**
+   * developer 把任务退回 leader 澄清：契约本身含糊或自相矛盾时，这条路比
+   * escalate 便宜得多 —— **不消耗返工轮次、不产生升级、不打 needs-human**。
+   *
+   * 此前返工轮次打满一律升级，但被打回的常见原因恰恰是 leader 写的契约有歧义，
+   * 惩罚却落在 developer 头上。这里把问责方向扳回来。
+   */
+  async clarifyTask(input: {
+    taskId: string;
+    memberId: string;
+    question: string;
+    ambiguousPoints?: string[];
+    proposedResolutions?: string[];
+  }): Promise<TaskView> {
+    const { team, task } = this.findTask(input.taskId);
+    const member = this.memberOf(team, input.memberId);
+    if (member.role === 'reviewer' || member.role === 'operator') {
+      throw new Error(`${member.role}s do not implement tasks; only a developer can ask for clarification`);
+    }
+    if (task.status !== 'in_progress' && task.status !== 'changes_requested') {
+      throw new Error(
+        `task "${task.title}" is ${task.status}; only a task you are working on (or reworking) can be clarified`,
+      );
+    }
+    const leader = team.members.find((candidate) => candidate.role === 'leader');
+    if (leader === undefined) throw new Error('team has no leader to clarify this task');
+    const note = [
+      '',
+      `> [needs-clarification] ${new Date().toISOString()} ${member.name} → ${leader.name}`,
+      ...this.lines(this.redactor.redact(input.question)),
+      ...(input.ambiguousPoints ?? []).map((point) => `> - ambiguous: ${this.redactor.redact(point)}`),
+      ...(input.proposedResolutions ?? []).map((option) => `> - proposed: ${this.redactor.redact(option)}`),
+      '',
+    ].join('\n');
+    if (task.contractId !== null) await appendTaskNote(this.contractPathFor(team, task), note).catch(() => {});
+    task.status = 'needs-clarification';
+    // 刻意不动 reviewRound：问清楚不是返工。
+    await this.updateContractStatus(team, task, 'needs-clarification');
+    // 释放接手者的工作区，让他能立刻接下一个任务，而不是挂着等答案。
+    if (member.currentTaskId === task.id) await this.releaseMemberWorkspace(member);
     this.touchTask(task);
     this.changed(team.id);
     return this.taskView(team, task);
+  }
+
+  /** 把一段自由文本压成 markdown 留言行（带 `> ` 前缀，逐行脱敏在调用方做）。 */
+  private lines(text: string, max = 20): string[] {
+    return text
+      .split('\n')
+      .slice(0, max)
+      .map((line) => `> ${line}`);
   }
 
   // ── 分支协作 ──────────────────────────────────────────────────────────────
@@ -1280,6 +1459,8 @@ export class AutopilotService {
     reviewerId: string;
     verdict: ReviewVerdict;
     comments?: string;
+    /** reviewer 判定"这轮打回是契约本身含糊"，供知识回路与澄清通道分类。 */
+    contractAmbiguity?: boolean;
   }): Promise<{ review: ReviewView; task: TaskView; merged: boolean }> {
     const { team, task } = this.findTask(input.taskId);
     const reviewer = this.memberOf(team, input.reviewerId);
@@ -1305,6 +1486,7 @@ export class AutopilotService {
     let merged = false;
     if (input.verdict === 'approve') {
       this.assertMergeAllowed(task);
+      await this.assertDiffSizeAllowed(team, task);
       await mergeBranch(
         team.repoPath,
         task.branch,
@@ -1323,6 +1505,32 @@ export class AutopilotService {
       task.status = 'changes_requested';
       task.reviewRound += 1;
       assignee.status = 'working';
+      // 评审意见必须落到任务单上。此前这条分支只改内存字段，comments 既不进
+      // `.tasks/<id>.md` 也不提交 —— 换任接手者（或下一场会话）完全看不见
+      // 上一轮为什么被打回，这是知识泄漏最严重的一处。
+      if (task.contractId !== null) {
+        const quoted = this.redactor
+          .redact(review.comments)
+          .split('\n')
+          .map((line) => `> ${line}`);
+        await appendTaskNote(
+          this.contractPathFor(team, task),
+          ['', `> [review] ${new Date(review.createdAt).toISOString()} round ${task.reviewRound} (${reviewer.name})`, ...quoted, ''].join(
+            '\n',
+          ),
+        ).catch(() => {});
+        // updateContractStatus 顺带重生成看板并提交 .tasks/。
+        await this.updateContractStatus(team, task, 'changes_requested');
+      }
+      await this.captureLearning(team, {
+        kind: 'review-change-request',
+        summary: review.comments,
+        detail: review.comments,
+        touches: task.touches,
+        taskId: task.id,
+        contractId: task.contractId,
+        ...(input.contractAmbiguity === true ? { bucket: 'contract-ambiguity' as LearningBucket } : {}),
+      });
     }
     this.touchTask(task);
     await this.refreshBranches(team);
@@ -1346,6 +1554,39 @@ export class AutopilotService {
     }
   }
 
+  /**
+   * approve 前的改动体量门：单个任务的 `base..branch` 累计增删行数 / 变更文件数
+   * 超过 `daemon.maxDiffLines` / `maxDiffFiles` 时不许 approve。
+   *
+   * 动机是大 diff 的浅审属于静默失败 —— reviewer 看了 3000 行然后 approve，
+   * 面板上看不出任何异常。超限一律升级，让人决定是拆任务还是放宽上限。
+   * 两个上限都是 0 时整道门关闭（默认），行为与不设时逐字节一致。
+   */
+  private async assertDiffSizeAllowed(team: TeamRecord, task: TaskRecord): Promise<void> {
+    const maxLines = this.options.daemon.maxDiffLines;
+    const maxFiles = this.options.daemon.maxDiffFiles;
+    if (maxLines <= 0 && maxFiles <= 0) return;
+    // 用本地 base 而不是 origin/base：评审时合并基线可能还没 push。
+    const baseSha = await resolveRef(team.repoPath, team.baseBranch);
+    const branchSha = await resolveRef(team.repoPath, task.branch);
+    if (baseSha === null || branchSha === null) return;
+    const stat = await diffShortstat(team.repoPath, baseSha, branchSha);
+    const lines = stat.insertions + stat.deletions;
+    const exceeded: string[] = [];
+    if (maxLines > 0 && lines > maxLines) exceeded.push(`${lines} changed lines (limit ${maxLines})`);
+    if (maxFiles > 0 && stat.files > maxFiles) exceeded.push(`${stat.files} changed files (limit ${maxFiles})`);
+    if (exceeded.length === 0) return;
+    await this.escalateTask({
+      taskId: task.id,
+      reason: 'change-too-large',
+      message: `task "${task.title}" changes ${exceeded.join('; ')}`,
+      suggestion: 'split the contract into per-domain tasks sized within daemon.maxDiffLines/maxDiffFiles, or have a human approve landing it as-is',
+    });
+    throw new Error(
+      `cannot approve: ${exceeded.join('; ')} — the task was escalated as change-too-large instead of merged`,
+    );
+  }
+
   /** 从共享仓库里删掉已合并的任务分支。 */
   async pruneTaskBranch(taskId: string): Promise<void> {
     const { team, task } = this.findTask(taskId);
@@ -1355,6 +1596,140 @@ export class AutopilotService {
     await deleteBranch(team.repoPath, task.branch);
     await this.refreshBranches(team);
     this.changed(team.id);
+  }
+
+  // ── 知识回路（learnings） ─────────────────────────────────────────────────
+
+  /** 生效的知识回路配置；用户只写部分字段时与默认值合并。 */
+  private learningOptions(): LearningOptions | undefined {
+    const raw = this.options.learnings;
+    return raw === undefined ? undefined : { ...DEFAULT_LEARNINGS, ...raw };
+  }
+
+  /**
+   * 内部唯一的捕获入口（评审打回、升级、learning_record 工具都走这里）。
+   *
+   * 结论与原文在此统一脱敏并截断 —— tools.ts 一行脱敏都不做，安全硬规则只能
+   * 在服务侧落地。默认关闭时直接返回 null：不改状态、不写文件。
+   */
+  private async captureLearning(team: TeamRecord, input: LearningInput): Promise<LearningView | null> {
+    const options = this.learningOptions();
+    if (options === undefined || options.enabled !== true) return null;
+    const summary = clip(this.redactor.redact(oneLine(input.summary)), 200) || input.kind;
+    const detail = clip(this.redactor.redact(input.detail), LEARNING_DETAIL_LIMIT);
+    const { records, learning } = applyLearning(team.learnings ?? [], { ...input, summary, detail }, options, shortId('learn'));
+    team.learnings = records;
+    await this.syncLearningsFile(team);
+    this.changed(team.id);
+    return viewOf(learning);
+  }
+
+  /**
+   * 全量重写 `.tasks/_learnings.md` 并以插件身份提交（生成物，与 `_board.md` 同族，
+   * 勿手改 —— 所以刻意不给任何工具「编辑这个文件」的能力）。
+   *
+   * 目标仓库没有 `.tasks/` 时写入自然失败并被忽略：文件只是给人看的便利视图，
+   * 真相源始终在 state.json，注入走内存记录，不依赖这个文件存在。
+   */
+  private async syncLearningsFile(team: TeamRecord): Promise<void> {
+    const markdown = renderLearningsFile(team.learnings ?? []);
+    await writeFile(join(team.repoPath, TASKS_DIR, LEARNINGS_FILE), markdown, 'utf8').catch(() => {});
+    await this.commitTasksDir(team, 'tasks: learnings');
+  }
+
+  /**
+   * 组装任务描述：截断 → 注入已知教训 → 注入域硬规则。
+   *
+   * 顺序是刻意的：所有权规则留在最末尾，agent 读到的最后一段必须是不可协商的。
+   * 这是 task.description 的唯一生产者（assignTask 与 adoptPendingContract 共用），
+   * 所以注入只需这一处即可覆盖工具驱动与循环驱动两条派发路径。
+   */
+  private buildDescription(team: TeamRecord, raw: string, touches: readonly string[]): string {
+    const base = clip(raw, CONTRACT_BODY_LIMIT);
+    const options = this.learningOptions();
+    const withLearnings =
+      options === undefined || options.enabled !== true
+        ? base
+        : (() => {
+            const { items, dropped } = selectLearnings(team.learnings ?? [], touches, options);
+            return renderLearningsSection(items, dropped, base);
+          })();
+    return clip(enrichDescriptionWithOwnership(withLearnings, touches, this.options.profile.ownership), DESCRIPTION_TOTAL_LIMIT);
+  }
+
+  /** 定位学习记录归属的团队：任务 > 显式 teamId > 第一个团队。 */
+  private learningTeamFor(taskId: string | null | undefined, teamId: string | undefined): TeamRecord | null {
+    if (typeof taskId === 'string') {
+      const found = this.tryFindTask(taskId);
+      if (found !== null) return found.team;
+    }
+    if (teamId !== undefined) return this.teamOf(teamId);
+    return [...this.teams.values()][0] ?? null;
+  }
+
+  /** learning_record 工具的落点：让任意成员主动记一条可复用的坑。 */
+  async learningRecord(input: {
+    teamId?: string;
+    taskId?: string;
+    kind: LearningKind;
+    summary: string;
+    detail?: string;
+    touches?: string[];
+    bucket?: LearningBucket;
+  }): Promise<LearningView | null> {
+    const team = this.learningTeamFor(input.taskId, input.teamId);
+    if (team === null) throw new Error('no team yet — nothing to record a lesson against');
+    const task = typeof input.taskId === 'string' ? this.tryFindTask(input.taskId)?.task : undefined;
+    return this.captureLearning(team, {
+      kind: input.kind,
+      summary: input.summary,
+      detail: input.detail ?? input.summary,
+      touches: input.touches ?? task?.touches ?? [],
+      taskId: task?.id ?? null,
+      contractId: task?.contractId ?? null,
+      ...(input.bucket !== undefined ? { bucket: input.bucket } : {}),
+    });
+  }
+
+  /** learning_list 工具的落点：查当前沉淀，并报告待人工升格的数量。 */
+  learningList(input: { teamId?: string; touches?: string[]; kind?: LearningKind; limit?: number }): {
+    items: LearningView[];
+    total: number;
+    pendingPromotion: LearningView[];
+  } {
+    const team = this.learningTeamFor(null, input.teamId);
+    const records = team === null ? [] : team.learnings ?? [];
+    const options = this.learningOptions() ?? DEFAULT_LEARNINGS;
+    const filtered = input.kind === undefined ? records : records.filter((record) => record.kind === input.kind);
+    const ranked = filtered.toSorted((a, b) => b.hits - a.hits || b.lastHitAt - a.lastHitAt);
+    const limit = Math.max(1, input.limit ?? 20);
+    return {
+      items: ranked.slice(0, limit).map((record) => viewOf(record)),
+      total: ranked.length,
+      pendingPromotion: ranked
+        .filter((record) => !record.promoted && record.hits >= options.promoteAfterHits)
+        .map((record) => viewOf(record)),
+    };
+  }
+
+  /**
+   * learning_promote 工具的落点：人（或 leader）确认某条教训已升格进项目文档，
+   * 或直接否掉它。只改台账标记，绝不代笔改 AGENTS.md / docs/ —— 那是 human-only 区。
+   */
+  async learningPromote(input: { id: string; action: 'mark-promoted' | 'dismiss' }): Promise<LearningView> {
+    for (const team of this.teams.values()) {
+      const record = (team.learnings ?? []).find((candidate) => candidate.id === input.id);
+      if (record === undefined) continue;
+      if (input.action === 'mark-promoted') {
+        record.promoted = true;
+      } else {
+        team.learnings = (team.learnings ?? []).filter((candidate) => candidate.id !== input.id);
+      }
+      await this.syncLearningsFile(team);
+      this.changed(team.id);
+      return viewOf(record);
+    }
+    throw new Error(`no learning record with id "${input.id}" (check learning_list)`);
   }
 
   // ── pr_sync ───────────────────────────────────────────────────────────────
@@ -1476,18 +1851,32 @@ export class AutopilotService {
    */
   async escalateTask(input: EscalationInput): Promise<EscalationView> {
     const record = await this.escalations.escalate(input);
-    if (input.taskId !== null) {
-      const found = this.tryFindTask(input.taskId);
-      if (found !== null) {
-        found.task.status = 'needs-human';
-        found.task.updatedAt = Date.now();
-        // 释放接手者，让分诊与重新派发可以挑任意开发者：任务分支不能一直
-        // 占着他的工作区。
-        const assignee = found.team.members.find((member) => member.id === found.task.assigneeId);
-        if (assignee !== undefined && assignee.currentTaskId === found.task.id) {
-          await this.releaseMemberWorkspace(assignee);
-        }
+    const found = input.taskId !== null ? this.tryFindTask(input.taskId) : null;
+    if (found !== null) {
+      found.task.status = 'needs-human';
+      found.task.updatedAt = Date.now();
+      // 释放接手者，让分诊与重新派发可以挑任意开发者：任务分支不能一直
+      // 占着他的工作区。
+      const assignee = found.team.members.find((member) => member.id === found.task.assigneeId);
+      if (assignee !== undefined && assignee.currentTaskId === found.task.id) {
+        await this.releaseMemberWorkspace(assignee);
       }
+    }
+    // 升级是知识的天然来源：每一次 needs-human 都说明契约、质量门或环境里有
+    // 模型自己搞不定的东西。记一条，让同域的下一个任务少踩一次（部署失败也已经
+    // 收敛到这条唯一漏斗上，所以不再单独设一类）。
+    const learningTeam = found?.team ?? [...this.teams.values()][0];
+    if (learningTeam !== undefined) {
+      const logTail = input.logTail ?? '';
+      await this.captureLearning(learningTeam, {
+        kind: 'escalation',
+        summary: record.message,
+        detail: logTail === '' ? record.message : `${record.message}\n${logTail}`,
+        touches: found?.task.touches ?? [],
+        taskId: found?.task.id ?? null,
+        contractId: found?.task.contractId ?? null,
+        reason: input.reason,
+      });
     }
     if (this.options.escalation.pauseOnEscalation === 'team' && this.loopState === 'running') {
       this.loopState = 'escalated';
@@ -1675,8 +2064,11 @@ export class AutopilotService {
     }
     for (const team of this.teams.values()) {
       if (signal?.aborted === true) break;
-      await this.syncContracts(team, report);
-      await this.dispatch(team, report, signal);
+      // 契约只扫一遍，同时供分诊与派发使用：派发时要按最新的契约正文重建任务
+      // 描述（见 dispatch 内的说明）。
+      const contracts = await loadTaskContracts(team.repoPath).catch(() => [] as TaskContract[]);
+      await this.syncContracts(team, contracts, report);
+      await this.dispatch(team, report, contracts, signal);
       await this.checkReviewRounds(team, report);
       await this.checkStuck(team, report);
       await this.maybeDeploy(team, report);
@@ -1686,15 +2078,14 @@ export class AutopilotService {
     return report;
   }
 
-  /** 把仓库里的任务契约同步到看板；分诊 needs-human 的契约。 */
-  private async syncContracts(team: TeamRecord, report: TickReport): Promise<void> {
-    const contracts = await loadTaskContracts(team.repoPath).catch(() => [] as TaskContract[]);
+  /** 把仓库里的任务契约同步到看板；分诊挂起态的契约。 */
+  private async syncContracts(team: TeamRecord, contracts: TaskContract[], report: TickReport): Promise<void> {
     for (const contract of contracts) {
       const existing = team.tasks.find((task) => task.contractId === contract.id);
       if (existing === undefined) {
         this.adoptPendingContract(team, contract, report);
-      } else if (existing.status === 'needs-human' && contract.status !== 'needs-human') {
-        // 人直接改了契约文件把状态从 needs-human 挪走 → 重开任务。
+      } else if (HELD_STATUSES.includes(existing.status) && !HELD_STATUSES.includes(contract.status)) {
+        // 人直接改了契约文件把状态从挂起态挪走 → 重开任务。
         // 契约文件已经是权威来源，这里只改内存状态，不再回写一次。
         existing.status = 'pending';
         existing.reviewRound = 0;
@@ -1724,17 +2115,14 @@ export class AutopilotService {
       contractId: contract.id,
       contractPath: contract.path,
       title: contract.title,
-      description: enrichDescriptionWithOwnership(
-        contract.body.slice(0, CONTRACT_BODY_LIMIT),
-        contract.touches,
-        this.options.profile.ownership,
-      ),
+      description: this.buildDescription(team, contract.body, contract.touches),
       assigneeId: leader.id,
       status: 'pending',
       branch: renderBranchName(this.options.profile.branchTemplate, contract.id, contract.title),
       reviewRound: 0,
       dependsOn: contract.dependsOn,
       touches: contract.touches,
+      forbidden: contract.forbidden,
       gates: null,
       prUrl: null,
       ciStatus: null,
@@ -1746,7 +2134,12 @@ export class AutopilotService {
   }
 
   /** 派发 pending 任务（依赖已完成、领域锁空闲）给空闲开发者。 */
-  private async dispatch(team: TeamRecord, report: TickReport, signal?: AbortSignal): Promise<void> {
+  private async dispatch(
+    team: TeamRecord,
+    report: TickReport,
+    contracts: TaskContract[],
+    signal?: AbortSignal,
+  ): Promise<void> {
     const doneContracts = new Set(
       team.tasks.filter((task) => task.status === 'done').map((task) => task.contractId ?? task.id),
     );
@@ -1757,6 +2150,7 @@ export class AutopilotService {
       if (signal?.aborted === true) return;
       if (task.status !== 'pending') continue;
       if (await this.escalateCrossDomain(task, report)) continue;
+      if (await this.escalateForbiddenTouches(task, report)) continue;
       if (!task.dependsOn.every((dep) => doneContracts.has(dep))) continue;
       if (task.touches.length > 0 && touchesOverlap(task.touches, lockedTouches)) continue;
       const developers = team.members.filter(
@@ -1767,6 +2161,13 @@ export class AutopilotService {
       // （重新）派发：syncContracts 建的占位任务在这里拿到真正的接手者、
       // 分支与工作区检出。
       task.assigneeId = developer.id;
+      // 描述在派发这一刻重建：任务是在契约刚被收养时就建好的，而教训常常是
+      // 之后别的任务被打回 / 升级才产生的 —— 只有"晚于教训、早于动工"的注入
+      // 时机才真能避免重复踩坑。无对应契约（leader 手工建的任务）保持原样。
+      const contract = task.contractId === null ? undefined : contracts.find((c) => c.id === task.contractId);
+      if (contract !== undefined) {
+        task.description = this.buildDescription(team, contract.body, contract.touches);
+      }
       await this.refreshBranches(team);
       if (!team.branches.includes(task.branch)) {
         await createBranch(team.repoPath, task.branch, team.baseBranch);
@@ -1799,6 +2200,26 @@ export class AutopilotService {
       reason: 'cross-domain',
       message: `task "${task.title}" touches ${domainCount} distinct domains (limit ${threshold})`,
       suggestion: 'split it into per-domain tasks instead of one cross-domain change',
+    });
+    return true;
+  }
+
+  /**
+   * 契约自洽检查（循环侧）：`touches` 踩到契约自己声明的 `forbidden` 禁区。
+   * 与 assignTask 里的同名校验成对 —— 两条派发路径各自独立，必须都挡。
+   * 复用 `forbidden-paths` 这个升级原因，语义精确且不必再手抄一份枚举。
+   * @returns 是否已升级（true 表示本轮不要再派发这个任务）
+   */
+  private async escalateForbiddenTouches(task: TaskRecord, report: TickReport): Promise<boolean> {
+    const hits = forbiddenTouchesViolation(task.touches, task.forbidden ?? []);
+    if (hits.length === 0) return false;
+    report.escalated.push(task.id);
+    report.events.push(`forbidden-touches:${task.id}`);
+    await this.escalateTask({
+      taskId: task.id,
+      reason: 'forbidden-paths',
+      message: `task "${task.title}" touches paths its own contract declares forbidden: ${hits.join(', ')}`,
+      suggestion: 'narrow the touches to stay outside the forbidden zone, or split that change into a separately approved contract',
     });
     return true;
   }
@@ -1859,6 +2280,17 @@ export class AutopilotService {
     if (deploy?.enabled !== true || deploy.command === undefined || deploy.command === '') return;
     const baseSha = await resolveRef(team.repoPath, team.baseBranch).catch(() => null);
     if (baseSha === null || baseSha === this.lastDeployBaseSha) return;
+    // 任务单状态回写与看板重生成都会往 base 提交 `.tasks/` 改动。这些提交不含
+    // 任何代码，此前会被误判成"有代码合入"而触发一次真实部署 —— 部署失败还会
+    // 自动回滚并升级。所以先比对上一次部署点以来的变更面，纯文档就不部署。
+    if (deploy.skipTasksOnlyCommits !== false && this.lastDeployBaseSha !== null) {
+      const changed = await changedFiles(team.repoPath, this.lastDeployBaseSha, baseSha).catch(() => null);
+      if (changed !== null && changed.length > 0 && changed.every((file) => file.startsWith(`${TASKS_DIR}/`))) {
+        this.lastDeployBaseSha = baseSha;
+        report.events.push(`deploy-skipped:tasks-only:${team.id}`);
+        return;
+      }
+    }
     if (this.options.gates.requireCiGreen && this.hasRemote) {
       const ci = await this.ciStatusFor(team, team.baseBranch).catch(() => 'unknown' as CiStatus);
       if (ci !== 'success') return;
@@ -1875,6 +2307,12 @@ export class AutopilotService {
     report.completed = true;
     report.events.push('completed');
     this.loopState = 'completed';
+    const options = this.learningOptions();
+    const learnings = team.learnings ?? [];
+    const pendingPromotion =
+      options === undefined
+        ? []
+        : learnings.filter((learning) => !learning.promoted && learning.hits >= options.promoteAfterHits);
     const summary = [
       `# Autopilot completion report`,
       ``,
@@ -1889,6 +2327,23 @@ export class AutopilotService {
         ? ['- (none)']
         : this.deploys.map((deploy) => `- ${deploy.id} ${deploy.status} at ${new Date(deploy.startedAt).toISOString()}`)),
       ``,
+      `## learnings`,
+      ...(learnings.length === 0
+        ? ['- (none captured)']
+        : learnings.map(
+            (learning) =>
+              `- ${learning.summary} (${learning.hits}x, ${learning.bucket}${learning.promoted ? ', promoted' : ''})`,
+          )),
+      ``,
+      // 反复被印证的坑值得长期化，但写进项目文档是人的决定：报告只列候选。
+      ...(pendingPromotion.length === 0
+        ? []
+        : [
+            `## pending promotion to project docs (learning_promote)`,
+            ``,
+            ...pendingPromotion.map((learning) => `- ${learning.summary} — id ${learning.id} (${learning.hits}x)`),
+            ``,
+          ]),
     ].join('\n');
     await writeFile(join(team.repoPath, TASKS_DIR, COMPLETION_FILE), summary, 'utf8').catch(() => {});
     await this.commitTasksDir(team, 'tasks: completion report');
