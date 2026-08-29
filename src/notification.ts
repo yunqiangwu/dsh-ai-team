@@ -302,3 +302,33 @@ export async function postHumanWebhook(input: {
     return false;
   }
 }
+
+/**
+ * 升级通知邮件的文案渲染（纯函数）：service 只负责发送与状态记录。
+ * 放在这里而不是 service.ts，是为了让邮件文案与 Mailer 靠在一起，
+ * 改措辞时不用翻两千行的编排文件。
+ */
+export function renderEscalationMail(input: {
+  /** 展示主体：任务标题，或部署 / 全局事件。 */
+  subject: string;
+  reason: string;
+  message: string;
+  suggestion: string;
+  /** 带 token 的工单链接；未配置工单端点时为 null。 */
+  link: string | null;
+}): { subject: string; text: string } {
+  const text = [
+    `[dsh-ai-team] 需要你的人工确认`,
+    ``,
+    `任务: ${input.subject}`,
+    `原因: ${input.reason}`,
+    `说明: ${input.message}`,
+    ``,
+    `建议动作: ${input.suggestion}`,
+    ``,
+    input.link === null ? `（未配置工单端点，请在 dsh 面板查看）` : `请填写工单以继续：${input.link}`,
+    ``,
+    `回答会回写到任务单；如需密钥请用环境变量提供，勿粘贴明文。`,
+  ].join('\n');
+  return { subject: `[dsh-ai-team] 人工确认: ${input.subject}`, text };
+}

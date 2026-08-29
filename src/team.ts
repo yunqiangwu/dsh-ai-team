@@ -154,6 +154,16 @@ export async function appendTaskNote(path: string, note: string): Promise<void> 
 }
 
 /**
+ * 任务单留言的统一头部：`> [kind] <ISO 时刻> <author>`。以前四处各拼一份
+ * （方括号、时间戳格式、作者位置的约定全靠各处对齐），给留言加结构化字段时
+ * 只改这一处。`renderTaskNote('human')` 的冒号变体（`[human]:`）是历史格式，
+ * 刻意未并入。
+ */
+export function renderTaskNote(kind: string, at: number, author: string): string {
+  return `> [${kind}] ${new Date(at).toISOString()} ${author}`;
+}
+
+/**
  * 根据当前契约重新生成 `.tasks/_board.md`（状态表 + 阻塞清单）。
  * 绝不手改；每次状态变更后被调用。
  */

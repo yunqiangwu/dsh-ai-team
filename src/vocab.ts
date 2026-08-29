@@ -194,3 +194,27 @@ export type LearningBucket = (typeof LEARNING_BUCKETS)[number];
  * 但绝不会带上 node）。写死两份必然漂移，漂一次的后果是面板按钮静默 404。
  */
 export const TICKET_ROUTE_PREFIX = '/autopilot/ticket';
+
+/** 远端 git 平台。只有 github 有 PR upsert 与 CI 状态查询；其余按 generic 语义。 */
+export const REMOTE_PLATFORMS = ['github', 'cnb', 'gitlab', 'generic'] as const;
+export type RemotePlatform = (typeof REMOTE_PLATFORMS)[number];
+
+/** 升级时的暂停粒度：只挂起触发任务（task），或整个团队停发（team）。 */
+export const PAUSE_ON_ESCALATION = ['task', 'team'] as const;
+export type PauseOnEscalation = (typeof PAUSE_ON_ESCALATION)[number];
+
+/**
+ * 问卷答案的落地位置（docs/design-interaction.md §3.4）：`doc` 绑定写进 draft
+ * 文档章节，`task` 绑定把决策留言到任务契约。ask_human 工具参数读这份；
+ * `schema.ts` 的 questionBindingSchema 用 discriminatedUnion（每个分支仍要
+ * zod.literal），两处改时必须同步。
+ */
+export const ANSWER_BINDING_TYPES = ['doc', 'task'] as const;
+export type AnswerBindingType = (typeof ANSWER_BINDING_TYPES)[number];
+
+/**
+ * task_update 允许模型手动迁移的状态子集：done 与 changes_requested 归评审流程
+ * 所有，needs-human 归升级流程，needs-clarification 由 task_clarify 进入。
+ * `as const` 保持字面量元组 —— 工具参数的 enum 靠它收窄 args 类型。
+ */
+export const TASK_MOVEABLE_STATUSES = ['pending', 'in_progress', 'in_review'] as const satisfies readonly TaskStatus[];

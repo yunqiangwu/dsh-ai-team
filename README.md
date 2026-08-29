@@ -25,19 +25,16 @@ pnpm add dsh-ai-team
 
 ## 功能特性
 
-| 协作与工程模型 | 无人值守与交付闭环 |
-| --- | --- |
-| leader / developer / reviewer / **operator** 四角色团队 | **客观质量门**：gates_run 全绿才可 approve/push；远端 CI 绿才可合并 |
-| 每成员一个 git worktree，共享 object store | 远程 git：clone / push / PR（`GIT_SSH_COMMAND` 注入密钥） |
-| 任务看板 + `task/<id>` 分支 | `.tasks/*.md` 任务契约集成（frontmatter 真相源 + `_board.md` 自动生成） |
-| `code_review` 审查门控，按画像策略合入 | **知识回路**：自动捕获评审打回与升级 → 注入后续任务描述 → `learnings.md` 台账（落 stateDir，不入库）；升格进项目文档由人裁决 |
-| **`task_clarify`**：契约含糊退回 leader，不消耗返工轮次 | 主循环：崩溃恢复、依赖/域锁派发、卡死检测、空转降频、完成报告 |
-| **团队阶段（phase）**：`intake → 文档待批准 → 脚手架 → 开发 ⇄ 重排`，非派发阶段不把任务交出去 | **依赖死锁**单列 `blocked-dependency`：只有前置不存在或已 needs-human 才判死，同一拍级联 |
-| session 事件 + 投影 + Web 看板 | 升级机制：`needs-human` 打标 + 任务单留言 + webhook 通知 + 粒度化暂停 |
-| — | 前置门：派发期 `touches ∩ forbidden` 自洽校验、评审期改动体量门（`maxDiffLines`/`maxDiffFiles`） |
-| — | 部署闭环：健康检查（指数退避）+ 自动回滚 + 部署历史（纯 `.tasks/` 提交不触发部署） |
-| — | 人工确认：邮件通知 + 问卷工单，答复自动回写、可自动恢复循环 |
-| — | 安全硬规则：密钥只引用不落盘、命令白名单、forbiddenPaths、push 安全 |
+- 四角色团队（leader / developer / reviewer / operator），每成员一个 git worktree（共享 object store），任务看板 + `task/<id>` 分支。
+- `.tasks/*.md` 任务契约（frontmatter 真相源 + `_board.md` 自动生成），`contract_create` 写前校验，`task_clarify` 契约含糊退回 leader（不消耗返工轮次）。
+- 团队阶段（phase）：`intake → 文档待批准 → 脚手架 → 开发 ⇄ 重排`，非派发阶段不把任务交出去。
+- 客观质量门：`gates_run` 全绿才可 approve/push；远端 CI 绿才可合并；改动体量门（`maxDiffLines`/`maxDiffFiles`）。
+- 无人值守主循环：崩溃恢复、依赖/域锁派发、依赖死锁（`blocked-dependency`）、卡死检测、空转降频、完成报告。
+- 知识回路：自动捕获评审打回与升级 → 注入后续任务描述 → `learnings.md` 台账（落 stateDir，不入库）；升格进项目文档由人裁决。
+- 升级机制：`needs-human` 打标 + 任务单留言 + webhook 通知 + 粒度化暂停；人工确认走邮件 + 问卷工单，答复自动回写。
+- 部署闭环：健康检查（指数退避）+ 自动回滚（纯 `.tasks/` 提交不触发部署）。
+- 远程 git：clone / push / PR（`GIT_SSH_COMMAND` 注入密钥）；session 事件 + 投影 + Web 看板。
+- 安全硬规则：密钥只引用不落盘、命令白名单、forbiddenPaths、push 安全、文档草稿人批（见「安全模型」）。
 
 ## 快速开始
 
@@ -81,6 +78,8 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 
 所有"部署间可能不同"的值都在 Config 中，误配置 fail loud 并指出具体 key。**密钥一律配置环境变量名**（`xxxEnv`），插件运行时 `process.env[name]` 读取，值绝不落盘、进日志即脱敏为 `***`。
 
+> 下例是**功能演示用的完整字段**（含可选段）；随包 `cordis.patch.yml` 是更保守的最小配置。各字段的行为语义在后文对应小节（主循环 / 安全模型 / 人工确认 / 知识回路 / 项目 Profile），这里只留一行提示。
+
 ```yaml
 - insert:
     - id: autopilot
@@ -107,15 +106,15 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           requiredEnvKeys: [AUTH_SECRET]          # 缺失则引导 fail-loud 并指明 key
         gates:
           commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
-          requireCiGreen: true                # 独立于 pushRequiresGates 的一道门；未 pr_sync 视为未验证即拒 approve。仅 github 查得到 CI，其它平台请设 false
+          requireCiGreen: true                # 独立于 pushRequiresGates 的另一道门；CI 状态仅 github 查得到，其它平台必须显式设 false
           timeoutMinutes: 30
         daemon:
           maxReviewRounds: 3                  # 返工上限，超过升级
           stuckMinutes: 45                    # 无 git 活动超时，升级
-          pollIntervalSeconds: 30             # 循环轮询间隔；心跳每拍落 heartbeat.json，崩溃可恢复
-          maxDiffLines: 0                     # 评审体量门：单任务累计增删行上限；超限不许 approve 而是升级 change-too-large。0=关闭
-          maxDiffFiles: 0                     # 同上按变更文件数。默认关闭：大 diff 的浅审是静默失败，但开启会改变既有团队行为
-          maxTaskHours: 0                     # 单任务墙钟预算（小时，允许小数）：派发后超时未完成即升级 budget-exceeded。0=关闭；无人值守跑真实项目时建议显式开启
+          pollIntervalSeconds: 30             # 轮询间隔；心跳每拍落 heartbeat.json，崩溃可恢复
+          maxDiffLines: 0                     # 评审体量门（行）：超限拒 approve 并升级 change-too-large。0=关闭
+          maxDiffFiles: 0                     # 同上按文件数。0=关闭
+          maxTaskHours: 0                     # 单任务墙钟预算（小时）：超时升级 budget-exceeded。0=关闭；无人值守跑真实项目建议开启
         escalation:
           webhookUrlEnv: AUTOPILOT_WEBHOOK    # 通知 webhook 的环境变量名
           label: needs-human
@@ -135,46 +134,37 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
             host: 127.0.0.1                   # 只绑回环；配成非回环**拒绝启动**（不是告警）。远程访问走 SSH 隧道
             port: 8080                        # 0=自动分配端口。此端口只服务邮件里的链接；notification.enabled=false 时不监听（面板作答走宿主同源路由，不依赖它）
             publicBaseUrl: http://server.example.com  # 两重语义：邮件里展示的工单根地址 + 它的 authority 被登记为同源路由的可信 Host
-          autoResume: false                   # 工单答复后自动回写并解除升级；默认仍关着（答复=替 AI 做决策，别一上来就放行）
+          autoResume: false                   # 工单答复后自动回写并解除升级；默认关（答复=替 AI 做决策，别一上来就放行）
         deploy:
           enabled: false
           command: 'docker build -t app . && docker push ... && ssh ... docker compose up -d'
           healthCheckUrl: https://app.example.com/health
           rollbackCommand: 'ssh ... docker compose rollback'
           secretsEnv: []                      # 部署密钥环境变量名白名单
-          skipTasksOnlyCommits: true          # base 只前进了 .tasks/ 提交（任务单回写/看板重生成）时不部署：这类提交不含代码，误部署还会触发回滚与升级
+          skipTasksOnlyCommits: true          # base 只前进在 .tasks/ 提交上时不部署（不含代码，误部署会误触回滚）
         security:
-          forbiddenPaths: ['LICENSE']                             # 默认禁区（2026-08-29 起只剩 LICENSE：AGENTS.md / .github 已移出，AI 团队可改可提交）
+          forbiddenPaths: ['LICENSE']         # 默认禁区 2026-08-29 起只剩 LICENSE，口径见「安全模型」
           commandAllowlist: [pnpm, git, bun, docker, node, bunx, ssh, nuxt]   # 可执行命令精确匹配白名单
           pushRequiresGates: true             # 门不过禁止 push 与 approve
         buildCache:                           # 可选：构建缓存（默认关闭）
           enabled: true                       # 把 .nuxt/.output/coverage 等软链到共享目录，减少每条任务全量 build
           dirs: ['.nuxt', '.output', 'dist', 'coverage', '.vitest', 'node_modules/.cache']
-        learnings:                            # 可选：知识回路（默认关闭，开启会改变成员看到的提示词）
-          enabled: true                       # 自动捕获评审打回与升级，并把教训注入后续任务描述
-          injectMaxCount: 5                   # 单任务最多注入几条教训（相关域优先，再按被印证次数）
-          injectCharBudget: 1200              # 注入字符预算：描述会整体进投影事件推给前端，必须有界
-          promoteAfterHits: 3                 # 同因被印证这么多次，就值得人写进项目文档（插件绝不代笔改文档）
+        learnings:                            # 可选：知识回路（默认关闭，见「知识回路」一节）
+          enabled: true                       # 自动捕获评审打回与升级，教训注入后续任务描述
+          injectMaxCount: 5                   # 单任务最多注入几条（相关域优先，再按被印证次数）
+          injectCharBudget: 1200              # 注入字符预算（描述会进投影推给前端，必须有界）
+          promoteAfterHits: 3                 # 同因被印证 N 次进「待升格」清单（插件绝不代笔改文档）
           maxEntries: 200                     # 台账上限，超出淘汰"命中少且久未被印证"的记录
-        questionnaire:                        # AI 向人提问（问卷 ≠ 升级：不置 needs-human、不进升级直方图）
-          mode: interactive                   # interactive：ask_human 真的 await 到人答复才返回，组长这一轮不断线
-                                              # async：登记 open 问卷 + 投递后立即返回，人答完回会话说一句「继续」
-          timeoutMinutes: 60                  # interactive 的等待上限；超时按各题 defaultValue 继续并标 expired（不写进文档）
-        docs:                                 # 文档先行的目录约定
-          draftDir: docs/drafts               # AI 唯一可写区：doc_write 只收这个区里的 .md
-          formalDir: docs                     # 正式区唯一落盘出口是 doc_approve（人 + 一次性审批码 + sha256 比对）
-        profile:                              # 项目约定适配器（可选，见下方说明）
+        questionnaire:                        # AI 向人提问（问卷 ≠ 升级，见「人工确认与问卷工单」）
+          mode: interactive                   # interactive | async；async 答完要回会话说一句「继续」
+          timeoutMinutes: 60                  # interactive 等待上限；超时按各题 defaultValue 兜底并标 expired
+        docs:                                 # 文档先行：AI 只能写 draft 区，正式区唯一出口是 doc_approve
+          draftDir: docs/drafts
+          formalDir: docs
+        profile:                              # 项目约定适配器（字段一览见「项目 Profile」一节）
           preset: agentdeploy                 # 'default' | 'agentdeploy'；留空 = default
-          # 其余字段可逐项覆写 preset；缺省回退到 preset 默认值。
-          #   branchTemplate: 'agent/{id}-{slug}'
-          #   prTitleTemplate: 'feat({scope}): [{id}] {title}'
-          #   mergeStrategy: squash            # no-ff | squash | merge
-          #   gates:                           # 每条可带 when(touches 前缀)/role(local|ci)
-          #     - command: pnpm run typecheck
-          #     - command: pnpm run db:check-parity
-          #       when: [server/db/]
-          #     - command: pnpm audit --audit-level=high
-          #       role: ci                     # 仅由远端 CI 强制，本地不跑不红门
+          # 其余字段（branchTemplate / prTitleTemplate / mergeStrategy / gates / forbidden / ownership /
+          # crossDomainThreshold）可逐项覆写 preset，缺省回退到 preset 默认值。
 ```
 
 ## 项目 Profile（约定适配器）
@@ -203,10 +193,10 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 
 每 `pollIntervalSeconds` 一拍（每拍先落心跳到 `<stateDir>/heartbeat.json`）：
 
-1. **恢复检查**：读 state.json + heartbeat 重建内存态；上次崩溃时仍 `in_progress` 的任务在首拍被报告进 `recovered`，**状态与接手者都不动**（抢回 pending 会把同一任务分支二次派给别人）—— 真正的收敛来自同拍的卡死检测：无新 git 活动即升级 `needs-human` 交人分诊。恢复的循环状态：持久化为 `running` 的一律降为 `paused`，等待 `autopilot_resume`。state.json 解析失败时先改名留存为 `state.json.corrupt-<时间戳>` 再空启动，不会静默覆盖掉唯一一份历史。
+1. **恢复检查**：读 state.json + heartbeat 重建内存态。三件固定事：崩溃时仍 `in_progress` 的任务**状态与接手者都不动**（抢回会把同一任务分支二次派发），交由同拍卡死检测收敛；持久化为 `running` 的循环一律降为 `paused`，等 `autopilot_resume`；state.json 解析失败先改名留存为 `state.json.corrupt-<时间戳>` 再空启动，不覆盖唯一一份历史。
 2. **分诊挂起态**：`needs-human` 与 `needs-clarification` 都属"等人/等 leader 动一下"；人工把任务单状态改回 `pending`（或调用 `escalation_resolve`、leader 用 `task_update` 带 `note` 回答）→ 任务回到待派发，关联升级标记 resolved。
 3. **派发**：先看**团队阶段**——`intake`/`kickoff_pending_approval`/`scaffolding` 不派发（契约仍照采纳、门照跑，只是不把任务交出去），`developing`/`replanning` 才继续。然后 `depends_on` 全部 done 且 `status=pending` 的任务，先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
-4. **审查闸门**：reviewer 调 `code_review` approve 前必须 `gates_run` 全绿（`pushRequiresGates`）；有远端 CI 且 `requireCiGreen` 时 CI 必须绿，且必须真验证过（未 `pr_sync` 视为未验证 → 拒）；配了 `daemon.maxDiffLines`/`maxDiffFiles` 时改动体量超限也拒（升级 `change-too-large`）；合并前还要查分支相对 base 的 diff 是否触及禁区，命中即拒绝并升级 `needs-human`。都过了才按画像策略合入 base；合并冲突拒绝并保持 `in_review`。
+4. **审查闸门**：reviewer 调 `code_review` approve 前四道闸门必须全过——本地门绿、CI 绿且真验证过、改动体量门、禁区 diff（语义见「安全模型」3/4，配 `maxDiff*` 时超限升级 `change-too-large`）——都过了才按画像策略合入 base；合并冲突拒绝并保持 `in_review`。
 5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
 6. **卡死与预算**：任务 `stuckMinutes` 无 git 活动 → escalate（空闲失控）；派发后超过 `daemon.maxTaskHours`（默认关闭）仍未完成 → 升级 `budget-exceeded`（活跃空转）。插件看不见成员 agent 的 token 消耗，墙钟预算是唯一可靠的烧钱护栏。
 7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
@@ -236,7 +226,7 @@ Given/When/Then 验收标准……
 - `task_assign` 传 `contractId` 时校验任务单存在且状态为 `pending`，title/depends_on/touches 以任务单为准。
 - `forbidden` 不只是给人看的注释：派发期会拿它和 `touches` 求交（两个方向都算，`touches: [app/]` 命中 `forbidden: [app/server/]` 同样违规），违规立刻升级，而不是白跑一轮门和评审才被 CI 拦下。
 - 每次状态变更回写 frontmatter 并重新生成 `.tasks/_board.md`（自动生成，勿手改），改动以插件身份提交在 base 分支，保持集成检出干净。
-- **一个坏文件不拖垮整块看板**：契约是逐文件解析的，某个 `.md` frontmatter 写坏了只跳过它并上报一次 `contract-rejected`（同一文件不重复报，否则每拍都产生事件、空转降频永远生效不了），其余契约照常采纳。以前这里是一处 `throw`——模型手滑写坏一个文件，整块看板就会被静默清空。
+- **一个坏文件不拖垮整块看板**：契约逐文件解析，某个 `.md` frontmatter 写坏了只跳过它并上报一次 `contract-rejected`（同一文件不重复报，否则每拍都产生事件、空转降频永远生效不了），其余契约照常采纳。
 - **评审与澄清都留痕在任务单里**：`request_changes` 的意见、`task_clarify` 的提问、leader 的 `clarify-answer` 都以带时间戳的留言追加进正文 —— 换人接手或换场会话，接得上上下文。
 - `<stateDir>/learnings.md` 同为生成物（程序全量重写），见下节。
 - developer 的 DoD：质量门全绿 + 每条验收标准的验证证据写入 PR 描述。
@@ -283,12 +273,12 @@ Given/When/Then 验收标准……
 
 ## 安全模型
 
-1. **密钥只引用不落盘**：Config 只存环境变量名；运行时读 `process.env`；所有日志（门输出、部署输出、webhook 负载、升级记录）经 SecretRedactor 强制脱敏。
-2. **命令白名单**：gates / bootstrap / deploy 的每个 shell 片段（按 `&& || ; | &` 与换行拆分）的可执行文件必须**精确命中** `commandAllowlist`，否则拒绝执行并提示走升级；会"藏进程"的构造 —— 命令替换 `$( )` 与反引号 —— **整条拒绝**（不做拆分放行的假象），而重定向与 glob 不启动新进程、继续放行。`bootstrap.systemPackages` 逐包名校验字符集，防止拼进 shell 后绕过 pm 的白名单检查。实话：清单里含 `sh` / `node` / `ssh` / `docker` 时这道就等价于没开（`node -e` 即任意执行），它的定位是**防误配 + 留审计痕迹**，不是防一个已被注入的模型。
-3. **forbiddenPaths**：派发期就检查 `touches` 是否踩到契约自声明的禁区；改动落地前再检查分支实际 diff —— `pr_sync` 推送、reviewer approve 合并、`team_branch` 手工合并三条路径共用同一道闸门，触及禁区直接拒绝并升级；ref 解析不出来同样拒绝（不静默放行）。默认禁区自 2026-08-29 起只剩 `LICENSE`。⚠️ 代价要说清：`.github/` 移出后 AI 团队改得了把关自己的 CI workflow，`requireCiGreen` 的考卷和答卷落在同一支笔下面 —— 需要硬保证 CI 配置不被改的项目，自己把 `.github/` 配回 `security.forbiddenPaths`。
-4. **门不过不合并**：`pushRequiresGates=true` 时门未绿禁止 push 与 approve；`requireCiGreen` 是另一道独立的门（不被前者短路），CI 非绿或从未验证（未 `pr_sync`）都禁止 approve —— 但 CI 状态只有 github 平台查得到，其它平台该门不生效；配了 `daemon.maxDiff*` 时改动体量超限也拒。
-5. **破坏性 git 操作禁止**：不 force-push 共享分支（任务/成员分支仅允许 `--force-with-lease`），不 reset 共享分支，不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 ref 名安全校验：不得以 `-` 开头、不得含空格或 `..` —— 否则一个 `-D` 就能被 git 当成「删分支」选项。
-6. **文档改动只有「草稿 → 人批」一条路**：`doc_write` 只收 `docs.draftDir` 里的 `.md`，正式区的唯一出口是 `doc_approve` —— 它拒绝任何带 `actorId`（即模型身份）的调用，会话里转述的批准必须带上只出现在工单页 / 邮件里的一次性码，落盘前还要把每份草稿的 `sha256` 与当初给人看的那份比对：正文变过一个字就拒绝升格、作废审批码、重开一份问卷（防「批 A 合 B」）。审批**解锁不了禁区**：目标路径命中 `security.forbiddenPaths` 时升格直接失败，`LICENSE` 不因任何答复而被改。教训侧同理：`learning_promote` 只翻台账标记，把教训写进文档仍然是一次独立的、走同一条审批链的 docs-only 变更。
+1. **密钥只引用不落盘**：Config 只存环境变量名，运行时读 `process.env`；门输出、部署输出、webhook 负载、升级记录统一过 `SecretRedactor` 脱敏。
+2. **命令白名单**：gates / bootstrap / deploy 的每个 shell 片段首 token 必须**精确命中** `commandAllowlist`；命令替换 `$( )` 与反引号**整条拒绝**（不做拆分放行的假象），重定向与 glob 放行（不启动新进程）；`bootstrap.systemPackages` 逐包名校验。清单含 `sh` / `node` / `ssh` / `docker` 时这道等价于没开（`node -e` 即任意执行）——定位是**防误配 + 留审计痕迹**，不防已被注入的模型。判据与实现锚点（`splitSegments` / `hasHiddenExecutable` 等）见 AGENTS.md「安全硬规则」。
+3. **forbiddenPaths**：派发期查 `touches ∩ 契约自声明禁区`，落地前查分支实际 diff——`pr_sync` 推送、approve 合并、`team_branch` 手工合并三条路径共用同一道闸门，触及即拒并升级，ref 解析不出来同样拒绝（不静默放行）。默认禁区 2026-08-29 起只剩 `LICENSE`。⚠️ 代价：AI 团队改得了 `.github/` 里的 CI workflow，`requireCiGreen` 的考卷和答卷落在同一支笔下面——需要硬保证的项目自己把 `.github/` 配回 `security.forbiddenPaths`。
+4. **门不过不合并**：`pushRequiresGates=true` 时门未绿禁 push 与 approve；`requireCiGreen` 是另一道独立的门（不被前者短路），CI 非绿或从未验证（未 `pr_sync`）都禁 approve——CI 状态仅 github 平台查得到；配了 `daemon.maxDiff*` 时体量超限也拒。
+5. **破坏性 git 禁止**：不 force-push 共享分支（任务/成员分支仅限 `--force-with-lease`）、不 reset 共享分支、不删 base 分支；可变 git 操作的分支名一律过 `assertSafeRef`（不得以 `-` 开头、不得含空格或 `..`），否则一个 `-D` 就能把「删分支」拼进 argv。
+6. **文档改动只有「草稿 → 人批」一条路**：`doc_write` 只收 `docs.draftDir` 里的 `.md`；`doc_approve` 拒绝任何带 `actorId`（模型身份）的调用，会话里转述的批准必须带只出现在工单页/邮件里的一次性码，落盘前比对每份草稿的 `sha256`——正文变过一个字就拒绝升格、作废审批码、重开问卷（防「批 A 合 B」）。审批**解锁不了禁区**：命中 `security.forbiddenPaths` 升格直接失败，`LICENSE` 不因任何答复而被改；`learning_promote` 只翻台账标记，落文档仍是独立的审批链变更。
 
 ## 工具一览
 
@@ -322,16 +312,14 @@ Given/When/Then 验收标准……
 
 > **面板内直接作答（M2）**：提交打到同源相对路径 `POST /autopilot/ticket/<id>/answer`，不需要外部浏览器、也不需要知道工单端口。漏必填项时**保留你已填的内容**并重述缺失项；成功后卡片等服务端推回来的新快照翻「已答复」，不做乐观更新。面板上**不再有跳外部的工单链接** —— 投影里的 `ticketUrl` 刻意不带凭据，从面板点过去必然 404，那是我们自己发布坏按钮；要在面板外作答请用邮件里的链接（带 token）或在会话里直接调 `answer_questionnaire`。
 
-另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片（`settings.plugin.item` 键控命名空间）。它绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段（`remote.url`、`baseBranch`、`bootstrap.enabled`、`gates.commands`、`daemon.maxReviewRounds`/`stuckMinutes`/`maxDiffLines`、`learnings.enabled`）供编辑保存，写入用户设置层；服务端通过 `installSettingsSection` 让插件读到生效配置（无设置服务时回退到 entry config）。因命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
+另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片：绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段供编辑保存、写入用户设置层；服务端经 `installSettingsSection` 读到生效配置（无设置服务时回退 entry config）。命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
 
 ## Agent 预设：Autopilot 团队（一键切换模式）
 
 想让"启用"变成一次**切换模式**而不是改配置，用 DSH 的 agent preset 机制即可。插件自带一个 `autopilot-team` agent 预设：
 
-- **随包分发**：模板在插件包内 `preset/autopilot-team/`（已加入 `package.json` 的 `files`），随 `npm/pnpm publish` 一起发布。
-- **自动落盘**：插件 `apply()` 里通过 `src/preset.ts` 的 `ensureAutopilotTeamPreset()` 把这个模板拷贝到用户级预设根 `~/.dsh/.agent-presets/autopilot-team/`，**缺失才拷贝、绝不覆盖**（用户自建的 `autopilot-team` 优先），失败静默不阻塞加载。因此**安装并重启后即可在 agent 模式列表里看到「Autopilot 团队」**，无需手建文件。
-- **组合内容**：`agent.cordis.yml` 复刻 `standard` 的全套工具（shell/fs/subagent/workflow 等）并把人格设为 autopilot 团队编排队 leader；`preset.yml` 提供名称/描述/排序。
-- **效果**：在 agent 模式列表里切到 **Autopilot 团队**，该会话就变成"无人值守 AI 软件团队"的编排队；`dsh-ai-team` 的宿主插件工具是全站全局的，本预设无需重复 include。
+- **随包分发 + 自动落盘**：模板在插件包内 `preset/autopilot-team/`（已加入 `package.json` 的 `files`）；`apply()` 时由 `ensureAutopilotTeamPreset()` 拷到用户级预设根 `~/.dsh/.agent-presets/autopilot-team/`（缺失才拷、绝不覆盖、失败静默不阻塞加载），安装并重启后即出现在 agent 模式列表，无需手建文件。
+- **组合内容**：`agent.cordis.yml` 复刻 `standard` 的全套工具（shell/fs/subagent/workflow 等）并把人格设为 autopilot 团队编排队 leader；`preset.yml` 提供名称/描述/排序。选中后该会话即变成无人值守团队的编排队（`dsh-ai-team` 的宿主插件工具全站全局，无需重复 include）。
 - **自动开箱感应**：插件监听 `agent-preset/selected` 事件，选中 `autopilot-team` 时自动创建一个 `demo` 团队（仅当尚无团队才创建）并把投影快照推到该会话，看板立即点亮，无需手动先调 `team_create`。
 
 > **重启生效**：预设目录盘点无缓存，落盘后刷新模式列表即见；但自动建 `demo` 团队的钩子在宿主 `lib/index.js` 里，改宿主代码后需**重启服务端**。

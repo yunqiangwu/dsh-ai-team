@@ -18,6 +18,13 @@ import { touchesOverlap } from './team.js';
 /** 评审后的任务合入基础分支时采用的合并策略。 */
 export type MergeStrategy = 'no-ff' | 'squash' | 'merge';
 
+/** 合并策略的封闭取值集（index.ts 的 Config schema 读它，勿再手抄）。 */
+export const MERGE_STRATEGIES: readonly MergeStrategy[] = ['no-ff', 'squash', 'merge'];
+
+/** 质量门角色的封闭取值集：`local` 在 worktree 里跑，`ci` 只由远端 CI 强制。 */
+export const GATE_ROLES = ['local', 'ci'] as const;
+export type GateRole = (typeof GATE_ROLES)[number];
+
 /**
  * 一条质量门命令，可以可选地按任务 touches 条件触发、并且可选地仅 CI 执行。
  */
@@ -35,11 +42,17 @@ export interface GateDef {
    * `pnpm audit`）、但 CI 里仍然要求的门 —— 本地 approve 不被 `ci` 门阻塞，
    * 由远端 CI 门（`requireCiGreen`）负责强制。
    */
-  role?: 'local' | 'ci' | undefined;
+  role?: GateRole | undefined;
 }
 
 /** 任务分支触及禁区路径时的处理方式。 */
 export type ForbiddenMode = 'block' | 'needs-approval' | 'high-conflict';
+
+/** 禁区处理方式的封闭取值集（index.ts 的 Config schema 读它，勿再手抄）。 */
+export const FORBIDDEN_MODES: readonly ForbiddenMode[] = ['block', 'needs-approval', 'high-conflict'];
+
+/** 内置画像预设名。`resolveProjectProfile` 对名单之外的值 fail loud。 */
+export const PROFILE_PRESETS = ['default', 'agentdeploy'] as const;
 
 export interface ForbiddenRule {
   path: string;
@@ -203,7 +216,8 @@ export function agentdeployProfile(fallbackCommands: readonly string[] = []): Pr
         rules: ['Tool schema 变更必须在 contracts/ 登记并跑 pnpm run test:contracts'],
       },
     ],
-    crossDomainThreshold: 3,
+    // crossDomainThreshold 不在这里重写：与 defaultProfile 同值（3），显式再写一遍
+    // 会让"日后默认改 4"时 agentdeploy 被静默钉在旧值上。
   };
 }
 
@@ -221,8 +235,6 @@ export interface ProjectProfileInput {
   ownership?: OwnershipRule[] | undefined;
   crossDomainThreshold?: number | undefined;
 }
-
-const MERGE_STRATEGIES: readonly MergeStrategy[] = ['no-ff', 'squash', 'merge'];
 
 /** 取一个覆盖字符串，为空/缺失时回落到预设。 */
 function pickText(value: string | undefined, fallback: string): string {
@@ -391,6 +403,20 @@ export function distinctDomainCount(touches: readonly string[]): number {
 }
 
 /**
+ * 跨域阈值判定（判据唯一，出口策略与文案归调用方）。以前 contract_create 写前
+ * 校验、`assignTask` 抛错、循环侧 `escalateCrossDomain` 升级三处各写一份
+ * `distinctDomainCount(...) > threshold`，改阈值语义（比如豁免某类 touches）
+ * 必须同步三处 —— 现在只改这里。
+ */
+export function domainLimitStatus(
+  touches: readonly string[],
+  threshold: number,
+): { domainCount: number; exceeded: boolean } {
+  const domainCount = distinctDomainCount(touches);
+  return { domainCount, exceeded: domainCount > threshold };
+}
+
+/**
  * 把 Config 层级的 {@link ProjectProfileInput} 解析成完整 {@link ProjectProfile}。
  * 命名 `preset` 提供默认值；任何内联字段覆盖它们。由于 schemastery 会给每个
  * 字段填默认值，我们把空串 / 空数组 / 0 视为"未覆盖"并回落到预设基座。
@@ -401,6 +427,14 @@ export function resolveProjectProfile(
   input: ProjectProfileInput | undefined,
   fallbackCommands: readonly string[],
 ): ProjectProfile {
+  // fail loud 而不是静默回落：拼错的 preset 名（如 `agentDeploy`）若悄悄落到
+  // default 画像，项目拿到的是另一套分支命名与合并策略，错误要到合并时才现形。
+  if (input?.preset !== undefined && input.preset !== '' && input.preset !== 'default' &&
+      !PROFILE_PRESETS.includes(input.preset as (typeof PROFILE_PRESETS)[number])) {
+    throw new Error(
+      `unknown profile.preset "${input.preset}" (expected one of: ${PROFILE_PRESETS.join(', ')})`,
+    );
+  }
   const base =
     input?.preset === 'agentdeploy' ? agentdeployProfile(fallbackCommands) : defaultProfile(fallbackCommands);
   if (input === undefined) return base;

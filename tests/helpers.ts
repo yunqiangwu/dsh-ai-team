@@ -8,6 +8,8 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AutopilotOptions } from '../src/service/options.js';
+import type { TeamRecord } from '../src/service/state.js';
+import type { AutopilotService } from '../src/service.js';
 import { defaultProfile } from '../src/profile.js';
 import { DEFAULT_LEARNINGS } from '../src/learnings.js';
 
@@ -137,4 +139,48 @@ export function commitInWorktree(worktreePath: string, relativePath: string, con
   });
   gitTest(['add', '-A'], worktreePath);
   gitTest(['commit', '-m', message], worktreePath);
+}
+
+/** seedTeam 的契约形状（与 writeContract 一致）。 */
+export interface SeedContract {
+  id: string;
+  title: string;
+  dependsOn?: string[];
+  touches?: string[];
+  forbidden?: string[];
+}
+
+/**
+ * 建团队 → 把契约写进集成检出并提交 → 逐个补成员。
+ *
+ * test-unattended 里曾长出两个几乎同构的本地 helper（serviceWithContracts /
+ * seedTeamWithContract），questionnaire 与 integration 又各有第三、第四份变体
+ * —— 这条链是每个循环用例的公共前缀，上收到这里避免继续分叉。
+ * `cloneRemote: true` 让 repo 带上 origin（hasRemote 为真时 approve 的最后一步
+ * push 才能真正走通）。
+ */
+export async function seedTeam(
+  service: AutopilotService,
+  input: {
+    name: string;
+    cloneRemote?: boolean;
+    contracts?: SeedContract[];
+    members?: { role: 'leader' | 'developer' | 'reviewer' | 'operator' }[];
+  },
+): Promise<TeamRecord> {
+  const team = await service.createTeam({
+    name: input.name,
+    ...(input.cloneRemote === true ? { cloneRemote: true } : {}),
+  });
+  if ((input.contracts ?? []).length > 0) {
+    for (const contract of input.contracts ?? []) {
+      await writeContract(join(team.repoPath, '.tasks', `${contract.id}.md`), contract);
+    }
+    gitTest(['add', '-A'], team.repoPath);
+    gitTest(['commit', '-m', 'tasks: seed contracts'], team.repoPath);
+  }
+  for (const member of input.members ?? []) {
+    await service.addMember({ teamId: team.id, role: member.role });
+  }
+  return team;
 }

@@ -13,25 +13,21 @@ import { CommandNotAllowedError, runGateCommand } from '../src/gates.js';
 import { SecretRedactor } from '../src/secrets.js';
 import { DEFAULT_LEARNINGS } from '../src/learnings.js';
 import { defaultProfile } from '../src/profile.js';
-import { gitTest, makeFixture, testOptions, writeContract, commitInWorktree } from './helpers.js';
-import type { Fixture } from './helpers.js';
+import { gitTest, makeFixture, seedTeam, testOptions, writeContract, commitInWorktree } from './helpers.js';
+import type { Fixture, SeedContract } from './helpers.js';
 
 async function serviceWithContracts(
   prefix: string,
-  contracts: { id: string; title: string; dependsOn?: string[]; touches?: string[]; forbidden?: string[] }[],
+  contracts: SeedContract[],
   overrides: Parameters<typeof testOptions>[1] = {},
 ): Promise<{ service: AutopilotService; teamId: string; fixture: Fixture; cleanup: () => Promise<void> }> {
   const fixture = await makeFixture(prefix);
   const service = await AutopilotService.create(testOptions(fixture, overrides));
-  const team = await service.createTeam({ name: `${prefix}-team` });
-  for (const contract of contracts) {
-    await writeContract(join(team.repoPath, '.tasks', `${contract.id}.md`), contract);
-  }
-  gitTest(['add', '-A'], team.repoPath);
-  gitTest(['commit', '-m', 'tasks: seed contracts'], team.repoPath);
-  await service.addMember({ teamId: team.id, role: 'developer' });
-  await service.addMember({ teamId: team.id, role: 'developer' });
-  await service.addMember({ teamId: team.id, role: 'reviewer' });
+  const team = await seedTeam(service, {
+    name: `${prefix}-team`,
+    contracts,
+    members: [{ role: 'developer' }, { role: 'developer' }, { role: 'reviewer' }],
+  });
   return {
     service,
     teamId: team.id,
@@ -49,21 +45,14 @@ async function serviceWithContracts(
 async function seedTeamWithContract(
   service: AutopilotService,
   prefix: string,
-  contracts: { id: string; title: string; dependsOn?: string[]; touches?: string[]; forbidden?: string[] }[] = [
-    { id: 'CORE-1', title: 'core', touches: ['server/core/'] },
-  ],
+  contracts: SeedContract[] = [{ id: 'CORE-1', title: 'core', touches: ['server/core/'] }],
 ): Promise<{ teamId: string; repoPath: string }> {
-  // cloneRemote：让 repo 真的带上 origin，否则 hasRemote 为真却推不动，
-  // approve 会在最后一步 push 失败，测不到真正想验证的那道门。
-  const team = await service.createTeam({ name: `${prefix}-team`, cloneRemote: true });
-  for (const contract of contracts) {
-    await writeContract(join(team.repoPath, '.tasks', `${contract.id}.md`), contract);
-  }
-  gitTest(['add', '-A'], team.repoPath);
-  gitTest(['commit', '-m', 'tasks: seed contracts'], team.repoPath);
-  await service.addMember({ teamId: team.id, role: 'developer' });
-  await service.addMember({ teamId: team.id, role: 'developer' });
-  await service.addMember({ teamId: team.id, role: 'reviewer' });
+  const team = await seedTeam(service, {
+    name: `${prefix}-team`,
+    cloneRemote: true,
+    contracts,
+    members: [{ role: 'developer' }, { role: 'developer' }, { role: 'reviewer' }],
+  });
   return { teamId: team.id, repoPath: team.repoPath };
 }
 

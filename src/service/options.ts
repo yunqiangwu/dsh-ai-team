@@ -11,7 +11,7 @@
  */
 import type { LearningOptions } from '../learnings.js';
 import type { ProjectProfile } from '../profile.js';
-import type { QuestionnaireMode } from '../view.js';
+import type { PauseOnEscalation, QuestionnaireMode, RemotePlatform } from '../view.js';
 
 export interface AutopilotOptions {
   rootDir: string;
@@ -22,7 +22,7 @@ export interface AutopilotOptions {
   remote: {
     url: string;
     sshKeyEnv: string;
-    platform: 'github' | 'cnb' | 'gitlab' | 'generic';
+    platform: RemotePlatform;
     apiTokenEnv?: string | undefined;
   };
   bootstrap: {
@@ -68,7 +68,7 @@ export interface AutopilotOptions {
   escalation: {
     webhookUrlEnv?: string | undefined;
     label: string;
-    pauseOnEscalation: 'task' | 'team';
+    pauseOnEscalation: PauseOnEscalation;
   };
   /**
    * 问卷（ask_human）的交付口径。`interactive` 让工具内部 await 答案、组长这一轮

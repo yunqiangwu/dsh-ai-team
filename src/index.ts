@@ -18,7 +18,7 @@ import { DEFAULT_LEARNINGS } from './learnings.js';
 import type { LearningOptions } from './learnings.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
-import type { QuestionnaireMode } from './view.js';
+import type { PauseOnEscalation, QuestionnaireMode, RemotePlatform } from './view.js';
 import { TICKET_ROUTE_PREFIX } from './view.js';
 
 export const name = 'dsh-ai-team';
@@ -54,7 +54,7 @@ export interface Config {
   remote: {
     url: string;
     sshKeyEnv: string;
-    platform: 'github' | 'cnb' | 'gitlab' | 'generic';
+    platform: RemotePlatform;
     apiTokenEnv: string;
   };
   bootstrap: {
@@ -82,7 +82,7 @@ export interface Config {
   escalation: {
     webhookUrlEnv: string;
     label: string;
-    pauseOnEscalation: 'task' | 'team';
+    pauseOnEscalation: PauseOnEscalation;
   };
   notification?: {
     enabled: boolean;
@@ -157,6 +157,76 @@ export interface Config {
   profile?: ProjectProfileInput;
 }
 
+/** schemastery 把可选 string 的缺省填成 ''；映射到 options 层统一归一成 undefined。 */
+const orUndefined = (value: string): string | undefined => (value === '' ? undefined : value);
+
+// ── Config 默认值的唯一清单 ─────────────────────────────────────────────────
+// schemastery 的对象级 `.default({...})` 要求完整字面量，逐字段 `.default(x)` 又
+// 各要一份 —— 以前这批默认值两处各抄一遍，值漂移不报编译错，只表现为"配一半"
+// 时行为分叉。现在两个字面量都引用同一份常量；smoke-cordis 锁其中 6 个字段的
+// 值，错一份测试即红。
+const DEFAULT_REMOTE = { url: '', sshKeyEnv: 'AUTOPILOT_GIT_KEY', platform: 'generic' as const, apiTokenEnv: '' };
+const DEFAULT_BOOTSTRAP = {
+  enabled: true,
+  toolchain: ['git', 'bun', 'pnpm'],
+  setupCommand: 'pnpm run setup',
+  verifyCommand: 'pnpm run e2e:local',
+  systemPackages: [] as never[],
+  packageManagerCommand: '',
+  envFile: '',
+  envExample: '',
+  requiredEnvKeys: [] as never[],
+};
+const DEFAULT_GATES = {
+  commands: ['pnpm run typecheck', 'pnpm run lint', 'pnpm run test', 'pnpm run build'],
+  requireCiGreen: true,
+  timeoutMinutes: 30,
+};
+const DEFAULT_DAEMON = {
+  maxReviewRounds: 3,
+  stuckMinutes: 45,
+  pollIntervalSeconds: 30,
+  maxDiffLines: 0,
+  maxDiffFiles: 0,
+  maxTaskHours: 0,
+};
+const DEFAULT_ESCALATION = { webhookUrlEnv: '', label: 'needs-human', pauseOnEscalation: 'task' as const };
+const DEFAULT_SMTP = { host: '', port: 465, secure: true, userEnv: '', passEnv: '', fromEnv: '', startTls: true };
+const DEFAULT_TICKET = { host: '127.0.0.1', port: 0, publicBaseUrl: '' };
+const DEFAULT_NOTIFICATION = {
+  enabled: false,
+  smtp: { ...DEFAULT_SMTP },
+  mailTo: '',
+  ticket: { ...DEFAULT_TICKET },
+  autoResume: false,
+};
+const DEFAULT_DEPLOY = {
+  enabled: false,
+  command: '',
+  healthCheckUrl: '',
+  rollbackCommand: '',
+  secretsEnv: [] as never[],
+  skipTasksOnlyCommits: true,
+};
+const DEFAULT_SECURITY = {
+  forbiddenPaths: ['LICENSE'],
+  commandAllowlist: ['pnpm', 'git', 'bun', 'docker', 'node', 'bunx', 'ssh', 'nuxt'],
+  pushRequiresGates: true,
+};
+const DEFAULT_QUESTIONNAIRE = { mode: 'interactive' as const, timeoutMinutes: 60 };
+const DEFAULT_DOCS = { draftDir: 'docs/drafts', formalDir: 'docs' };
+const DEFAULT_PROFILE = {
+  preset: '',
+  branchTemplate: '',
+  prTitleTemplate: '',
+  prBodyTemplate: '',
+  mergeStrategy: '',
+  gates: [] as never[],
+  forbidden: [] as never[],
+  ownership: [] as never[],
+  crossDomainThreshold: 3,
+};
+
 export const Config: z<Config> = z.object({
   rootDir: z.string().default('.dsh-ai-team'),
   stateDir: z.string().default(''),
@@ -166,144 +236,107 @@ export const Config: z<Config> = z.object({
 
   remote: z
     .object({
-      url: z.string().default(''),
-      sshKeyEnv: z.string().default('AUTOPILOT_GIT_KEY'),
+      url: z.string().default(DEFAULT_REMOTE.url),
+      sshKeyEnv: z.string().default(DEFAULT_REMOTE.sshKeyEnv),
+      // schemastery 没有 enum 组合器，只能折叠字面量：取值以 vocab.ts 的
+      // REMOTE_PLATFORMS 为准（Config 接口已复用其类型）。
       platform: z
         .union([z.const('github'), z.const('cnb'), z.const('gitlab'), z.const('generic')])
-        .default('generic'),
-      apiTokenEnv: z.string().default(''),
+        .default(DEFAULT_REMOTE.platform),
+      apiTokenEnv: z.string().default(DEFAULT_REMOTE.apiTokenEnv),
     })
-    .default({ url: '', sshKeyEnv: 'AUTOPILOT_GIT_KEY', platform: 'generic', apiTokenEnv: '' }),
+    .default({ ...DEFAULT_REMOTE }),
 
   bootstrap: z
     .object({
-      enabled: z.boolean().default(true),
-      toolchain: z.array(z.string()).default(['git', 'bun', 'pnpm']),
-      setupCommand: z.string().default('pnpm run setup'),
-      verifyCommand: z.string().default('pnpm run e2e:local'),
-      systemPackages: z.array(z.string()).default([]),
-      packageManagerCommand: z.string().default(''),
-      envFile: z.string().default(''),
-      envExample: z.string().default(''),
-      requiredEnvKeys: z.array(z.string()).default([]),
+      enabled: z.boolean().default(DEFAULT_BOOTSTRAP.enabled),
+      toolchain: z.array(z.string()).default(DEFAULT_BOOTSTRAP.toolchain),
+      setupCommand: z.string().default(DEFAULT_BOOTSTRAP.setupCommand),
+      verifyCommand: z.string().default(DEFAULT_BOOTSTRAP.verifyCommand),
+      systemPackages: z.array(z.string()).default(DEFAULT_BOOTSTRAP.systemPackages),
+      packageManagerCommand: z.string().default(DEFAULT_BOOTSTRAP.packageManagerCommand),
+      envFile: z.string().default(DEFAULT_BOOTSTRAP.envFile),
+      envExample: z.string().default(DEFAULT_BOOTSTRAP.envExample),
+      requiredEnvKeys: z.array(z.string()).default(DEFAULT_BOOTSTRAP.requiredEnvKeys),
     })
-    .default({
-      enabled: true,
-      toolchain: ['git', 'bun', 'pnpm'],
-      setupCommand: 'pnpm run setup',
-      verifyCommand: 'pnpm run e2e:local',
-      systemPackages: [],
-      packageManagerCommand: '',
-      envFile: '',
-      envExample: '',
-      requiredEnvKeys: [],
-    }),
+    .default({ ...DEFAULT_BOOTSTRAP }),
 
   gates: z
     .object({
-      commands: z
-        .array(z.string())
-        .default(['pnpm run typecheck', 'pnpm run lint', 'pnpm run test', 'pnpm run build']),
-      requireCiGreen: z.boolean().default(true),
-      timeoutMinutes: z.number().step(1).min(1).default(30),
+      commands: z.array(z.string()).default(DEFAULT_GATES.commands),
+      requireCiGreen: z.boolean().default(DEFAULT_GATES.requireCiGreen),
+      timeoutMinutes: z.number().step(1).min(1).default(DEFAULT_GATES.timeoutMinutes),
     })
-    .default({
-      commands: ['pnpm run typecheck', 'pnpm run lint', 'pnpm run test', 'pnpm run build'],
-      requireCiGreen: true,
-      timeoutMinutes: 30,
-    }),
+    .default({ ...DEFAULT_GATES }),
 
   daemon: z
     .object({
-      maxReviewRounds: z.number().step(1).min(1).default(3),
-      stuckMinutes: z.number().step(1).min(1).default(45),
-      pollIntervalSeconds: z.number().step(1).min(1).default(30),
+      maxReviewRounds: z.number().step(1).min(1).default(DEFAULT_DAEMON.maxReviewRounds),
+      stuckMinutes: z.number().step(1).min(1).default(DEFAULT_DAEMON.stuckMinutes),
+      pollIntervalSeconds: z.number().step(1).min(1).default(DEFAULT_DAEMON.pollIntervalSeconds),
       // 0 = 关闭该门：评审体量上限对既有团队是行为变更，必须显式开启。
-      maxDiffLines: z.number().step(1).min(0).default(0),
-      maxDiffFiles: z.number().step(1).min(0).default(0),
+      maxDiffLines: z.number().step(1).min(0).default(DEFAULT_DAEMON.maxDiffLines),
+      maxDiffFiles: z.number().step(1).min(0).default(DEFAULT_DAEMON.maxDiffFiles),
       // 允许小数（0.5 = 半小时）；0 = 关闭，与 maxDiff* 同属显式开启的行为变更。
-      maxTaskHours: z.number().min(0).default(0),
+      maxTaskHours: z.number().min(0).default(DEFAULT_DAEMON.maxTaskHours),
     })
-    .default({
-      maxReviewRounds: 3,
-      stuckMinutes: 45,
-      pollIntervalSeconds: 30,
-      maxDiffLines: 0,
-      maxDiffFiles: 0,
-      maxTaskHours: 0,
-    }),
+    .default({ ...DEFAULT_DAEMON }),
 
   escalation: z
     .object({
-      webhookUrlEnv: z.string().default(''),
-      label: z.string().default('needs-human'),
-      pauseOnEscalation: z.union([z.const('task'), z.const('team')]).default('task'),
+      webhookUrlEnv: z.string().default(DEFAULT_ESCALATION.webhookUrlEnv),
+      label: z.string().default(DEFAULT_ESCALATION.label),
+      // 取值以 vocab.ts 的 PAUSE_ON_ESCALATION 为准（Config 接口已复用其类型）。
+      pauseOnEscalation: z.union([z.const('task'), z.const('team')]).default(DEFAULT_ESCALATION.pauseOnEscalation),
     })
-    .default({ webhookUrlEnv: '', label: 'needs-human', pauseOnEscalation: 'task' }),
+    .default({ ...DEFAULT_ESCALATION }),
 
   notification: z
     .object({
-      enabled: z.boolean().default(false),
+      enabled: z.boolean().default(DEFAULT_NOTIFICATION.enabled),
       smtp: z
         .object({
-          host: z.string().default(''),
-          port: z.number().step(1).min(1).default(465),
-          secure: z.boolean().default(true),
-          userEnv: z.string().default(''),
-          passEnv: z.string().default(''),
-          fromEnv: z.string().default(''),
-          startTls: z.boolean().default(true),
+          host: z.string().default(DEFAULT_SMTP.host),
+          port: z.number().step(1).min(1).default(DEFAULT_SMTP.port),
+          secure: z.boolean().default(DEFAULT_SMTP.secure),
+          userEnv: z.string().default(DEFAULT_SMTP.userEnv),
+          passEnv: z.string().default(DEFAULT_SMTP.passEnv),
+          fromEnv: z.string().default(DEFAULT_SMTP.fromEnv),
+          startTls: z.boolean().default(DEFAULT_SMTP.startTls),
         })
-        .default({ host: '', port: 465, secure: true, userEnv: '', passEnv: '', fromEnv: '', startTls: true }),
-      mailTo: z.string().default(''),
+        .default({ ...DEFAULT_SMTP }),
+      mailTo: z.string().default(DEFAULT_NOTIFICATION.mailTo),
       ticket: z
         .object({
-          host: z.string().default('127.0.0.1'),
+          host: z.string().default(DEFAULT_TICKET.host),
           // 0 表示选择临时端口（适用于服务没有固定端口、
           // 或 publicBaseUrl 由反向代理提供的场景）。
-          port: z.number().step(1).min(0).default(0),
-          publicBaseUrl: z.string().default(''),
+          port: z.number().step(1).min(0).default(DEFAULT_TICKET.port),
+          publicBaseUrl: z.string().default(DEFAULT_TICKET.publicBaseUrl),
         })
-        .default({ host: '127.0.0.1', port: 0, publicBaseUrl: '' }),
-      autoResume: z.boolean().default(false),
+        .default({ ...DEFAULT_TICKET }),
+      autoResume: z.boolean().default(DEFAULT_NOTIFICATION.autoResume),
     })
-    .default({
-      enabled: false,
-      smtp: { host: '', port: 465, secure: true, userEnv: '', passEnv: '', fromEnv: '', startTls: true },
-      mailTo: '',
-      ticket: { host: '127.0.0.1', port: 0, publicBaseUrl: '' },
-      autoResume: false,
-    }),
+    .default({ ...DEFAULT_NOTIFICATION }),
 
   deploy: z
     .object({
-      enabled: z.boolean().default(false),
-      command: z.string().default(''),
-      healthCheckUrl: z.string().default(''),
-      rollbackCommand: z.string().default(''),
-      secretsEnv: z.array(z.string()).default([]),
-      skipTasksOnlyCommits: z.boolean().default(true),
+      enabled: z.boolean().default(DEFAULT_DEPLOY.enabled),
+      command: z.string().default(DEFAULT_DEPLOY.command),
+      healthCheckUrl: z.string().default(DEFAULT_DEPLOY.healthCheckUrl),
+      rollbackCommand: z.string().default(DEFAULT_DEPLOY.rollbackCommand),
+      secretsEnv: z.array(z.string()).default(DEFAULT_DEPLOY.secretsEnv),
+      skipTasksOnlyCommits: z.boolean().default(DEFAULT_DEPLOY.skipTasksOnlyCommits),
     })
-    .default({
-      enabled: false,
-      command: '',
-      healthCheckUrl: '',
-      rollbackCommand: '',
-      secretsEnv: [],
-      skipTasksOnlyCommits: true,
-    }),
+    .default({ ...DEFAULT_DEPLOY }),
 
   security: z
     .object({
-      forbiddenPaths: z.array(z.string()).default(['LICENSE']),
-      commandAllowlist: z.array(z.string()).default(['pnpm', 'git', 'bun', 'docker', 'node', 'bunx', 'ssh', 'nuxt']),
-      pushRequiresGates: z.boolean().default(true),
+      forbiddenPaths: z.array(z.string()).default(DEFAULT_SECURITY.forbiddenPaths),
+      commandAllowlist: z.array(z.string()).default(DEFAULT_SECURITY.commandAllowlist),
+      pushRequiresGates: z.boolean().default(DEFAULT_SECURITY.pushRequiresGates),
     })
-    .default({
-      forbiddenPaths: ['LICENSE'],
-      commandAllowlist: ['pnpm', 'git', 'bun', 'docker', 'node', 'bunx', 'ssh', 'nuxt'],
-      pushRequiresGates: true,
-    }),
+    .default({ ...DEFAULT_SECURITY }),
 
   buildCache: z
     .object({
@@ -325,58 +358,50 @@ export const Config: z<Config> = z.object({
 
   questionnaire: z
     .object({
-      // schemastery 没有 enum 组合器，只能像 `remote.platform` 那样折叠字面量：
-      // 取值以 vocab.ts 的 QUESTIONNAIRE_MODES 为准，接口侧已复用它。
-      mode: z.union([z.const('interactive'), z.const('async')]).default('interactive'),
-      timeoutMinutes: z.number().min(1).default(60),
+      // schemastery 没有 enum 组合器，只能折叠字面量：取值以 vocab.ts 的
+      // QUESTIONNAIRE_MODES 为准，接口侧已复用其类型。
+      mode: z.union([z.const('interactive'), z.const('async')]).default(DEFAULT_QUESTIONNAIRE.mode),
+      timeoutMinutes: z.number().min(1).default(DEFAULT_QUESTIONNAIRE.timeoutMinutes),
     })
-    .default({ mode: 'interactive', timeoutMinutes: 60 }),
+    .default({ ...DEFAULT_QUESTIONNAIRE }),
 
   docs: z
     .object({
-      draftDir: z.string().default('docs/drafts'),
-      formalDir: z.string().default('docs'),
+      draftDir: z.string().default(DEFAULT_DOCS.draftDir),
+      formalDir: z.string().default(DEFAULT_DOCS.formalDir),
     })
-    .default({ draftDir: 'docs/drafts', formalDir: 'docs' }),
+    .default({ ...DEFAULT_DOCS }),
 
   profile: z
     .object({
-      preset: z.string().default(''),
-      branchTemplate: z.string().default(''),
-      prTitleTemplate: z.string().default(''),
-      prBodyTemplate: z.string().default(''),
-      mergeStrategy: z.string().default(''),
+      preset: z.string().default(DEFAULT_PROFILE.preset),
+      branchTemplate: z.string().default(DEFAULT_PROFILE.branchTemplate),
+      prTitleTemplate: z.string().default(DEFAULT_PROFILE.prTitleTemplate),
+      prBodyTemplate: z.string().default(DEFAULT_PROFILE.prBodyTemplate),
+      mergeStrategy: z.string().default(DEFAULT_PROFILE.mergeStrategy),
       gates: z
         .array(
           z.object({
             command: z.string(),
             when: z.array(z.string()).default([]),
+            // 取值以 profile.ts 的 GATE_ROLES 为准。
             role: z.union([z.const('local'), z.const('ci')]).default('local'),
           }),
         )
-        .default([]),
+        .default(DEFAULT_PROFILE.gates),
       forbidden: z
         .array(
           z.object({
             path: z.string(),
+            // 取值以 profile.ts 的 FORBIDDEN_MODES 为准。
             mode: z.union([z.const('block'), z.const('needs-approval'), z.const('high-conflict')]).default('block'),
           }),
         )
-        .default([]),
-      ownership: z.array(z.object({ glob: z.string(), role: z.string() })).default([]),
-      crossDomainThreshold: z.number().step(1).min(1).default(3),
+        .default(DEFAULT_PROFILE.forbidden),
+      ownership: z.array(z.object({ glob: z.string(), role: z.string() })).default(DEFAULT_PROFILE.ownership),
+      crossDomainThreshold: z.number().step(1).min(1).default(DEFAULT_PROFILE.crossDomainThreshold),
     })
-    .default({
-      preset: '',
-      branchTemplate: '',
-      prTitleTemplate: '',
-      prBodyTemplate: '',
-      mergeStrategy: '',
-      gates: [],
-      forbidden: [],
-      ownership: [],
-      crossDomainThreshold: 3,
-    }),
+    .default({ ...DEFAULT_PROFILE }),
 });
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
@@ -395,7 +420,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const effective = current();
   const service = await AutopilotService.create({
     rootDir: effective.rootDir,
-    stateDir: effective.stateDir === '' ? undefined : effective.stateDir,
+    stateDir: orUndefined(effective.stateDir),
     baseBranch: effective.baseBranch,
     maxMembers: effective.maxMembers,
     maxTasks: effective.maxTasks,
@@ -403,7 +428,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       url: effective.remote.url,
       sshKeyEnv: effective.remote.sshKeyEnv,
       platform: effective.remote.platform,
-      apiTokenEnv: effective.remote.apiTokenEnv === '' ? undefined : effective.remote.apiTokenEnv,
+      apiTokenEnv: orUndefined(effective.remote.apiTokenEnv),
     },
     bootstrap: effective.bootstrap,
     gates: {
@@ -413,7 +438,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     },
     daemon: effective.daemon,
     escalation: {
-      webhookUrlEnv: effective.escalation.webhookUrlEnv === '' ? undefined : effective.escalation.webhookUrlEnv,
+      webhookUrlEnv: orUndefined(effective.escalation.webhookUrlEnv),
       label: effective.escalation.label,
       pauseOnEscalation: effective.escalation.pauseOnEscalation,
     },
@@ -425,7 +450,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         secure: effective.notification.smtp.secure,
         userEnv: effective.notification.smtp.userEnv,
         passEnv: effective.notification.smtp.passEnv,
-        fromEnv: effective.notification.smtp.fromEnv === '' ? undefined : effective.notification.smtp.fromEnv,
+        fromEnv: orUndefined(effective.notification.smtp.fromEnv),
         startTls: effective.notification.smtp.startTls,
       },
       mailTo: effective.notification.mailTo,
@@ -438,9 +463,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     } : undefined,
     deploy: {
       enabled: effective.deploy.enabled,
-      command: effective.deploy.command === '' ? undefined : effective.deploy.command,
-      healthCheckUrl: effective.deploy.healthCheckUrl === '' ? undefined : effective.deploy.healthCheckUrl,
-      rollbackCommand: effective.deploy.rollbackCommand === '' ? undefined : effective.deploy.rollbackCommand,
+      command: orUndefined(effective.deploy.command),
+      healthCheckUrl: orUndefined(effective.deploy.healthCheckUrl),
+      rollbackCommand: orUndefined(effective.deploy.rollbackCommand),
       secretsEnv: effective.deploy.secretsEnv,
       skipTasksOnlyCommits: effective.deploy.skipTasksOnlyCommits,
     },
@@ -544,5 +569,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+// 这两个 re-export 是 npm 包公共 API 的一部分（tests/smoke-cordis.ts 从 lib/index.js
+// 导入并断言它们存在），不是死代码 —— 勿删；要改请同步那份冒烟。
 export { AutopilotService } from './service.js';
 export { ensureAutopilotTeamPreset } from './preset.js';

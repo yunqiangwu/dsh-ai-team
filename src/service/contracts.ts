@@ -13,10 +13,10 @@ import { forbiddenTouchesViolation } from '../profile.js';
 import type { TaskContract } from '../team.js';
 
 /** 契约 id 约定：`<域>-<序号>`（与目标仓库 `.tasks/README.md` 一致）。 */
-export const CONTRACT_ID_RE = /^[A-Z][A-Z0-9]*-\d+$/;
+const CONTRACT_ID_RE = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /** 建契约时唯一的合法初始状态：其余状态都由运行流程负责写入。 */
-export const CREATABLE_STATUSES: readonly string[] = ['pending'];
+const CREATABLE_STATUSES: readonly string[] = ['pending'];
 
 export interface ContractDraft {
   id: string;
@@ -45,7 +45,7 @@ const has = (set: Set<string>, value: string): boolean => set.has(value);
  * 依赖图判环（DFS + 三色标记）。同一批契约允许互相引用，所以图是
  * 「磁盘已有 ∪ 本批新建」，而不是只看新那份。
  */
-export function findDependencyCycle(edges: Map<string, string[]>): string[] | null {
+function findDependencyCycle(edges: Map<string, string[]>): string[] | null {
   const state = new Map<string, 'visiting' | 'done'>();
   const stack: string[] = [];
   const walk = (node: string): string[] | null => {

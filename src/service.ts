@@ -13,8 +13,8 @@
  * dispose() 做最终 flush。
  */
 import { randomBytes } from 'node:crypto';
-import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, relative as pathRelative, resolve } from 'node:path';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import {
   addWorktree,
   checkout,
@@ -43,7 +43,7 @@ import { runGates } from './gates.js';
 import { runDeploy } from './deploy.js';
 import { checkRunStatus, githubRepoSlug, upsertPullRequest } from './github.js';
 import { EscalationManager, type EscalationInput } from './escalate.js';
-import { Mailer, postHumanWebhook } from './notification.js';
+import { Mailer, postHumanWebhook, renderEscalationMail } from './notification.js';
 import {
   TICKET_PATH_PREFIX,
   TicketHandler,
@@ -54,28 +54,13 @@ import {
 } from './ticket-handler.js';
 import { escalationFields } from './formmodel.js';
 import {
-  decisionNotes,
   newApprovalCode,
   questionnaireViewOf,
   QuestionnaireManager,
   ticketFieldsOf,
   type QuestionnaireRecord,
 } from './questionnaire.js';
-import {
-  assertRepoRelative,
-  bumpVersion,
-  defaultFormalPath,
-  hashBody,
-  insertSectionNotes,
-  isDraftPath,
-  listDocs,
-  readDoc,
-  repoFile,
-  writeDoc,
-  type DocEntry,
-  type DocMeta,
-  type DocStatus,
-} from './docdraft.js';
+import { repoFile, type DocStatus } from './docdraft.js';
 import {
   renderContractFile,
   validateContractBatch,
@@ -84,7 +69,7 @@ import {
 } from './service/contracts.js';
 import {
   classifyForbiddenFiles,
-  distinctDomainCount,
+  domainLimitStatus,
   effectiveForbiddenRules,
   forbiddenTouchesViolation,
   ownerRoleForTouches,
@@ -99,6 +84,7 @@ import {
   loadTaskContracts,
   patchTaskContract,
   regenerateBoard,
+  renderTaskNote,
   touchesOverlap,
   type TaskContract,
 } from './team.js';
@@ -129,9 +115,7 @@ import type {
   QuestionBinding,
   QuestionnaireKind,
   QuestionnaireMode,
-  QuestionnaireStatus,
   QuestionnaireView,
-  QuestionOption,
   ReviewVerdict,
   ReviewView,
   Role,
@@ -146,15 +130,39 @@ import { DISPATCHABLE_PHASES, TICKET_ROUTE_PREFIX } from './view.js';
 import type { AutopilotOptions } from './service/options.js';
 import {
   clip,
+  createTaskRecord,
   emptyTeamMetrics,
   HELD_STATUSES,
   memberBranch,
   noteLines,
   oneLine,
+  requireTeamMember,
   shortId,
   TASKS_DIR,
   teamPhase,
 } from './service/state.js';
+import {
+  memberView as memberViewOf,
+  reviewView as reviewViewOf,
+  taskView as taskViewOf,
+} from './service/views.js';
+import { budgetExceeded, reviewRoundsExceeded, taskStuck } from './service/daemon.js';
+import {
+  APPROVAL_QUESTION,
+  assertBindingWritable,
+  docApprove as docApproveFlow,
+  docWrite as docWriteFlow,
+  promoteDrafts,
+  questionnaireResult,
+  resetDraftsToEditable,
+  stampForApproval,
+  withApprovalQuestion,
+  writeBackAnswers,
+  type AskHumanResult,
+  type DocFlowDeps,
+  type PromoteResult,
+  type WriteBack,
+} from './service/docflow.js';
 import type {
   MemberRecord,
   PersistedState,
@@ -192,79 +200,15 @@ const IDLE_BACKOFF_TICKS = 5;
 const MAX_IDLE_BACKOFF_FACTOR = 4;
 
 /**
- * 审批问卷里那道「批 / 不批」题的保留名。工单答复与 `doc_approve` 都按它取决策，
- * 所以组长即使自己写了选择题也不能换个名字让流程认不出来。
+ * 审批问卷的「批 / 不批」保留题、文档审批链与问卷记录纯操作已搬到
+ * `service/docflow.ts`（脱离状态机单测）；这里 re-export 保持对外类型面不变。
  */
-const APPROVAL_QUESTION = 'decision';
-
-/**
- * approval 问卷必须有一道明确的批/不批题 —— 没有它，答卷收上来也不知道人到底批没批。
- *
- * `defaultValue` 刻意是 **reject**：interactive 问卷超时会按默认方案继续（§3.2），
- * 默认批准等于让「没人应答」变成一次自动批准。
- */
-function withApprovalQuestion(questions: Question[]): Question[] {
-  if (questions.some((question) => question.name === APPROVAL_QUESTION)) return questions;
-  const options: QuestionOption[] = [
-    {
-      value: 'approve',
-      label: '批准：升格进正式区，团队照它开工',
-      impact: '这些文档立刻成为后续所有任务的验收依据',
-      // 故意不给 recommended：工单页会预勾 recommended 项，一张预勾着「批准」的单
-      // 等价于「闭着眼睛点提交就授权了」—— §8-10 要防的正是这个。预选项由
-      // defaultValue 提供，也就是那个更保守的答案。
-      recommended: false,
-    },
-    {
-      value: 'reject',
-      label: '不批准：退回继续改草稿',
-      impact: '阶段回到 intake，团队不开工',
-      recommended: false,
-    },
-  ];
-  return [
-    ...questions,
-    {
-      name: APPROVAL_QUESTION,
-      label: '这批文档是否批准升格为正式文档？',
-      type: 'select' as const,
-      options,
-      required: true,
-      defaultValue: 'reject',
-    },
-  ];
-}
-
-/** 答案回写的落点报告：写到了哪个文件、绑定的章节有没有真的匹配上。 */
-interface WriteBack {
-  writtenTo: string | null;
-  sectionMatched: boolean | null;
-}
+export type { AskHumanResult, PromoteResult } from './service/docflow.js';
 
 /** 唤醒 interactive await 的负载：最终记录 + 这次作答的回写结果。 */
 interface QuestionnaireOutcome {
   record: QuestionnaireRecord;
   writeBack: WriteBack;
-}
-
-/** 一次 `ask_human` 的完整结果：问卷本身 + 答案 + 答案落到了哪儿。 */
-export interface AskHumanResult {
-  questionnaire: QuestionnaireView;
-  /** async 模式恒为 `open`；interactive 为 `answered` / `expired` / `cancelled`。 */
-  status: QuestionnaireStatus;
-  /** 人给出的答案。interactive 超时时回落各题默认值（并如实标 `expired`）。 */
-  answers: Record<string, string>;
-  /** 答案回写到的文件（null = 没有绑定，或没人真的作答）。 */
-  writtenTo: string | null;
-  /** 绑定的文档章节是否真的匹配上（没匹配上会追加到文末并如实报 false）。 */
-  sectionMatched: boolean | null;
-}
-
-/** 一次审批的结果。 */
-export interface PromoteResult {
-  promoted: { draft: string; formal: string; version: string }[];
-  phase: TeamPhase;
-  approvedBy: string;
 }
 
 // ── 服务主体 ────────────────────────────────────────────────────────────────
@@ -594,22 +538,16 @@ export class AutopilotService {
     if (this.notificationMailer === null) {
       return { ...initial, status: 'failed', error: 'notification: mailer disabled' };
     }
-    const subject = this.escalationSubject(record);
-    const text = [
-      `[dsh-ai-team] 需要你的人工确认`,
-      ``,
-      `任务: ${subject}`,
-      `原因: ${record.reason}`,
-      `说明: ${record.message}`,
-      ``,
-      `建议动作: ${record.suggestion}`,
-      ``,
-      link === null ? `（未配置工单端点，请在 dsh 面板查看）` : `请填写工单以继续：${link}`,
-      ``,
-      `回答会回写到任务单；如需密钥请用环境变量提供，勿粘贴明文。`,
-    ].join('\n');
+    // 邮件文案渲染在 notification.ts（纯函数，与 Mailer 靠在一起）。
+    const { subject, text } = renderEscalationMail({
+      subject: this.escalationSubject(record),
+      reason: record.reason,
+      message: record.message,
+      suggestion: record.suggestion,
+      link,
+    });
     try {
-      await this.notificationMailer.send({ to: config.mailTo, subject: `[dsh-ai-team] 人工确认: ${subject}`, text });
+      await this.notificationMailer.send({ to: config.mailTo, subject, text });
       return { ...initial, mailDelivered: true, status: 'sent' };
     } catch (error) {
       return {
@@ -635,116 +573,28 @@ export class AutopilotService {
   // 与上面「人工通知回路」的分工：那边是升级（有东西坏了或矛盾了），这边是问卷
   //（一切正常，只是这个选择得由人来做）。两者共用 TicketServer 与 Mailer，但记录、
   // 状态与回写目标各一套 —— 混用会让一次普通提问看起来像一次故障。
+  //
+  // 文档审批链与问卷记录纯操作在 `service/docflow.ts`（`this.docflow` 注入依赖）；
+  // 这里只保留交互层：投递、interactive 等待唤醒、两个工具后端与阶段分流。
 
-  /** draft 区（AI 唯一可写的文档区）的相对与绝对路径。 */
-  private draftRoot(team: TeamRecord): { relative: string; absolute: string } {
-    const relative = assertRepoRelative(this.options.docs.draftDir, 'docs.draftDir');
-    return { relative, absolute: repoFile(team.repoPath, relative) };
-  }
-
-  /** draft 区里可能进入审批的草稿：`draft` 与 `pending-approval`。 */
-  private async pendingDrafts(team: TeamRecord): Promise<DocEntry[]> {
-    const root = this.draftRoot(team);
-    const entries = await listDocs(root.absolute, root.relative);
-    return entries.filter(
-      (entry) => entry.doc.meta.status === 'draft' || entry.doc.meta.status === 'pending-approval',
-    );
-  }
-
-  /**
-   * 提交文档改动。draft 区与正式区都要提交，而且必须**同一次**提交：分两次会让
-   * 「草稿已删、正式那边还没落地」的中间状态出现在仓库历史里。
-   *
-   * 不存在的目录不能当 pathspec —— `git add -A -- <不存在的目录>` 是 fatal，
-   * 会把同批里另一侧的改动一起吞掉。所以先探一次，只提交存在的那些。
-   */
-  private async commitDocs(team: TeamRecord, message: string): Promise<void> {
-    const existing: string[] = [];
-    for (const dir of new Set([this.options.docs.draftDir, this.options.docs.formalDir])) {
-      const relative = assertRepoRelative(dir, 'docs 目录');
-      if (await access(repoFile(team.repoPath, relative)).then(() => true, () => false)) existing.push(relative);
-    }
-    if (existing.length === 0) return;
-    await commitAll(team.repoPath, existing, message).catch(() => {});
-  }
-
-  /**
-   * 把 draft 区里所有草稿退回可编辑态（`draft`）并重新钉住正文哈希。
-   * 被拒的开工包、以及「等人批的时候内容又变了」的审批都走这里。
-   */
-  private async resetDraftsToEditable(team: TeamRecord): Promise<void> {
-    let touched = false;
-    for (const entry of await this.pendingDrafts(team)) {
-      if (entry.doc.meta.status !== 'pending-approval') continue;
-      touched = true;
-      await writeDoc(
-        entry.absolutePath,
-        { ...entry.doc.meta, status: 'draft', sha256: hashBody(entry.doc.body) },
-        entry.doc.body,
-      );
-    }
-    if (touched) await this.commitDocs(team, 'docs: drafts back to editable after approval');
-  }
-
-  /**
-   * 作废这个团队所有还在等人批的问卷：取消 + 抹掉审批码。
-   *
-   * 存在的理由：草稿被改过之后，先前发给人的那个码覆盖的已经不是盘上的内容了。
-   * 与其让「批 A 合 B」有机会发生，不如直接把码作废，让组长重新问一次。
-   */
-  private invalidateApprovals(team: TeamRecord): string[] {
-    const cancelled: string[] = [];
-    for (const record of this.questionnaires.open) {
-      if (record.teamId !== team.id || record.kind !== 'approval') continue;
-      this.questionnaires.cancel(record.id);
-      this.questionnaires.consumeApprovalCode(record.id);
-      cancelled.push(record.id);
-    }
-    return cancelled;
+  /** 文档审批链的依赖注入：全部是本服务已有能力的引用，不含新状态。 */
+  private get docflow(): DocFlowDeps {
+    return {
+      docs: this.options.docs,
+      forbiddenRules: effectiveForbiddenRules(this.options.profile, this.options.security.forbiddenPaths),
+      redactor: this.redactor,
+      questionnaires: this.questionnaires,
+      teamOf: (teamId) => this.teamOf(teamId),
+      tryFindTask: (taskId) => this.tryFindTask(taskId),
+      commitTasksDir: (team, message) => this.commitTasksDir(team, message),
+      applyPhase: (team, phase) => this.applyPhase(team, phase),
+      notifyQuestionnaire: (record) => this.notifyQuestionnaire(record),
+    };
   }
 
   /** 面板与 `autopilot_status` 用的对外视图（剥掉审批码，见 schema.ts 的说明）。 */
   private questionnaireViews(): QuestionnaireView[] {
     return this.questionnaires.all.map((record) => questionnaireViewOf(record));
-  }
-
-  /**
-   * 答案落地的位置在**提问时**就要校验（§3.4）：文档绑定必须落在 draft 区
-   *（正式文档对所有角色只读，§4.1），任务绑定必须是看板上的契约。
-   * 等答完了才发现无处可去，等于让人白答一次。
-   */
-  private assertBindingWritable(team: TeamRecord, binding: QuestionBinding | null): QuestionBinding | null {
-    if (binding === null) return null;
-    if (binding.type === 'task') {
-      const found = this.tryFindTask(binding.contractId);
-      if (found === null) {
-        throw new Error(
-          `binding contract "${binding.contractId}" is not on the board (team "${team.name}"); bind a draft document instead, or ask without a binding`,
-        );
-      }
-      return binding;
-    }
-    const relative = assertRepoRelative(binding.path, 'binding.path');
-    if (!isDraftPath(relative, this.draftRoot(team).relative)) {
-      throw new Error(
-        `binding.path "${binding.path}" is outside the draft area ${this.draftRoot(team).relative}/ — accepted documents are read-only for every role (§4.1). Draft the change under ${this.draftRoot(team).relative}/ and let doc_approve move it.`,
-      );
-    }
-    return { ...binding, path: relative };
-  }
-
-  /**
-   * 交给调用方的答案：答完的用真答案；interactive 超时后按组长给的默认方案继续
-   * （§3.2 的兜底），但**不写进文档** —— 没人做过的决策不该留下一条 `[decision]`。
-   */
-  private effectiveAnswers(record: QuestionnaireRecord): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const question of record.questions) {
-      const answer = record.answers[question.name];
-      if (answer !== undefined && answer.value !== '') out[question.name] = answer.value;
-      else if (record.status === 'expired' && question.defaultValue !== '') out[question.name] = question.defaultValue;
-    }
-    return out;
   }
 
   /**
@@ -874,11 +724,11 @@ export class AutopilotService {
     const mode = input.mode ?? this.options.questionnaire.mode;
     const taskId = input.taskId ?? null;
     if (taskId !== null) this.findTask(taskId);
-    const binding = this.assertBindingWritable(team, input.binding ?? null);
+    const binding = assertBindingWritable(this.docflow, team, input.binding ?? null);
     const questions = kind === 'approval' ? withApprovalQuestion(input.questions) : input.questions;
     // 「这批草稿批不批」之前，先把人将要看的那份内容钉住（sha256 = 落盘正文哈希）：
     // 这是防「批 A 合 B」的前半，后半是 promoteDrafts 的比对。空包直接拒绝。
-    if (kind === 'approval') await this.stampForApproval(team, input.title);
+    if (kind === 'approval') await stampForApproval(this.docflow, team, input.title);
     const timeoutMinutes = input.timeoutMinutes ?? this.options.questionnaire.timeoutMinutes;
     const timeoutMs = mode === 'interactive' ? Math.max(0, timeoutMinutes) * 60_000 : 0;
     const record = this.questionnaires.create({
@@ -898,45 +748,9 @@ export class AutopilotService {
     // 「正在等人」这一帧必须现在就出去：interactive 模式下工具的 `publish()` 要等
     // await 结束才跑得动，而那正是几十分钟之后。
     this.snapshotPublisher?.();
-    if (mode !== 'interactive') return this.questionnaireResult(record, { writtenTo: null, sectionMatched: null });
+    if (mode !== 'interactive') return questionnaireResult(record, { writtenTo: null, sectionMatched: null });
     const outcome = await this.waitForQuestionnaire(record, timeoutMs);
-    return this.questionnaireResult(outcome.record, outcome.writeBack);
-  }
-
-  private questionnaireResult(
-    record: QuestionnaireRecord,
-    writeBack: WriteBack,
-  ): AskHumanResult {
-    return {
-      questionnaire: questionnaireViewOf(record),
-      status: record.status,
-      answers: this.effectiveAnswers(record),
-      ...writeBack,
-    };
-  }
-
-  /**
-   * 把开工包标成「等人批」，并钉住每份草稿此刻的正文哈希。
-   * @returns 被标的草稿
-   */
-  private async stampForApproval(team: TeamRecord, title: string): Promise<DocEntry[]> {
-    const drafts = await this.pendingDrafts(team);
-    if (drafts.length === 0) {
-      throw new Error(
-        `nothing to approve: ${this.draftRoot(team).relative}/ has no draft documents. Write the kickoff bundle with doc_write first (§4.3) — asking for approval of an empty bundle would be a claim with nothing behind it.`,
-      );
-    }
-    for (const entry of drafts) {
-      await writeDoc(
-        entry.absolutePath,
-        { ...entry.doc.meta, status: 'pending-approval', sha256: hashBody(entry.doc.body) },
-        entry.doc.body,
-      );
-    }
-    await this.commitDocs(team, `docs: kickoff bundle pending approval (${oneLine(title)})`);
-    // 标完就是「开工包等人批」了：让阶段跟着这个事实走，组长不必自己 setPhase 越过去。
-    if (teamPhase(team) === 'intake') this.applyPhase(team, 'kickoff_pending_approval');
-    return drafts;
+    return questionnaireResult(outcome.record, outcome.writeBack);
   }
 
   /**
@@ -1004,7 +818,7 @@ export class AutopilotService {
         questionnaire: questionnaireViewOf(record),
       };
     }
-    const writeBack = await this.writeBackAnswers(team, record);
+    const writeBack = await writeBackAnswers(this.docflow, team, record);
     // interactive 的那一轮还 await 在 ask_human 里，而工单 POST 的调用栈上没有 exec
     // 可以返回 —— 只能在这里主动唤醒它。
     this.settleQuestionnaireWaiter(record, writeBack);
@@ -1039,173 +853,29 @@ export class AutopilotService {
       return;
     }
     if (record.answers[APPROVAL_QUESTION]?.value === 'approve') {
-      await this.promoteDrafts(team, record, 'human(工单答复)');
+      await promoteDrafts(this.docflow, team, record, 'human(工单答复)');
       this.questionnaires.consumeApprovalCode(record.id);
       return;
     }
-    await this.resetDraftsToEditable(team);
+    await resetDraftsToEditable(this.docflow, team);
     this.questionnaires.consumeApprovalCode(record.id);
     this.applyPhase(team, 'intake');
   }
 
   /**
-   * 答案的结构化回写（§3.4）：一条带时间戳的 `[decision]` 跟着代码进 git，
-   * 而不是只活在 `state.json` 里。半年后读 PRD 的人要能看到这个数是谁定的。
-   */
-  private async writeBackAnswers(team: TeamRecord, record: QuestionnaireRecord): Promise<WriteBack> {
-    const notes = decisionNotes(record);
-    const binding = record.binding;
-    if (notes.length === 0 || binding === null) return { writtenTo: null, sectionMatched: null };
-    if (binding.type === 'task') {
-      const found = this.tryFindTask(binding.contractId);
-      if (found === null || found.task.contractId === null) return { writtenTo: null, sectionMatched: null };
-      const path = this.contractPathFor(found.team, found.task);
-      await appendTaskNote(path, notes.join('\n')).catch(() => {});
-      await this.commitTasksDir(found.team, `tasks: human decision on ${found.task.contractId}`);
-      // 报告相对路径：与文档绑定同一口径，别让模型看见一个绝对临时目录。
-      const back = pathRelative(found.team.repoPath, path);
-      return { writtenTo: back.startsWith('..') ? path : back.replace(/\\/g, '/'), sectionMatched: null };
-    }
-    const relativePath = assertRepoRelative(binding.path, 'binding.path');
-    const absolute = repoFile(team.repoPath, relativePath);
-    const doc = await readDoc(absolute, relativePath);
-    const { body, matched } = insertSectionNotes(doc?.body ?? '', binding.section, notes);
-    const meta: DocMeta =
-      doc?.meta ??
-      { path: relativePath, status: 'draft', version: '1.0', sha256: '', approvedBy: null, approvedAt: null };
-    await writeDoc(absolute, { ...meta, path: relativePath, sha256: hashBody(body) }, body);
-    await this.commitDocs(team, `docs: human decision on ${relativePath}`);
-    return { writtenTo: relativePath, sectionMatched: matched };
-  }
-
-  /**
-   * 升格开工包（§4.2 / §4.3）：一次批完、一次提交。三道不可伪造性：
-   *
-   * 1. 审批码只活在服务侧记录与工单页 / 邮件里，全量快照里没有（见 schema.ts）；
-   * 2. 落盘前重新比对 `sha256` 与盘上正文，不一致即拒批、作废并重开问卷 ——
-   *    一次审批只覆盖人当时看到的那一份内容，眼看的 diff 挡不住事后被改掉的一行；
-   * 3. 目标路径过 `security.forbiddenPaths`：任何答复都解锁不了 `LICENSE`（§8-8）。
-   */
-  private async promoteDrafts(team: TeamRecord, record: QuestionnaireRecord | null, approvedBy: string): Promise<PromoteResult> {
-    const { relative: draftDir } = this.draftRoot(team);
-    const drafts = (await this.pendingDrafts(team)).filter((entry) => entry.doc.meta.status === 'pending-approval');
-    if (drafts.length === 0) {
-      throw new Error(
-        `nothing pending approval under ${draftDir}/ — ask with ask_human(kind: "approval") first so the bundle gets stamped`,
-      );
-    }
-    const drifted = drafts.filter((entry) => entry.doc.meta.sha256 !== hashBody(entry.doc.body));
-    if (drifted.length > 0) {
-      const paths = drifted.map((entry) => entry.path).join(', ');
-      await this.resetDraftsToEditable(team);
-      const cancelled = this.invalidateApprovals(team);
-      const reopened = await this.reopenApprovalQuestionnaire(team, record, paths);
-      // 重开的那张单要覆盖「此刻盘上的内容」：不重新钉哈希，人拿着新码来批还是会撞
-      // "nothing pending approval"，整条审批链就死锁在组长身上。
-      await this.stampForApproval(team, `重开审批：${oneLine(paths)}`);
-      throw new Error(
-        `approval refused: ${paths} changed after the code was issued (批 A 合 B 防护). ` +
-          `审批码 ${cancelled.join(', ') || '(本次会话批准)'} 已作废，已重开问卷 ${reopened} 请人重读后重批。`,
-      );
-    }
-    const rules = effectiveForbiddenRules(this.options.profile, this.options.security.forbiddenPaths);
-    const notes = record === null ? [] : decisionNotes(record);
-    const provenance = ['', `> [approved] ${new Date().toISOString()} by ${approvedBy}`, ''];
-    const promoted: PromoteResult['promoted'] = [];
-    for (const entry of drafts) {
-      const formalRelative = defaultFormalPath(entry.path, draftDir, assertRepoRelative(this.options.docs.formalDir, 'docs.formalDir'));
-      const { blocks } = classifyForbiddenFiles([formalRelative], rules);
-      if (blocks.length > 0) {
-        throw new Error(
-          `cannot promote to ${blocks.join(', ')}: security.forbiddenPaths is a configuration boundary, not a gate an approval may cross (§8-8)`,
-        );
-      }
-      const formalAbsolute = repoFile(team.repoPath, formalRelative);
-      const existing = await readDoc(formalAbsolute, formalRelative);
-      const body = notes.length === 0
-        ? `${entry.doc.body.trimEnd()}\n${provenance.join('\n')}`
-        : `${entry.doc.body.trimEnd()}\n${notes.join('\n')}${provenance.join('\n')}`;
-      const meta: DocMeta = {
-        path: formalRelative,
-        status: 'accepted',
-        // 同一路径被第二次批：版本号递增（§6.5 的 PRD 版本化），git 历史就是变更日志。
-        version: existing === null ? entry.doc.meta.version : bumpVersion(existing.meta.version),
-        sha256: hashBody(body),
-        approvedBy,
-        approvedAt: Date.now(),
-      };
-      await writeDoc(formalAbsolute, meta, body);
-      // 只删文件不删目录：draft 区还在，后续 commitDocs 的 pathspec 才不会 fatal。
-      await rm(entry.absolutePath, { force: true });
-      promoted.push({ draft: entry.path, formal: formalRelative, version: meta.version });
-    }
-    await this.commitDocs(team, `docs: promote approved drafts (${approvedBy})`);
-    if (teamPhase(team) === 'kickoff_pending_approval') this.applyPhase(team, 'scaffolding');
-    return { promoted, phase: teamPhase(team), approvedBy };
-  }
-
-  /** 比对失败后重开的那份审批问卷（§4.2 + §11-2）：新码、新快照。 */
-  private async reopenApprovalQuestionnaire(
-    team: TeamRecord,
-    stale: QuestionnaireRecord | null,
-    driftedPaths: string,
-  ): Promise<string> {
-    const record = this.questionnaires.create({
-      teamId: team.id,
-      kind: 'approval',
-      title: `重开审批：${driftedPaths} 在上一码发出后被改动`,
-      mode: stale?.mode ?? 'async',
-      questions: withApprovalQuestion(stale === null ? [] : stale.questions.filter((q) => q.name !== APPROVAL_QUESTION)),
-      binding: stale?.binding ?? null,
-      taskId: stale?.taskId ?? null,
-      timeoutMs: 0,
-      approvalCode: newApprovalCode(),
-    });
-    const delivery = await this.notifyQuestionnaire(record);
-    this.questionnaires.markDelivery(record.id, delivery);
-    return record.id;
-  }
-
-  /**
-   * `doc_approve` 的后端。两条合法来源（§8-10）：
-   *
-   * - 人带着工单页 / 邮件里的一次性码在会话里调（`code`）；
-   * - 人自己在会话里调（不传 `actorId`，也不传 `code`）。
-   *
-   * 组长或 developer 带着 `actorId` 来调一律拒绝 —— 那正是「模型自己伪造审批」的形状。
+   * `doc_approve` 的后端。两条合法来源（§8-10）：人带一次性码在会话里调，或人自己
+   * 不带 `actorId` 直接调；主体（码校验 + sha256 比对升格）在 `service/docflow.ts`，
+   * 这里只补状态变更通知。
    */
   async docApprove(input: { teamId: string; code?: string; actorId?: string }): Promise<PromoteResult> {
-    const team = this.teamOf(input.teamId);
-    if (input.actorId !== undefined) {
-      const actor = this.memberOf(team, input.actorId);
-      throw new Error(
-        `${actor.name} (${actor.role}) cannot approve documents: 审批不能由模型自己伪造（§8-10）. Ask with ask_human(kind: "approval") and let a human answer the ticket, or have the human run doc_approve with the one-time code.`,
-      );
-    }
-    const usable = this.questionnaires.all.filter(
-      (record) =>
-        record.teamId === team.id &&
-        record.kind === 'approval' &&
-        record.approvalCode !== null &&
-        (record.status === 'open' || record.status === 'answered'),
-    );
-    const via = input.code === undefined ? usable[0] : usable.find((record) => this.questionnaires.verifyApprovalCode(record.id, input.code!));
-    if (input.code !== undefined && via === undefined) {
-      throw new Error(
-        `no approval questionnaire in this team matches that code; codes are one-time and die when the drafts change (${usable.length === 0 ? 'none pending' : `pending: ${usable.map((r) => r.id).join(', ')}`})`,
-      );
-    }
-    const result = await this.promoteDrafts(team, via ?? null, via === undefined ? 'human(会话直批)' : 'human(审批码)');
-    if (via !== undefined) this.questionnaires.consumeApprovalCode(via.id);
-    this.changed(team.id);
+    const result = await docApproveFlow(this.docflow, input);
+    this.changed(input.teamId);
     return result;
   }
 
   /**
-   * `doc_write` 的后端：AI 写文档**只进 draft 区**（§4.1）。
-   *
-   * 改了正在等人批的草稿会连带作废该团队的审批问卷 —— 悄悄 restamp sha256 是
-   * 「批 A 合 B」唯一的通路，宁可让组长重新问一次。
+   * `doc_write` 的后端：AI 写文档**只进 draft 区**（§4.1）。draft 区校验、审批
+   * 作废与提交在 `service/docflow.ts`；这里只补状态变更通知。
    */
   async docWrite(input: { teamId: string; path: string; body: string }): Promise<{
     path: string;
@@ -1214,44 +884,9 @@ export class AutopilotService {
     sha256: string;
     approvalsCancelled: string[];
   }> {
-    const team = this.teamOf(input.teamId);
-    const relative = assertRepoRelative(input.path, 'path');
-    const draftDir = this.draftRoot(team).relative;
-    if (!relative.endsWith('.md')) {
-      throw new Error(`doc_write only takes .md paths; got "${relative}"`);
-    }
-    if (!isDraftPath(relative, draftDir)) {
-      throw new Error(
-        `refused: "${relative}" is outside the draft area ${draftDir}/ (§4.1 — AI writes drafts, never the formal documents). Write ${draftDir}/<name>.md, then ask for approval; doc_approve is what moves it into place and records who approved which bytes.`,
-      );
-    }
-    const rules = effectiveForbiddenRules(this.options.profile, this.options.security.forbiddenPaths);
-    const { blocks } = classifyForbiddenFiles([relative], rules);
-    if (blocks.length > 0) {
-      throw new Error(`refused: ${blocks.join(', ')} is in security.forbiddenPaths — the draft area cannot be a side door to a blocked path`);
-    }
-    const absolute = repoFile(team.repoPath, relative);
-    const existing = await readDoc(absolute, relative);
-    if (existing?.meta.status === 'accepted') {
-      throw new Error(
-        `"${relative}" is already accepted; accepted documents are read-only. Write a new draft revision and re-approve it (§4.1).`,
-      );
-    }
-    const body = this.redactor.redact(input.body);
-    const meta: DocMeta = {
-      path: relative,
-      status: 'draft',
-      version: existing?.meta.version ?? '1.0',
-      sha256: hashBody(body),
-      approvedBy: null,
-      approvedAt: null,
-    };
-    await writeDoc(absolute, meta, body);
-    const approvalsCancelled = this.invalidateApprovals(team);
-    if (approvalsCancelled.length > 0) await this.resetDraftsToEditable(team);
-    await this.commitDocs(team, `docs: draft ${relative}`);
-    this.changed(team.id);
-    return { path: relative, status: meta.status, version: meta.version, sha256: meta.sha256, approvalsCancelled };
+    const result = await docWriteFlow(this.docflow, input);
+    this.changed(input.teamId);
+    return result;
   }
 
   /**
@@ -1273,11 +908,11 @@ export class AutopilotService {
         batchIds,
         globalForbidden: this.options.security.forbiddenPaths,
       });
-      const domains = distinctDomainCount(draft.touches ?? []);
       // 建一张注定在首拍就被 escalateCrossDomain 打回的同判据校验：白跑一轮派发
-      // 是最贵的失败（assignTask 里也有等价的一份，见 §10.1 的双写警告）。
-      if (domains > threshold) {
-        per.push(`touches span ${domains} distinct domains (limit ${threshold}); split it per domain`);
+      // 是最贵的失败（判据与两条派发路径共用 domainLimitStatus）。
+      const { domainCount, exceeded } = domainLimitStatus(draft.touches ?? [], threshold);
+      if (exceeded) {
+        per.push(`touches span ${domainCount} distinct domains (limit ${threshold}); split it per domain`);
       }
       if (per.length > 0) errors.push(`${draft.id.trim() || '(missing id)'}: ${per.join('; ')}`);
     }
@@ -1481,51 +1116,20 @@ export class AutopilotService {
   }
 
   // ── 视图 ──────────────────────────────────────────────────────────────────
+  //
+  // 视图映射的实体在 service/views.ts（纯函数、可独立单测）；这里只保留薄委托
+  // 与 teamView 的组装（它还要就地补零 metrics、折算 learnings 视图）。
 
   private memberView(member: MemberRecord): MemberView {
-    return {
-      id: member.id,
-      name: member.name,
-      role: member.role,
-      workspacePath: member.workspacePath,
-      branch: member.branch,
-      status: member.status,
-      currentTaskId: member.currentTaskId,
-    };
+    return memberViewOf(member);
   }
 
   private taskView(team: TeamRecord, task: TaskRecord): TaskView {
-    return {
-      id: task.id,
-      contractId: task.contractId,
-      title: task.title,
-      description: task.description,
-      assigneeId: task.assigneeId,
-      assigneeName: this.memberOf(team, task.assigneeId).name,
-      status: task.status,
-      branch: task.branch,
-      reviewRound: task.reviewRound,
-      dependsOn: task.dependsOn,
-      touches: task.touches,
-      gates: task.gates,
-      prUrl: task.prUrl,
-      ciStatus: task.ciStatus,
-      lastActivityAt: task.lastActivityAt,
-      createdAt: task.createdAt,
-      updatedAt: task.updatedAt,
-    };
+    return taskViewOf(team, task);
   }
 
   private reviewView(team: TeamRecord, review: ReviewRecord): ReviewView {
-    return {
-      id: review.id,
-      taskId: review.taskId,
-      reviewerId: review.reviewerId,
-      reviewerName: this.memberOf(team, review.reviewerId).name,
-      verdict: review.verdict,
-      comments: review.comments,
-      createdAt: review.createdAt,
-    };
+    return reviewViewOf(team, review);
   }
 
   teamView(teamId: string): TeamView {
@@ -1585,13 +1189,8 @@ export class AutopilotService {
   }
 
   private memberOf(team: TeamRecord, memberId: string): MemberRecord {
-    const member = team.members.find((candidate) => candidate.id === memberId);
-    if (member === undefined) {
-      throw new Error(
-        `team "${team.name}" has no member "${memberId}"; members: ${team.members.map((m) => `${m.name}(${m.id})`).join(', ') || '(none)'}`,
-      );
-    }
-    return member;
+    // 错误文案的唯一出处是 requireTeamMember —— 视图层也用它，别处再写第二份迟早漂移。
+    return requireTeamMember(team, memberId);
   }
 
   /** 团队指标（缺则就地补零）：所有埋点与视图组装都走这里，避免各处判空。 */
@@ -1650,14 +1249,22 @@ export class AutopilotService {
     return { env, cleanup };
   }
 
-  /** 用远端凭据推送分支，并保证临时 SSH key 一定被清理。 */
-  private async pushWithRemoteEnv(team: TeamRecord, branch: string): Promise<void> {
+  /**
+   * remoteEnv 的作用域包装：无论块内成败，SSH 临时密钥都在块尾清理。
+   * 以前四处各写一份 try/finally —— 手工 finally 恰恰是密钥泄漏最爱藏的地方。
+   */
+  private async withRemoteEnv<T>(run: (env: Record<string, string> | undefined) => Promise<T>): Promise<T> {
     const { env, cleanup } = await this.remoteEnv();
     try {
-      await pushBranch(team.repoPath, branch, { env });
+      return await run(env);
     } finally {
       await cleanup();
     }
+  }
+
+  /** 用远端凭据推送分支，并保证临时 SSH key 一定被清理。 */
+  private async pushWithRemoteEnv(team: TeamRecord, branch: string): Promise<void> {
+    await this.withRemoteEnv((env) => pushBranch(team.repoPath, branch, { env }));
   }
 
   /** 刷新团队缓存的分支列表。 */
@@ -1804,13 +1411,10 @@ export class AutopilotService {
           `set the remote up manually or start from a fresh rootDir`,
       );
     }
-    const { env, cleanup } = await this.remoteEnv();
-    try {
+    await this.withRemoteEnv(async (env) => {
       await rm(team.repoPath, { recursive: true, force: true });
       await cloneRemote(this.options.remote.url, team.repoPath, team.baseBranch, env);
-    } finally {
-      await cleanup();
-    }
+    });
     // 用新克隆重建 leader 的 worktree。
     const leader = team.members[0];
     if (leader === undefined) return;
@@ -1843,12 +1447,7 @@ export class AutopilotService {
     const workspaceRoot = join(this.options.rootDir, id, 'workspaces');
     const requested = input.members ?? [{ role: 'leader' as const }];
     if (input.cloneRemote === true && this.hasRemote) {
-      const { env, cleanup } = await this.remoteEnv();
-      try {
-        await cloneRemote(this.options.remote.url, repoPath, this.options.baseBranch, env);
-      } finally {
-        await cleanup();
-      }
+      await this.withRemoteEnv((env) => cloneRemote(this.options.remote.url, repoPath, this.options.baseBranch, env));
     } else {
       await ensureRepo(repoPath, this.options.baseBranch);
     }
@@ -1964,17 +1563,18 @@ export class AutopilotService {
     }
     const id = shortId('task');
     const destination = contract?.id ?? id;
-    const domainCount = distinctDomainCount(contract?.touches ?? []);
-    const threshold = this.options.profile.crossDomainThreshold;
-    if (domainCount > threshold) {
+    const { domainCount, exceeded } = domainLimitStatus(
+      contract?.touches ?? [],
+      this.options.profile.crossDomainThreshold,
+    );
+    if (exceeded) {
       throw new Error(
-        `task "${input.title}" touches ${domainCount} distinct domains (limit ${threshold}); ` +
+        `task "${input.title}" touches ${domainCount} distinct domains (limit ${this.options.profile.crossDomainThreshold}); ` +
           `split it into per-domain tasks or escalate for a cross-domain change`,
       );
     }
-    // 契约自洽检查：touches 不得踩到契约自己声明的 forbidden 禁区。
-    // TaskContract.forbidden 此前解析出来零消费者 —— 违规任务要白跑一整轮
-    // 派发 + 门 + 评审才被远端 CI 拦下。
+    // 契约自洽检查：touches 不得踩到契约自己声明的 forbidden 禁区 —— 派发期就
+    // 拦下，否则违规任务要白跑一整轮门和评审才被远端 CI 拦。
     const forbiddenHits = forbiddenTouchesViolation(contract?.touches ?? [], contract?.forbidden ?? []);
     if (forbiddenHits.length > 0) {
       throw new Error(
@@ -1986,26 +1586,15 @@ export class AutopilotService {
     await checkout(assignee.workspacePath, branch);
     const now = Date.now();
     const rawDescription = input.description ?? contract?.body ?? '';
-    const task: TaskRecord = {
+    const task = createTaskRecord({
       id,
-      contractId: contract?.id ?? null,
-      contractPath: contract?.path,
-      title: contract?.title ?? input.title,
-      description: this.buildDescription(team, rawDescription, contract?.touches ?? []),
-      assigneeId: assignee.id,
-      status: 'pending',
+      contract,
+      title: input.title,
       branch,
-      reviewRound: 0,
-      dependsOn: contract?.dependsOn ?? [],
-      touches: contract?.touches ?? [],
-      forbidden: contract?.forbidden ?? [],
-      gates: null,
-      prUrl: null,
-      ciStatus: null,
-      lastActivityAt: now,
-      createdAt: now,
-      updatedAt: now,
-    };
+      assigneeId: assignee.id,
+      description: this.buildDescription(team, rawDescription, contract?.touches ?? []),
+      now,
+    });
     team.tasks.push(task);
     assignee.branch = branch;
     assignee.status = 'working';
@@ -2065,7 +1654,7 @@ export class AutopilotService {
       const kind = heldForClarification ? 'clarify-answer' : 'note';
       await appendTaskNote(
         this.contractPathFor(team, task),
-        ['', `> [${kind}] ${new Date().toISOString()} ${author}`, ...noteLines(this.redactor.redact(input.note))].join('\n'),
+        ['', renderTaskNote(kind, Date.now(), author), ...noteLines(this.redactor.redact(input.note))].join('\n'),
       ).catch(() => {});
     }
     task.status = input.status;
@@ -2082,9 +1671,7 @@ export class AutopilotService {
   /**
    * developer 把任务退回 leader 澄清：契约本身含糊或自相矛盾时，这条路比
    * escalate 便宜得多 —— **不消耗返工轮次、不产生升级、不打 needs-human**。
-   *
-   * 此前返工轮次打满一律升级，但被打回的常见原因恰恰是 leader 写的契约有歧义，
-   * 惩罚却落在 developer 头上。这里把问责方向扳回来。
+   * 理由：打回的常见根源是 leader 写的契约有歧义，轮次惩罚不该落在 developer 头上。
    */
   async clarifyTask(input: {
     taskId: string;
@@ -2107,7 +1694,7 @@ export class AutopilotService {
     if (leader === undefined) throw new Error('team has no leader to clarify this task');
     const note = [
       '',
-      `> [needs-clarification] ${new Date().toISOString()} ${member.name} → ${leader.name}`,
+      renderTaskNote('needs-clarification', Date.now(), `${member.name} → ${leader.name}`),
       ...noteLines(this.redactor.redact(input.question)),
       ...(input.ambiguousPoints ?? []).map((point) => `> - ambiguous: ${this.redactor.redact(point)}`),
       ...(input.proposedResolutions ?? []).map((option) => `> - proposed: ${this.redactor.redact(option)}`),
@@ -2288,9 +1875,8 @@ export class AutopilotService {
       task.reviewRound += 1;
       this.teamMetrics(team).reviewRounds += 1;
       assignee.status = 'working';
-      // 评审意见必须落到任务单上。此前这条分支只改内存字段，comments 既不进
-      // `.tasks/<id>.md` 也不提交 —— 换任接手者（或下一场会话）完全看不见
-      // 上一轮为什么被打回，这是知识泄漏最严重的一处。
+      // 评审意见必须落到任务单上 —— 换任接手者（或下一场会话）要看得见
+      // 上一轮为什么被打回，只改内存字段等于知识泄漏。
       if (task.contractId !== null) {
         const quoted = this.redactor
           .redact(review.comments)
@@ -2298,9 +1884,12 @@ export class AutopilotService {
           .map((line) => `> ${line}`);
         await appendTaskNote(
           this.contractPathFor(team, task),
-          ['', `> [review] ${new Date(review.createdAt).toISOString()} round ${task.reviewRound} (${reviewer.name})`, ...quoted, ''].join(
-            '\n',
-          ),
+          [
+            '',
+            renderTaskNote('review', review.createdAt, `round ${task.reviewRound} (${reviewer.name})`),
+            ...quoted,
+            '',
+          ].join('\n'),
         ).catch(() => {});
         // updateContractStatus 顺带重生成看板并提交 .tasks/。
         await this.updateContractStatus(team, task, 'changes_requested');
@@ -2335,11 +1924,9 @@ export class AutopilotService {
   }
 
   /**
-   * `requireCiGreen` 独立于 `pushRequiresGates` 生效。
-   *
-   * 此前它嵌在 `if (!pushRequiresGates) return` 之后，被另一个开关整体短路；
-   * 并且 `ciStatus !== null` 的前置让「从未 pr_sync」= 「从未验证过 CI」直接放行，
-   * 与 tools.ts 给模型的承诺相反。
+   * `requireCiGreen` 独立于 `pushRequiresGates` 生效（不被它短路）。
+   * 判定：CI 必须**真验证过** —— `ciStatus === null`（从未 pr_sync）视为未验证
+   * 即拒，与 tools.ts 给模型的承诺一致。
    *
    * 只在 CI 真能查到的平台上门禁：`checkRunStatus` 只有 github 适配，其它平台
    * `pr_sync` 恒置 `'unknown'`，把它当未绿会让默认配置永远无法 approve。
@@ -2431,9 +2018,8 @@ export class AutopilotService {
    * 全量重写 `<stateDir>/learnings.md`（生成物，勿手改 —— 所以刻意不给任何工具
    * 「编辑这个文件」的能力）。
    *
-   * 落在 stateDir 而不是目标仓库的 `.tasks/`：这是插件的运行态输出，而 AGENTS.md
-   * 的约定是运行态绝不入库 —— 以前它会作为提交进入**用户项目**的 git 历史。
-   * 文件只是给人看的便利视图，真相源始终在 state.json、注入走内存记录，
+   * 落在 stateDir 而不是目标仓库的 `.tasks/`：这是插件的运行态输出，按 AGENTS.md
+   * 的约定绝不入库。文件只是给人看的便利视图，真相源始终在 state.json、注入走内存记录，
    * 所以写盘失败可以忽略（catch 掉），但状态变更本身必须照常落盘。
    */
   private async syncLearningsFile(team: TeamRecord): Promise<void> {
@@ -2550,14 +2136,11 @@ export class AutopilotService {
         `push blocked by pushRequiresGates: gates are not green for "${task.title}" — run gates_run first`,
       );
     }
-    const { env, cleanup } = await this.remoteEnv();
-    try {
+    await this.withRemoteEnv(async (env) => {
       await fetchRemote(team.repoPath, env);
       await this.assertNoForbiddenChanges(team, task.branch, `origin/${team.baseBranch}`, task.id);
       await pushBranch(team.repoPath, task.branch, { env });
-    } finally {
-      await cleanup();
-    }
+    });
     // PR 创建只支持 github；其它平台退化为纯推送。
     if (this.options.remote.platform === 'github') {
       task.prUrl = await this.upsertPullRequest(team, task).catch(() => task.prUrl);
@@ -2574,8 +2157,7 @@ export class AutopilotService {
    * 任何改动落地（推送 / 合并进 base）前的禁区检查（规范 §4.5.3）。
    * 三处调用共用这一份：`pr_sync`（比 `origin/base`）、reviewer 的 approve
    * （比本地 base —— 合并基线可能还没推）、以及 `team_branch` 的 merge。
-   * 此前它只挂在 pr_sync 上，approve 直接 merge + push base，禁区改动就这么
-   * 进了主干 —— 那正是这道规则要防的那件事。
+   * 少任何一处，禁区改动都会进主干 —— 那正是这道规则要防的那件事。
    *
    * 策略由画像决定且区分模式：
    *  - `block` → 硬阻断并升级；
@@ -2911,8 +2493,8 @@ export class AutopilotService {
     for (const team of this.teams.values()) {
       if (signal?.aborted === true) break;
       // 契约只扫一遍，同时供分诊与派发使用：派发时要按最新的契约正文重建任务
-      // 描述（见 dispatch 内的说明）。坏文件只跳过它自己并进 events —— 以前这里
-      // `.catch(() => [])` 会把解析失败当成"一个契约都没有"，整块看板静默清空。
+      // 描述（见 dispatch 内的说明）。坏文件只跳过它自己并进 events，
+      // 绝不让一个坏文件拖垮整块看板。
       const { contracts, rejected } = await loadTaskContracts(team.repoPath);
       for (const item of rejected) {
         if (this.reportedRejectedContracts.has(item.path)) continue;
@@ -2963,26 +2545,15 @@ export class AutopilotService {
     if (leader === undefined) return;
     if (contract.status !== 'pending') return;
     const now = Date.now();
-    team.tasks.push({
+    team.tasks.push(createTaskRecord({
       id: shortId('task'),
-      contractId: contract.id,
-      contractPath: contract.path,
+      contract,
       title: contract.title,
-      description: this.buildDescription(team, contract.body, contract.touches),
-      assigneeId: leader.id,
-      status: 'pending',
       branch: renderBranchName(this.options.profile.branchTemplate, contract.id, contract.title),
-      reviewRound: 0,
-      dependsOn: contract.dependsOn,
-      touches: contract.touches,
-      forbidden: contract.forbidden,
-      gates: null,
-      prUrl: null,
-      ciStatus: null,
-      lastActivityAt: now,
-      createdAt: now,
-      updatedAt: now,
-    });
+      assigneeId: leader.id,
+      description: this.buildDescription(team, contract.body, contract.touches),
+      now,
+    }));
     report.events.push(`contract:${contract.id}`);
   }
 
@@ -3011,8 +2582,8 @@ export class AutopilotService {
       if (await this.escalateCrossDomain(task, report)) continue;
       if (await this.escalateForbiddenTouches(task, report)) continue;
       if (!task.dependsOn.every((dep) => tasksByKey.get(dep)?.status === 'done')) {
-        // 曾经这里是静默 `continue`：前置若是 needs-human 或根本不存在，下游会
-        // 无限不派发、不报错、也永远凑不出"全部 done"，于是循环在空转降频里一直转。
+        // 前置「永不可能满足」必须出声：静默 continue 会让下游无限不派发、
+        // 不报错、也永远凑不出"全部 done"。
         await this.escalateBlockedDependency(task, report, tasksByKey);
         continue;
       }
@@ -3089,9 +2660,9 @@ export class AutopilotService {
    * @returns 是否已升级（true 表示本轮不要再派发这个任务）
    */
   private async escalateCrossDomain(task: TaskRecord, report: TickReport): Promise<boolean> {
-    const domainCount = distinctDomainCount(task.touches);
     const threshold = this.options.profile.crossDomainThreshold;
-    if (domainCount <= threshold) return false;
+    const { domainCount, exceeded } = domainLimitStatus(task.touches, threshold);
+    if (!exceeded) return false;
     report.escalated.push(task.id);
     report.events.push(`cross-domain:${task.id}`);
     await this.escalateTask({
@@ -3137,7 +2708,7 @@ export class AutopilotService {
   /** 升级耗尽返工轮次的任务。 */
   private async checkReviewRounds(team: TeamRecord, report: TickReport): Promise<void> {
     for (const task of team.tasks) {
-      if (task.status === 'changes_requested' && task.reviewRound >= this.options.daemon.maxReviewRounds) {
+      if (reviewRoundsExceeded(task, this.options.daemon.maxReviewRounds)) {
         report.escalated.push(task.id);
         report.events.push(`review-rounds:${task.id}`);
         await this.escalateTask({
@@ -3152,7 +2723,6 @@ export class AutopilotService {
 
   /** 升级 stuckMinutes 内没有任何 git 活动的进行中任务。 */
   private async checkStuck(team: TeamRecord, report: TickReport): Promise<void> {
-    const stuckMs = this.options.daemon.stuckMinutes * 60_000;
     // 「等人回答」不是「卡死」（§6.5）：挂着 open 问卷的任务一律豁免，否则一次
     // 合法的追问就把任务送进 needs-human，还给模型记一条根本不存在的教训。
     // 兜底是下面那个 checkBudget —— 它不豁免，所以永远没人答的问卷最终仍会升级，
@@ -3170,7 +2740,7 @@ export class AutopilotService {
       if (lastCommit !== null && lastCommit > task.lastActivityAt) {
         task.lastActivityAt = lastCommit;
       }
-      if (Date.now() - task.lastActivityAt > stuckMs) {
+      if (taskStuck(task, this.options.daemon.stuckMinutes, Date.now())) {
         report.escalated.push(task.id);
         report.events.push(`stuck:${task.id}`);
         await this.escalateTask({
@@ -3189,11 +2759,9 @@ export class AutopilotService {
    * 这里挡「活跃空转」。老 state.json 的任务没有 dispatchedAt，跳过不判。
    */
   private async checkBudget(team: TeamRecord, report: TickReport): Promise<void> {
-    const maxMs = this.options.daemon.maxTaskHours * 3_600_000;
-    if (!(maxMs > 0)) return;
+    if (!(this.options.daemon.maxTaskHours > 0)) return;
     for (const task of team.tasks) {
-      if (task.status !== 'in_progress') continue;
-      if (task.dispatchedAt === undefined || Date.now() - task.dispatchedAt <= maxMs) continue;
+      if (!budgetExceeded(task, this.options.daemon.maxTaskHours, Date.now())) continue;
       report.escalated.push(task.id);
       report.events.push(`budget:${task.id}`);
       await this.escalateTask({
@@ -3212,8 +2780,8 @@ export class AutopilotService {
     const baseSha = await resolveRef(team.repoPath, team.baseBranch).catch(() => null);
     if (baseSha === null || baseSha === this.lastDeployBaseSha) return;
     // 任务单状态回写与看板重生成都会往 base 提交 `.tasks/` 改动。这些提交不含
-    // 任何代码，此前会被误判成"有代码合入"而触发一次真实部署 —— 部署失败还会
-    // 自动回滚并升级。所以先比对上一次部署点以来的变更面，纯文档就不部署。
+    // 任何代码，部署它们只会误触回滚与升级 —— 先比对上一次部署点以来的变更面，
+    // 纯文档就不部署。
     if (deploy.skipTasksOnlyCommits !== false && this.lastDeployBaseSha !== null) {
       const changed = await changedFiles(team.repoPath, this.lastDeployBaseSha, baseSha).catch(() => null);
       if (changed !== null && changed.length > 0 && changed.every((file) => file.startsWith(`${TASKS_DIR}/`))) {

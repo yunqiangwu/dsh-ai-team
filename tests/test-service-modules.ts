@@ -8,12 +8,16 @@
 import { describe, expect, it } from 'vitest';
 import { buildDescription, CONTRACT_BODY_LIMIT, DESCRIPTION_TOTAL_LIMIT } from '../src/service/description.js';
 import { renderCompletionReport } from '../src/service/report.js';
+import { budgetExceeded, reviewRoundsExceeded, taskStuck } from '../src/service/daemon.js';
+import { effectiveAnswers, withApprovalQuestion } from '../src/service/docflow.js';
+import { memberView as memberViewOf, taskView as taskViewOf } from '../src/service/views.js';
 import { clip, HELD_STATUSES, noteLines, oneLine, shortId } from '../src/service/state.js';
 import { defaultProfile } from '../src/profile.js';
 import { DEFAULT_LEARNINGS } from '../src/learnings.js';
 import type { LearningRecord } from '../src/learnings.js';
 import type { DeployView } from '../src/view.js';
-import type { TeamRecord } from '../src/service/state.js';
+import type { MemberRecord, TaskRecord, TeamRecord } from '../src/service/state.js';
+import type { QuestionnaireRecord } from '../src/questionnaire.js';
 
 function learning(overrides: Partial<LearningRecord> = {}): LearningRecord {
   return {
@@ -295,5 +299,175 @@ describe('state helpers', () => {
 
   it('HELD_STATUSES covers exactly the two waiting states', () => {
     expect([...HELD_STATUSES].toSorted()).toEqual(['needs-clarification', 'needs-human']);
+  });
+});
+
+// ── daemon.ts：守护循环的纯判定层 ────────────────────────────────────────────
+
+describe('daemon: reviewRoundsExceeded / taskStuck / budgetExceeded', () => {
+  const base = {
+    id: 'task_1',
+    contractId: null,
+    title: 't',
+    description: '',
+    assigneeId: 'm_1',
+    branch: 'task/task_1',
+    reviewRound: 0,
+    dependsOn: [],
+    touches: [],
+    gates: null,
+    prUrl: null,
+    ciStatus: null,
+    lastActivityAt: 0,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+
+  it('reviewRoundsExceeded 只认 changes_requested 且达到上限', () => {
+    const task = { ...base, status: 'changes_requested', reviewRound: 3 } as TaskRecord;
+    expect(reviewRoundsExceeded(task, 3)).toBe(true);
+    expect(reviewRoundsExceeded({ ...task, reviewRound: 2 }, 3)).toBe(false);
+    // in_review 不算返工打满（还没被再次打回）
+    expect(reviewRoundsExceeded({ ...task, status: 'in_review' }, 3)).toBe(false);
+  });
+
+  it('taskStuck 在恰好到达阈值时不算卡死', () => {
+    const task = { ...base, status: 'in_progress', lastActivityAt: 1_000 } as TaskRecord;
+    expect(taskStuck(task, 45, 1_000 + 45 * 60_000)).toBe(false);
+    expect(taskStuck(task, 45, 1_000 + 45 * 60_000 + 1)).toBe(true);
+  });
+
+  it('budgetExceeded：0 = 关闭，且 dispatchedAt 缺失（老 state.json）不判', () => {
+    const task = { ...base, status: 'in_progress', dispatchedAt: 1_000 } as TaskRecord;
+    expect(budgetExceeded(task, 0, 10_000_000)).toBe(false);
+    expect(budgetExceeded(task, 2, 1_000 + 2 * 3_600_000)).toBe(false);
+    expect(budgetExceeded(task, 2, 1_000 + 2 * 3_600_000 + 1)).toBe(true);
+    expect(budgetExceeded({ ...task, dispatchedAt: undefined }, 2, 10_000_000)).toBe(false);
+    // 非 in_progress 不判：等待派发的 pending 没有烧钱
+    expect(budgetExceeded({ ...task, status: 'pending' }, 2, 10_000_000)).toBe(false);
+  });
+});
+
+// ── views.ts：视图投影纯映射 ────────────────────────────────────────────────
+
+describe('views: taskView / memberView', () => {
+  const member: MemberRecord = {
+    id: 'm_1',
+    name: 'dev-1',
+    role: 'developer',
+    systemPrompt: 'sp',
+    workspacePath: '/ws',
+    branch: 'member/m_1',
+    status: 'working',
+    currentTaskId: 'task_1',
+  };
+  const team = {
+    id: 'team_1',
+    name: 't',
+    repoPath: '/repo',
+    members: [member],
+    tasks: [],
+    reviews: [],
+    phase: 'developing',
+    learnings: [],
+    createdAt: 0,
+  } as unknown as TeamRecord;
+
+  it('taskView 把 assigneeId 解析成成员名', () => {
+    const task = {
+      id: 'task_1',
+      contractId: 'CORE-1',
+      title: 't',
+      description: '',
+      assigneeId: 'm_1',
+      status: 'in_progress',
+      branch: 'task/task_1',
+      reviewRound: 0,
+      dependsOn: [],
+      touches: [],
+      gates: null,
+      prUrl: null,
+      ciStatus: null,
+      lastActivityAt: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    } as TaskRecord;
+    const view = taskViewOf(team, task);
+    expect(view.assigneeName).toBe('dev-1');
+    expect(view.contractId).toBe('CORE-1');
+  });
+
+  it('taskView 对不存在的 assignee 抛错（视图不吞失配）', () => {
+    const task = { ...({} as TaskRecord), assigneeId: 'm_missing' };
+    expect(() => taskViewOf(team, task)).toThrow(/has no member "m_missing"/);
+  });
+
+  it('memberView 是字段的纯投影（不含 systemPrompt）', () => {
+    const view = memberViewOf(member);
+    expect(view).toEqual({
+      id: 'm_1',
+      name: 'dev-1',
+      role: 'developer',
+      workspacePath: '/ws',
+      branch: 'member/m_1',
+      status: 'working',
+      currentTaskId: 'task_1',
+    });
+  });
+});
+
+// ── docflow.ts：问卷答案与审批题的纯函数 ─────────────────────────────────────
+
+describe('docflow: effectiveAnswers / withApprovalQuestion', () => {
+  const question = { name: 'q1', label: 'Q1', type: 'text', options: [], required: true, defaultValue: '' };
+
+  function record(overrides: Record<string, unknown>): QuestionnaireRecord {
+    return {
+      id: 'qn_1',
+      teamId: 'team_1',
+      kind: 'intake',
+      mode: 'interactive',
+      title: 't',
+      questions: [question],
+      answers: {},
+      status: 'answered',
+      binding: null,
+      ticketUrl: null,
+      mailDelivered: false,
+      taskId: null,
+      createdAt: 0,
+      answeredAt: null,
+      expiresAt: null,
+      approvalCode: null,
+      ...overrides,
+    } as QuestionnaireRecord;
+  }
+
+  it('答完的用真答案；空串不算答案', () => {
+    const answered = record({ answers: { q1: { value: 'docker', at: 1, source: 'ticket' } } });
+    expect(effectiveAnswers(answered)).toEqual({ q1: 'docker' });
+    const blank = record({ answers: { q1: { value: '', at: 1, source: 'ticket' } } });
+    expect(effectiveAnswers(blank)).toEqual({});
+  });
+
+  it('expired 才回落 defaultValue；answered 不回落（§3.2 兜底只属于超时）', () => {
+    const expired = record({
+      status: 'expired',
+      answers: {},
+      questions: [{ ...question, defaultValue: 'docker' }],
+    });
+    expect(effectiveAnswers(expired)).toEqual({ q1: 'docker' });
+    const open = record({ answers: {}, questions: [{ ...question, defaultValue: 'docker' }] });
+    expect(effectiveAnswers(open)).toEqual({});
+  });
+
+  it('withApprovalQuestion 追加 decision 题且默认值是 reject（§8-10 的保守兜底）', () => {
+    const withQuestion = withApprovalQuestion([]);
+    expect(withQuestion).toHaveLength(1);
+    expect(withQuestion[0]?.name).toBe('decision');
+    expect(withQuestion[0]?.defaultValue).toBe('reject');
+    // 已有同名题时不重复追加
+    const existing = [{ ...question, name: 'decision' }];
+    expect(withApprovalQuestion(existing)).toBe(existing);
   });
 });

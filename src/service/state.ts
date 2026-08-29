@@ -59,6 +59,25 @@ export const noteLines = (text: string, max = 20): string[] =>
 /** 成员的个人分支名：任务之外成员默认停留在这里。 */
 export const memberBranch = (memberId: string): string => `member/${memberId}`;
 
+/** 按 id 找成员；找不到返回 undefined —— 视图与查找各自决定兜底方式。 */
+export function findMember(team: TeamRecord, memberId: string): MemberRecord | undefined {
+  return team.members.find((candidate) => candidate.id === memberId);
+}
+
+/**
+ * 按 id 取成员，找不到即抛错。这是成员查找错误文案的**唯一**出处：
+ * `AutopilotService.memberOf` 与 `service/views.ts` 都走这里，第二份迟早漂移。
+ */
+export function requireTeamMember(team: TeamRecord, memberId: string): MemberRecord {
+  const member = findMember(team, memberId);
+  if (member === undefined) {
+    throw new Error(
+      `team "${team.name}" has no member "${memberId}"; members: ${team.members.map((m) => `${m.name}(${m.id})`).join(', ') || '(none)'}`,
+    );
+  }
+  return member;
+}
+
 export interface MemberRecord {
   id: string;
   name: string;
@@ -113,6 +132,54 @@ export interface ReviewRecord {
   verdict: ReviewVerdict;
   comments: string;
   createdAt: number;
+}
+
+/** {@link createTaskRecord} 的入参：契约字段之外、两条派发路径各不相同的来源。 */
+export interface TaskRecordSeed {
+  id: string;
+  /** 无契约绑定时为 null，title/dependsOn/touches 等回落到 seed.title 与空数组。 */
+  contract: {
+    id: string;
+    path: string;
+    title: string;
+    dependsOn: string[];
+    touches: string[];
+    forbidden: string[];
+  } | null;
+  /** 无契约时的任务标题（有契约时以契约为准）。 */
+  title: string;
+  branch: string;
+  assigneeId: string;
+  description: string;
+  now: number;
+}
+
+/**
+ * TaskRecord 的唯一工厂。两条派发路径（`assignTask` 的人工派发与
+ * `adoptPendingContract` 的契约收养）以前各写一个 20 行字面量，除五个来源不同
+ * 的字段外逐行相同 —— 新增 TaskRecord 字段时漏改一处，新旧派发路径就悄悄分叉。
+ */
+export function createTaskRecord(seed: TaskRecordSeed): TaskRecord {
+  return {
+    id: seed.id,
+    contractId: seed.contract?.id ?? null,
+    contractPath: seed.contract?.path,
+    title: seed.contract?.title ?? seed.title,
+    description: seed.description,
+    assigneeId: seed.assigneeId,
+    status: 'pending',
+    branch: seed.branch,
+    reviewRound: 0,
+    dependsOn: seed.contract?.dependsOn ?? [],
+    touches: seed.contract?.touches ?? [],
+    forbidden: seed.contract?.forbidden ?? [],
+    gates: null,
+    prUrl: null,
+    ciStatus: null,
+    lastActivityAt: seed.now,
+    createdAt: seed.now,
+    updatedAt: seed.now,
+  };
 }
 
 /**
