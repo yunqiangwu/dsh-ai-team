@@ -69,6 +69,40 @@ export type TeamPhase = (typeof TEAM_PHASES)[number];
 /** 允许派发任务的阶段。其余阶段 dispatch 直接返回。 */
 export const DISPATCHABLE_PHASES: readonly TeamPhase[] = ['developing', 'replanning'];
 
+/**
+ * 问卷（questionnaire）：AI 需要人给一个**决策**才能继续时走这里。它与 escalation
+ * 是两件事，绝不能混用同一个记录 —— 升级说「我卡住了，来个人分诊」，问卷说「一切正常，
+ * 只是这个选择得由人来做」。把问卷塞进升级会付出三重代价：任务被错误打上
+ * `needs-human`、进升级直方图、并被 captureLearning 记成一条教训（见
+ * docs/design-interaction.md §3.1）。
+ */
+export const QUESTIONNAIRE_KINDS = ['intake', 'approval', 'replan'] as const;
+export type QuestionnaireKind = (typeof QUESTIONNAIRE_KINDS)[number];
+
+export const QUESTIONNAIRE_STATUSES = ['open', 'answered', 'expired', 'cancelled'] as const;
+export type QuestionnaireStatus = (typeof QUESTIONNAIRE_STATUSES)[number];
+
+/**
+ * 两种交付模式的差别只在「谁把 agent 那一轮叫醒」（§3.2）：
+ * - `interactive`：`ask_human` 内部 await 答案，组长这一轮不结束；
+ * - `async`：落一条 open 问卷就走，答案回来后要人开口让组长继续 —— 插件没有
+ *   「向会话投一条消息」的写入口，这条边界不是工程能绕过的（§1.1）。
+ */
+export const QUESTIONNAIRE_MODES = ['interactive', 'async'] as const;
+export type QuestionnaireMode = (typeof QUESTIONNAIRE_MODES)[number];
+
+/**
+ * 题目类型。`select` 单选、`multiselect` 多选（recommended 项预勾选），
+ * `text` / `textarea` 是填空。刻意不做条件分段（branching）：一分段，回写映射与
+ * 前端渲染成本立刻翻倍，而试点期的问题集完全可以是静态的（§3.3）。
+ */
+export const QUESTION_TYPES = ['select', 'multiselect', 'text', 'textarea'] as const;
+export type QuestionType = (typeof QUESTION_TYPES)[number];
+
+/** 答案从哪儿来。`ticket` = 工单页 POST；`tool` = 会话里人直接调 answer_questionnaire。 */
+export const ANSWER_SOURCES = ['ticket', 'tool'] as const;
+export type AnswerSource = (typeof ANSWER_SOURCES)[number];
+
 export const CI_STATUSES = ['pending', 'success', 'failure', 'unknown'] as const;
 export type CiStatus = (typeof CI_STATUSES)[number];
 

@@ -225,13 +225,16 @@ export async function deleteBranch(repoPath: string, branch: string): Promise<vo
 }
 
 /**
- * 暂存 `pathspec` 下的所有内容并以插件身份提交。
+ * 暂存 `pathspecs` 下的所有内容并以插件身份提交。
  * 没有可提交内容时是空操作。这样能让集成检出在任务契约重写
  *（.tasks/*.md、_board.md）后保持干净。
+ *
+ * 复数形式是必需的：draft→正式区的升格是**一次**跨越两个路径的提交（draft 被删 +
+ * 正式文件新增），拆成两次提交会留下一个「两份文档同时存在」或「一份都没有」的中间态。
  */
-export async function commitAll(repoPath: string, pathspec: string, message: string): Promise<void> {
-  await git(['add', '--', pathspec], repoPath);
-  await git([...COMMITTER, 'commit', '-m', message, '--', pathspec], repoPath).catch((error: unknown) => {
+export async function commitAll(repoPath: string, pathspecs: readonly string[], message: string): Promise<void> {
+  await git(['add', '-A', '--', ...pathspecs], repoPath);
+  await git([...COMMITTER, 'commit', '-m', message, '--', ...pathspecs], repoPath).catch((error: unknown) => {
     const stderr = (error as { stderr?: string }).stderr ?? '';
     if (!/nothing to commit|no changes added/i.test(stderr)) throw error;
   });

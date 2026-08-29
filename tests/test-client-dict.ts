@@ -17,6 +17,9 @@ import {
   ESCALATION_REASONS,
   LOOP_STATES,
   NOTIFICATION_STATUSES,
+  QUESTIONNAIRE_KINDS,
+  QUESTIONNAIRE_MODES,
+  QUESTIONNAIRE_STATUSES,
   ROLES,
   TASK_STATUSES,
   TEAM_PHASES,
@@ -36,6 +39,9 @@ const rendered: [string, readonly string[]][] = [
   ['ci', CI_STATUSES],
   ['deploy', DEPLOY_STATUSES],
   ['notify', NOTIFICATION_STATUSES],
+  ['questionnaire', QUESTIONNAIRE_STATUSES],
+  ['questionnaire.kind', QUESTIONNAIRE_KINDS],
+  ['questionnaire.mode', QUESTIONNAIRE_MODES],
 ];
 
 /**

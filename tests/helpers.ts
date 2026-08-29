@@ -109,6 +109,10 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
       maxDiffFiles: 0,
     },
     escalation: { label: 'needs-human', pauseOnEscalation: 'task' },
+    // 用例默认 async：interactive 的 ask_human 会真的等人答复，忘了作答就是挂满超时。
+    // 交互等待路径由 test-questionnaire.ts 显式覆盖 mode 后单独验证。
+    questionnaire: { mode: 'async', timeoutMinutes: 60 },
+    docs: { draftDir: 'docs/drafts', formalDir: 'docs' },
     deploy: { enabled: false, secretsEnv: [], skipTasksOnlyCommits: true },
     learnings: { ...DEFAULT_LEARNINGS },
     security: {

@@ -11,6 +11,7 @@
  */
 import type { LearningOptions } from '../learnings.js';
 import type { ProjectProfile } from '../profile.js';
+import type { QuestionnaireMode } from '../view.js';
 
 export interface AutopilotOptions {
   rootDir: string;
@@ -68,6 +69,24 @@ export interface AutopilotOptions {
     webhookUrlEnv?: string | undefined;
     label: string;
     pauseOnEscalation: 'task' | 'team';
+  };
+  /**
+   * 问卷（ask_human）的交付口径。`interactive` 让工具内部 await 答案、组长这一轮
+   * 不结束；`async` 只落一条 open 问卷，答案回来后**由人开口**让组长继续 —— 插件
+   * 没有"向会话投一条消息"的写入口，这不是实现细节（docs/design-interaction.md §1.1）。
+   */
+  questionnaire: {
+    mode: QuestionnaireMode;
+    /** interactive 等待的上限（分钟）：到点转 expired，绝不把一轮永久挂住。 */
+    timeoutMinutes: number;
+  };
+  /**
+   * 文档先行的两个区：AI 只能写 `draftDir`，人批过才搬进 `formalDir`（§4.1）。
+   * 判定按路径而非文件属性，所以两个目录必须在同一仓库布局下。
+   */
+  docs: {
+    draftDir: string;
+    formalDir: string;
   };
   notification?: {
     enabled: boolean;

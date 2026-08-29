@@ -10,6 +10,7 @@
  * —— 老用户的 state.json 里没有新字段，而 `load()` 不会替谁做迁移。
  */
 import { randomUUID } from 'node:crypto';
+import type { QuestionnaireRecord } from '../questionnaire.js';
 import type { LearningRecord } from '../learnings.js';
 import type {
   CiStatus,
@@ -181,6 +182,8 @@ export interface PersistedState {
   teams: TeamRecord[];
   activeTeamId: string | null;
   escalations: EscalationView[];
+  /** 可选：老 state.json 没这个字段，`load()` 用 `?? []` 兜底。 */
+  questionnaires?: QuestionnaireRecord[];
   deploys: DeployView[];
   loopState: LoopState;
   tick: number;

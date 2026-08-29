@@ -9,10 +9,13 @@
  *    注册到 SecretRedactor，确保敏感信息绝不落入日志。它负责发送人类可读的
  *    摘要以及工单链接。
  *
- * 2. **`TicketServer`** —— 一个极小的本地 HTTP 端点，为每次升级提供一张表单
- *    （`GET /ticket/<id>`），并接收 POST 上来的答复（`POST /ticket/<id>`）。
- *    它不往磁盘存任何东西；提交的内容会交给 service 装配的回调，由回调把答复
- *    写回任务契约，并在开启 `autoResume` 时清除升级状态、恢复主循环。
+ * 2. **`TicketServer`** —— 一个极小的本地 HTTP 端点，为每一条待办人工事项提供一张
+ *    表单（`GET /ticket/<id>`），并接收 POST 上来的答复（`POST /ticket/<id>`）。
+ *    它不往磁盘存任何东西；提交的内容会交给 service 装配的回调。
+ *
+ * 本模块**不认识 escalation**：工单只是投递渠道，"这张表单意味着什么"（是叫人来
+ * 分诊，还是请人给一个决策）由 store 决定并通过 `notice` 文案表达。升级与问卷共用
+ * 这一层（docs/design-interaction.md §3.1）。
  *
  * 投递状态作为记录上的数据（mailDelivered、ticketUrl、submitted）保存，
  * 这样 Web 面板和升级信息流就能呈现是否真的联系上了人、工单是否已被答复。
@@ -274,24 +277,44 @@ function sanitizeHeader(value: string): string {
 /** 填好的工单落到哪里：由 service 接线的回调。 */
 export interface TicketStore {
   /**
-   * 为一次升级渲染表单。store 实现可以自由地按 id 去查升级上下文
-   *（reason / message / suggestion / taskId）并塑造成字段；本模块对升级的
-   * 具体形状保持无感。
+   * 渲染一张表单。store 实现自由决定这张表单是什么（升级分诊 / 问卷作答 /
+   * 文档审批），本模块只负责把它给出的字段画出来。未命中返回 `null`。
    */
-  renderTicket(id: string): Promise<{ title: string; fields: TicketField[] } | null>;
+  renderTicket(id: string): Promise<{ title: string; notice: string; fields: TicketField[] } | null>;
   /** 工单被提交时调用；返回要持久化的答复。 */
   handleSubmit(
     id: string,
     answers: Record<string, string>,
-  ): Promise<{ ok: boolean; message?: string }>;
+  ): Promise<{ ok: boolean; message?: string; missing?: string[] }>;
+}
+
+/** 一个可选项。字符串是 `{value, label}` 的简写。 */
+export interface TicketOption {
+  value: string;
+  label: string;
+  /** 预勾选（单选题即默认项）。 */
+  checked?: boolean;
+  /** 选项副文案：选它的代价。 */
+  impact?: string;
+}
+
+export type TicketOptionInput = string | TicketOption;
+
+/** 归一化选项：字符串简写与对象写法在渲染层等价。 */
+export function normalizeOption(option: TicketOptionInput): TicketOption {
+  return typeof option === 'string' ? { value: option, label: option } : option;
 }
 
 export interface TicketField {
   name: string;
   label: string;
-  type: 'text' | 'textarea' | 'password' | 'select';
+  /**
+   * `multiselect` 渲染成复选框组，同名多次提交，服务端按 `, ` 连接成一个值。
+   * 刻意不做条件分段（branching）—— 见 docs/design-interaction.md §3.3。
+   */
+  type: 'text' | 'textarea' | 'password' | 'select' | 'multiselect';
   required?: boolean;
-  options?: string[];
+  options?: TicketOptionInput[];
   placeholder?: string;
 }
 
@@ -323,6 +346,11 @@ function readBody(request: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * 解析 urlencoded 表单。**同名键会重复出现**（复选框组就是一组同名 input），
+ * 所以这里按 `, ` 连接而不是后写覆盖 —— 覆盖会把多选答案静默裁成一项。
+ * `, ` 同时是问卷答案的序列化分隔符（见 schema.ts 的 answerSchema）。
+ */
 function parseForm(body: string): Record<string, string> {
   const out: Record<string, string> = {};
   const pairs = body.split('&');
@@ -332,7 +360,8 @@ function parseForm(body: string): Record<string, string> {
     if (index === -1) continue;
     const key = decodeURIComponent(pair.slice(0, index));
     const value = decodeURIComponent(pair.slice(index + 1).replace(/\+/g, ' '));
-    out[key] = value;
+    const existing = out[key];
+    out[key] = existing === undefined ? value : `${existing}, ${value}`;
   }
   return out;
 }
@@ -352,14 +381,30 @@ function formFieldHtml(field: TicketField): string {
   const placeholder = field.placeholder === undefined ? '' : ` placeholder="${escapeHtml(field.placeholder)}"`;
   const required = field.required === true ? ' required' : '';
   const common = `class="field" name="${name}" id="${name}"${placeholder}${required}`;
+  const options = (field.options ?? []).map((option) => normalizeOption(option));
   if (field.type === 'textarea') {
     return `<label for="${name}">${label}</label><textarea ${common} rows="5"></textarea>`;
   }
   if (field.type === 'select') {
-    const options = (field.options ?? [])
-      .map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`)
+    // 必填的下拉框若没有预选项，首项必须是空的"请选择"：否则 required 形同虚设，
+    // 人不用看选项就能提交掉第一个方案。
+    const needsBlank = field.required === true && !options.some((option) => option.checked === true);
+    const blank = needsBlank ? `<option value="">${escapeHtml(field.placeholder ?? '请选择…')}</option>` : '';
+    const items = options
+      .map((option) => `<option value="${escapeHtml(option.value)}"${option.checked === true ? ' selected' : ''}>${escapeHtml(option.label)}${option.impact ? ` — ${escapeHtml(option.impact)}` : ''}</option>`)
       .join('\n');
-    return `<label for="${name}">${label}</label><select ${common}>${options}</select>`;
+    return `<label for="${name}">${label}</label><select ${common}>${blank}${items}</select>`;
+  }
+  if (field.type === 'multiselect') {
+    // 复选框组：required 挂在首个 checkbox 上，浏览器把同名复选框当一个组校验；
+    // 真正的门在服务端（缺失项会 400 重述），这里只是少一次无谓往返。
+    const items = options
+      .map(
+        (option, index) =>
+          `<label class="choice"><input type="checkbox" class="field--inline" name="${name}" value="${escapeHtml(option.value)}"${option.checked === true ? ' checked' : ''}${index === 0 ? required : ''} /><span><b>${escapeHtml(option.label)}</b>${option.impact ? ` <em>${escapeHtml(option.impact)}</em>` : ''}</span></label>`,
+      )
+      .join('\n');
+    return `<fieldset class="group"><legend>${label}</legend>${items}</fieldset>`;
   }
   const inputType = field.type === 'password' ? 'password' : 'text';
   return `<label for="${name}">${label}</label><input type="${inputType}" ${common} />`;
@@ -387,7 +432,12 @@ function renderPage(title: string, body: string): string {
   .field { display: block; width: 100%; margin: 6px 0 16px; padding: 10px 12px; border: 1px solid #d1d5db;
     border-radius: 8px; font-size: 14px; }
   .field:focus { outline: 2px solid #3b82f6; border-color: transparent; }
+  .field--inline { width: auto; margin: 0 8px 0 0; }
   label { font-size: 13px; font-weight: 600; color: #374151; }
+  .group { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 14px 4px; margin: 6px 0 16px; }
+  .group legend { font-size: 13px; font-weight: 600; color: #374151; padding: 0 4px; }
+  .choice { display: flex; align-items: baseline; gap: 4px; font-weight: 400; font-size: 14px; margin-bottom: 8px; }
+  .choice em, select + em { color: #9ca3af; font-style: normal; font-size: 12px; }
   button { background: #1f6feb; color: #fff; border: none; border-radius: 8px; padding: 11px 20px;
     font-size: 15px; font-weight: 600; cursor: pointer; }
   button:hover { background: #1858b7; }
@@ -463,6 +513,23 @@ export class TicketServer {
     response.end('not found');
   }
 
+  /** 表单主体。`error` 非空时在顶部插一条红字（提交被拒后重述缺什么）。 */
+  private static formBodyHtml(id: string, ticket: { title: string; notice: string; fields: TicketField[] }, error: string | null): string {
+    const fields = ticket.fields.map((field) => formFieldHtml(field)).join('\n');
+    const errorBlock =
+      error === null ? '' : `<div class="err" role="alert">${escapeHtml(error)}</div>`;
+    return `<div class="card">
+<h1>${escapeHtml(ticket.title)}</h1>
+<p class="sub">dsh-ai-team 的人工确认工单 — 请填写后提交</p>
+<div class="meta">${escapeHtml(ticket.notice)}</div>
+${errorBlock}
+<form method="post" action="/ticket/${escapeHtml(id)}">
+${fields}
+<div class="btn-row"><button type="submit">提交</button><span class="hint">提交即确认以上内容</span></div>
+</form>
+</div>`;
+  }
+
   private async renderForm(response: ServerResponse, id: string): Promise<void> {
     try {
       const ticket = await this.options.store.renderTicket(id);
@@ -471,18 +538,9 @@ export class TicketServer {
         response.end('ticket not found');
         return;
       }
-      const fields = ticket.fields
-        .map((field) => formFieldHtml(field))
-        .join('\n');
-      const body = `<div class="card">
-<h1>${escapeHtml(ticket.title)}</h1>
-<p class="sub">dsh-ai-team 的人工确认工单 — 请填写后提交</p>
-<div class="meta">该任务已被 AI 团队标记为 <b>needs-human</b>，需要你确认决策、提供密钥或补充信息。提交后系统会自动处理。</div>
-<form method="post" action="/ticket/${escapeHtml(id)}">
-${fields}
-<div class="btn-row"><button type="submit">提交</button><span class="hint">提交即确认以上内容</span></div>
-</form>
-</div>`;
+      // 说明文案由 store 给：升级会说"已标记 needs-human"，问卷会说"AI 在等你的决策，
+      // 没有任何东西坏掉"。这一层不该替它决定该怎么向人开口。
+      const body = TicketServer.formBodyHtml(id, ticket, null);
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(renderPage(ticket.title, body));
     } catch (error) {
@@ -497,16 +555,27 @@ ${fields}
       const answers = parseForm(body);
       const result = await this.options.store.handleSubmit(id, answers);
       if (!result.ok) {
-        const html = renderPage('提交失败', `<div class="card"><div class="done"><div class="err">${escapeHtml(
-          result.message ?? '处理失败，请重试',
-        )}</div><p><a href="/ticket/${escapeHtml(id)}">返回工单</a></p></div></div>`);
+        // 重述缺失项并**重画同一张表单**：只给一个"提交失败"的错误页，人就得回头
+        // 重答已经填好的那些题 —— 而漏答往往正是没人愿意答第二次的地方。
+        const missing = result.missing ?? [];
+        const detail = [
+          result.message ?? (missing.length === 0 ? '处理失败，请重试' : '还有必填项没有作答'),
+          ...(missing.length === 0 ? [] : [`缺少必填项：${missing.join('、')}`]),
+        ].join('；');
+        const ticket = await this.options.store.renderTicket(id);
+        const html =
+          ticket === null
+            ? renderPage('提交失败', `<div class="card"><div class="done"><div class="err">${escapeHtml(detail)}</div></div></div>`)
+            : renderPage(ticket.title, TicketServer.formBodyHtml(id, ticket, detail));
         response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' });
         response.end(html);
         return;
       }
       const html = renderPage(
         '提交成功',
-        `<div class="card"><div class="done"><div class="tick">✅</div><h2>感谢确认</h2><p>你的答复已收到，AI 团队将据此继续。你可以关闭此页。</p></div></div>`,
+        `<div class="card"><div class="done"><div class="tick">✅</div><h2>感谢确认</h2><p>${escapeHtml(
+          result.message ?? '你的答复已收到，AI 团队将据此继续。你可以关闭此页。',
+        )}</p></div></div>`,
       );
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(html);
@@ -522,5 +591,42 @@ ${fields}
       this.server?.close(() => resolvePromise());
       this.server = null;
     });
+  }
+}
+
+// ── webhook ──────────────────────────────────────────────────────────────────
+
+/**
+ * 给人看的 webhook 投递（IM / 飞书群机器人 / 任意 HTTP 钩子）。
+ *
+ * 失败一律折成 `false`：投递状态是记录上的数据，不是流程开关 —— 一条发不出去的
+ * 通知不该让问卷创建失败。URL 里常常带着 token（Slack 类钩子就是），所以读出来
+ * 就登记进脱敏器。
+ *
+ * ⚠️ 升级侧仍用它自己那份 `EscalationManager.deliverWebhook`：本次改动明确不动
+ * `escalate.ts` 的行为（`.tasks/INT-2.md` 场景一要求 `escalate` 一字不改），
+ * 所以这里只服务问卷。两条路径合并是后续的搬家工作，不是遗漏。
+ */
+export async function postHumanWebhook(input: {
+  urlEnv?: string | undefined;
+  text: string;
+  payload: Record<string, unknown>;
+  redactor: SecretRedactor;
+  fetchFn?: typeof fetch | undefined;
+}): Promise<boolean> {
+  const url = resolveOptionalEnvRef(input.urlEnv);
+  if (url === undefined) return false;
+  input.redactor.register(url);
+  const fetchImpl = input.fetchFn ?? fetch;
+  try {
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: input.redactor.redact(input.text), ...input.payload }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
   }
 }

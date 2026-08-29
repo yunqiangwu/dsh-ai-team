@@ -34,8 +34,10 @@ export function registerAutopilotProjection(ctx: Context): void {
       // v5：teamView 新增 `metrics`（团队累计运行指标）；升级原因新增 `budget-exceeded`。
       // v6：teamView 新增 `phase`（文档先行的团队阶段，缺省 developing 以兼容旧负载）；
       // 升级原因新增 `blocked-dependency`（前置永不可能满足，区别于"还没完成"）。
+      // v7：投影新增 `questionnaires`（问卷实体，独立于 escalation；见
+      // docs/design-interaction.md §3）。旧负载靠 `.default([])` 继续 parse 得过。
       // 变更形状时需递增。
-      stateVersion: 6,
+      stateVersion: 7,
     });
   });
 }

@@ -23,6 +23,7 @@ export * from './vocab.js';
 
 // 视图形状：唯一真相在 schema.ts，这里只转发名字。
 export type {
+  Answer,
   DeployView,
   EscalationNotification,
   EscalationView,
@@ -31,6 +32,10 @@ export type {
   HeartbeatView,
   LearningView,
   MemberView,
+  Question,
+  QuestionBinding,
+  QuestionnaireView,
+  QuestionOption,
   ReviewView,
   TaskView,
   TeamView,
@@ -42,6 +47,7 @@ export const EMPTY_PROJECTION: AutopilotProjection = {
   teams: [],
   activeTeamId: null,
   escalations: [],
+  questionnaires: [],
   deploys: [],
   heartbeat: null,
   blocked: [],

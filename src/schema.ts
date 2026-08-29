@@ -14,6 +14,7 @@
  */
 import { z as zod } from 'zod';
 import {
+  ANSWER_SOURCES,
   CI_STATUSES,
   DEPLOY_STATUSES,
   ESCALATION_REASONS,
@@ -22,6 +23,10 @@ import {
   LOOP_STATES,
   MEMBER_STATUSES,
   NOTIFICATION_STATUSES,
+  QUESTION_TYPES,
+  QUESTIONNAIRE_KINDS,
+  QUESTIONNAIRE_MODES,
+  QUESTIONNAIRE_STATUSES,
   REVIEW_VERDICTS,
   ROLES,
   TASK_STATUSES,
@@ -190,6 +195,73 @@ export const deployViewSchema = zod.object({
   finishedAt: zod.number().nullable(),
 });
 
+// ── 问卷（docs/design-interaction.md §3）─────────────────────────────────────
+
+export const questionOptionSchema = zod.object({
+  value: zod.string(),
+  label: zod.string(),
+  /** 选这个方案的代价，渲染成选项副文案 —— 让人在看得到后果的地方做选择。 */
+  impact: zod.string().default(''),
+  /** 组长的推荐项：多选题里预勾选，单选题里排首位。 */
+  recommended: zod.boolean().default(false),
+});
+
+export const questionSchema = zod.object({
+  /** 稳定 key：答案索引与文档回写都靠它，改名等于换了一道题。 */
+  name: zod.string(),
+  label: zod.string(),
+  type: zod.enum(QUESTION_TYPES),
+  options: zod.array(questionOptionSchema).default([]),
+  required: zod.boolean().default(true),
+  /**
+   * 「人不回答时按什么办」。async 模式下这是唯一的兜底 —— 没有它，一条没人答的问卷
+   * 就把流程永久冻住了，而强制必填只会逼人随手点一下。
+   */
+  defaultValue: zod.string().default(''),
+});
+
+export const answerSchema = zod.object({
+  /** 多选的多个值以 `, ` 连接（题目选项值本身不允许含逗号，创建时校验）。 */
+  value: zod.string(),
+  at: zod.number(),
+  source: zod.enum(ANSWER_SOURCES),
+});
+
+/** 答案落地的位置（§3.4）：回写进文档章节，或落到某张任务契约的留言里。 */
+export const questionBindingSchema = zod.discriminatedUnion('type', [
+  zod.object({
+    type: zod.literal('doc'),
+    path: zod.string(),
+    /** 目标章节标题，空串表示追加到文末。 */
+    section: zod.string().default(''),
+  }),
+  zod.object({ type: zod.literal('task'), contractId: zod.string() }),
+]);
+
+export const questionnaireViewSchema = zod.object({
+  id: zod.string(),
+  teamId: zod.string(),
+  kind: zod.enum(QUESTIONNAIRE_KINDS),
+  title: zod.string(),
+  mode: zod.enum(QUESTIONNAIRE_MODES),
+  questions: zod.array(questionSchema).default([]),
+  answers: zod.record(zod.string(), answerSchema).default({}),
+  status: zod.enum(QUESTIONNAIRE_STATUSES),
+  binding: questionBindingSchema.nullable().default(null),
+  /** 工单页链接：投递渠道，不是实体本身（§3.1）。 */
+  ticketUrl: zod.string().nullable().default(null),
+  mailDelivered: zod.boolean().default(false),
+  /**
+   * 绑定的任务 id（可空）：面板要能在任务卡上说出「在等人回答」，
+   * 而 checkStuck 要靠它豁免 interactive 问卷的等待期（§6.5）。
+   */
+  taskId: zod.string().nullable().default(null),
+  createdAt: zod.number(),
+  answeredAt: zod.number().nullable().default(null),
+  /** 仅 interactive 模式有意义：await 的上限，超时转 open-but-expired 而不是永久挂住。 */
+  expiresAt: zod.number().nullable().default(null),
+});
+
 export const heartbeatViewSchema = zod.object({
   at: zod.number(),
   loopState: zod.enum(LOOP_STATES),
@@ -201,6 +273,20 @@ export const autopilotProjectionSchema = zod.object({
   teams: zod.array(teamViewSchema),
   activeTeamId: zod.string().nullable(),
   escalations: zod.array(escalationViewSchema),
+  /**
+   * 待答与已答的问卷。与 escalations 平级而非挂在团队下：一份快照要能同时说明
+   * 「哪里坏了」和「哪里在等人决策」。
+   *
+   * ⚠️ `doc_approve` 的**一次性审批码刻意不在这里**。全量快照会作为 session 事件
+   * 进模型读得到的日志，写进视图等于让组长自己批准自己的文档（§8-10）。码只活在
+   * 服务侧记录 + 工单页 / 邮件里，那两个出口只有人都碰得着。
+   *
+   * 边界要说清：`ticketUrl` 在视图里，而清单里有 `node` 时模型理论上能自己抓那个页面
+   * 把码读出来 —— 所以这道门挡的是「顺手绕过」，不是「已被注入的模型」，与全仓库的
+   * 命令白名单同一个定位（见 AGENTS.md 安全硬规则 2）。要硬保证请自己收紧
+   * `security.commandAllowlist` 与工单端点的绑定地址。
+   */
+  questionnaires: zod.array(questionnaireViewSchema).default([]),
   deploys: zod.array(deployViewSchema),
   heartbeat: heartbeatViewSchema.nullable(),
   /** 当前被阻塞的任务 id（needs-human / 等 leader 澄清 / 卡死 / 门红）。 */
@@ -221,5 +307,10 @@ export type TeamView = zod.infer<typeof teamViewSchema>;
 export type EscalationNotification = zod.infer<typeof escalationNotificationSchema>;
 export type EscalationView = zod.infer<typeof escalationViewSchema>;
 export type DeployView = zod.infer<typeof deployViewSchema>;
+export type QuestionOption = zod.infer<typeof questionOptionSchema>;
+export type Question = zod.infer<typeof questionSchema>;
+export type Answer = zod.infer<typeof answerSchema>;
+export type QuestionBinding = zod.infer<typeof questionBindingSchema>;
+export type QuestionnaireView = zod.infer<typeof questionnaireViewSchema>;
 export type HeartbeatView = zod.infer<typeof heartbeatViewSchema>;
 export type AutopilotProjection = zod.infer<typeof autopilotProjectionSchema>;

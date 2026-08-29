@@ -60,6 +60,8 @@ describe('smoke: cordis Loader contract', () => {
 
     expect(registered.toSorted()).toEqual(
       [
+        'answer_questionnaire',
+        'ask_human',
         'autopilot_init',
         'autopilot_pause',
         'autopilot_phase',
@@ -67,7 +69,10 @@ describe('smoke: cordis Loader contract', () => {
         'autopilot_run',
         'autopilot_status',
         'code_review',
+        'contract_create',
         'deploy_run',
+        'doc_approve',
+        'doc_write',
         'escalate',
         'escalation_resolve',
         'gates_run',

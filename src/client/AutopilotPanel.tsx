@@ -6,7 +6,7 @@
  */
 import { useState } from 'react';
 import type { SlotProps, Translator } from './contract.js';
-import type { AutopilotProjection, DeployView, EscalationView, LearningView, MemberView, TaskView, TeamView } from '../view.js';
+import type { AutopilotProjection, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
 import { DISPATCHABLE_PHASES, TASK_STATUSES } from '../view.js';
 
 function LoopLamp({ state, t }: { state: AutopilotProjection['loopState']; t: Translator }) {
@@ -49,7 +49,7 @@ function CiBadge({ task, t }: { task: TaskView; t: Translator }) {
   return <span className={`dsh-ai-team__badge dsh-ai-team__badge--${kind}`}>{t(`ci.${task.ciStatus}`)}</span>;
 }
 
-function TaskCard({ task, t }: { task: TaskView; t: Translator }) {
+function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: QuestionnaireView | undefined; t: Translator }) {
   return (
     <div className="dsh-ai-team__card" title={task.description}>
       <span className="dsh-ai-team__card-title">{task.title}</span>
@@ -58,6 +58,12 @@ function TaskCard({ task, t }: { task: TaskView; t: Translator }) {
         <GateBadge task={task} t={t} />
         <CiBadge task={task} t={t} />
         {task.reviewRound > 0 ? <span>{t('task.round', { round: task.reviewRound })}</span> : null}
+        {/* 等人回答 ≠ 卡住：任务状态一字未改，但看板上必须说得出它在等谁。 */}
+        {awaiting !== undefined ? (
+          <span className="dsh-ai-team__badge dsh-ai-team__badge--pending" title={awaiting.title}>
+            {t('questionnaire.onTask')}
+          </span>
+        ) : null}
       </span>
       <span className="dsh-ai-team__card-meta">
         <span>{task.branch}</span>
@@ -110,6 +116,55 @@ function EscalationFeed({ escalations, t }: { escalations: EscalationView[]; t: 
         );
       })}
     </div>
+  );
+}
+
+/**
+ * 问卷流水（只读）。M1 的作答入口是浏览器里的工单页，不是这张面板 ——
+ * 面板只负责让人一眼看出「现在轮到谁了」，尤其要区分异步问卷答完之后
+ * 那段时间：那时球在组长脚下，而插件唤不醒它。
+ */
+function QuestionnaireFeed({ items, t }: { items: QuestionnaireView[]; t: Translator }) {
+  if (items.length === 0) return <span className="dsh-ai-team__empty">{t('questionnaires.empty')}</span>;
+  const recent = items.toReversed().slice(0, 10);
+  return (
+    <div className="dsh-ai-team__feed">
+      {recent.map((item) => {
+        const waiting = item.status === 'open';
+        const badge = waiting ? 'pending' : item.status === 'answered' ? 'pass' : 'fail';
+        // 异步问卷答完之后没人接着跑，是最容易看漏的一段：单独给一句话。
+        const label =
+          item.status === 'answered' && item.mode === 'async'
+            ? t('questionnaire.awaitingLeader')
+            : t(`questionnaire.${item.status}`);
+        return (
+          <div
+            key={item.id}
+            className={waiting ? 'dsh-ai-team__feed-item' : 'dsh-ai-team__feed-item dsh-ai-team__feed-item--resolved'}
+            title={`${item.questions.map((question) => question.label).join('\n')}\n${t(`questionnaire.mode.${item.mode}`)}`}
+          >
+            <span className="dsh-ai-team__feed-reason">{t(`questionnaire.kind.${item.kind}`)}</span>
+            <span>{item.title}</span>
+            <span className={`dsh-ai-team__badge dsh-ai-team__badge--${badge}`}>{label}</span>
+            {item.ticketUrl !== null ? (
+              <a href={item.ticketUrl} target="_blank" rel="noreferrer">
+                {t('notify.ticket')}
+              </a>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 任务是否正等一个人回答。绑定时既可能写任务 id 也可能写契约 id，两种都认。 */
+function openQuestionnaireFor(
+  items: QuestionnaireView[],
+  task: TaskView,
+): QuestionnaireView | undefined {
+  return items.find(
+    (item) => item.status === 'open' && (item.taskId === task.id || (item.taskId !== null && item.taskId === task.contractId)),
   );
 }
 
@@ -213,7 +268,7 @@ function MetricsList({ team, t }: { team: TeamView; t: Translator }) {
   );
 }
 
-function TeamBody({ team, blocked, t }: { team: TeamView; blocked: string[]; t: Translator }) {
+function TeamBody({ team, blocked, questionnaires, t }: { team: TeamView; blocked: string[]; questionnaires: QuestionnaireView[]; t: Translator }) {
   return (
     <>
       <section>
@@ -236,12 +291,16 @@ function TeamBody({ team, blocked, t }: { team: TeamView; blocked: string[]; t: 
                   <span>{tasks.length}</span>
                 </h5>
                 {tasks.map((task) => (
-                  <TaskCard key={task.id} task={task} t={t} />
+                  <TaskCard key={task.id} task={task} awaiting={openQuestionnaireFor(questionnaires, task)} t={t} />
                 ))}
               </div>
             );
           })}
         </div>
+      </section>
+      <section>
+        <h4 className="dsh-ai-team__section-title">{t('section.questionnaires')}</h4>
+        <QuestionnaireFeed items={questionnaires} t={t} />
       </section>
       <section>
         <h4 className="dsh-ai-team__section-title">{t('section.blocked')}</h4>
@@ -302,7 +361,12 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       </button>
       {open ? (
         <div className="dsh-ai-team__body">
-          <TeamBody team={team} blocked={projection.blocked} t={t} />
+          <TeamBody
+            team={team}
+            blocked={projection.blocked}
+            questionnaires={projection.questionnaires.filter((item) => item.teamId === team.id)}
+            t={t}
+          />
           <section>
             <h4 className="dsh-ai-team__section-title">{t('section.escalations')}</h4>
             <EscalationFeed escalations={projection.escalations} t={t} />

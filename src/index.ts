@@ -17,6 +17,7 @@ import { DEFAULT_LEARNINGS } from './learnings.js';
 import type { LearningOptions } from './learnings.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
+import type { QuestionnaireMode } from './view.js';
 
 export const name = 'dsh-ai-team';
 
@@ -113,6 +114,24 @@ export interface Config {
    * 全量生成物；升格进项目文档由 leader 落，但要单独成 docs-only 变更。
    */
   learnings?: LearningOptions | undefined;
+  /**
+   * 提问通道（见 docs/design-interaction.md §3）：`interactive` 让 `ask_human`
+   * 真等到人答复再返回（组长的一轮 agent 因此不断线）；`async` 登记问卷后立即
+   * 返回，人答完由组长继续。问卷是独立实体，不置 needs-human、不进升级直方图。
+   */
+  questionnaire: {
+    mode: QuestionnaireMode;
+    /** interactive 模式等待人答复的墙钟上限；超时按各题默认值继续并置 expired。 */
+    timeoutMinutes: number;
+  };
+  /**
+   * 文档先行的目录约定（见 docs/design-interaction.md §4）：AI 只能写 `draftDir`，
+   * `formalDir` 的唯一落盘出口是 `doc_approve`（要一次性审批码）。
+   */
+  docs: {
+    draftDir: string;
+    formalDir: string;
+  };
   /**
    * 项目 profile 适配器（见 src/profile.ts）：把目标仓库的协作约定编码进来
    * （branch/PR 命名、合并策略、条件化 gates、禁区策略、ownership 路由）。
@@ -287,6 +306,22 @@ export const Config: z<Config> = z.object({
     })
     .default({ ...DEFAULT_LEARNINGS }),
 
+  questionnaire: z
+    .object({
+      // schemastery 没有 enum 组合器，只能像 `remote.platform` 那样折叠字面量：
+      // 取值以 vocab.ts 的 QUESTIONNAIRE_MODES 为准，接口侧已复用它。
+      mode: z.union([z.const('interactive'), z.const('async')]).default('interactive'),
+      timeoutMinutes: z.number().min(1).default(60),
+    })
+    .default({ mode: 'interactive', timeoutMinutes: 60 }),
+
+  docs: z
+    .object({
+      draftDir: z.string().default('docs/drafts'),
+      formalDir: z.string().default('docs'),
+    })
+    .default({ draftDir: 'docs/drafts', formalDir: 'docs' }),
+
   profile: z
     .object({
       preset: z.string().default(''),
@@ -401,6 +436,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       promoteAfterHits: effective.learnings?.promoteAfterHits ?? DEFAULT_LEARNINGS.promoteAfterHits,
       maxEntries: effective.learnings?.maxEntries ?? DEFAULT_LEARNINGS.maxEntries,
     },
+    questionnaire: effective.questionnaire,
+    docs: effective.docs,
     profile: resolveProjectProfile(effective.profile, effective.gates.commands),
   });
   // 把服务暴露给其它插件（以及驱动 host 的测试）。

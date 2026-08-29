@@ -2,11 +2,22 @@ import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools';
 import type { Context } from '@deepseek-ai/cordis';
 import type { JsonValue } from '@deepseek-ai/dsh-session';
 import type { AutopilotService } from './service.js';
+import type { ContractDraft } from './service/contracts.js';
 import './events.js';
 // 工具层的枚举一律引用唯一词表（经 view.ts 门面）：手抄一份漏掉新值，表现为模型报不出
 // 那个原因 / 分类，而编译器和测试都不会响。
-import { ESCALATION_REASONS, LEARNING_BUCKETS, LEARNING_KINDS, REVIEW_VERDICTS, ROLES, TEAM_PHASES } from './view.js';
-import type { TeamPhase } from './view.js';
+import {
+  ESCALATION_REASONS,
+  LEARNING_BUCKETS,
+  LEARNING_KINDS,
+  QUESTIONNAIRE_KINDS,
+  QUESTIONNAIRE_MODES,
+  QUESTION_TYPES,
+  REVIEW_VERDICTS,
+  ROLES,
+  TEAM_PHASES,
+} from './view.js';
+import type { Question, QuestionBinding, TeamPhase } from './view.js';
 
 /**
  * View 对象在构造上就是纯 JSON，但缺少索引签名，
@@ -656,6 +667,259 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
         return asJson(learning);
       },
       presentCall: present('Promote or dismiss a lesson'),
+    }),
+  );
+
+  // ── 人工决策 / 文档先行（docs/design-interaction.md §3、§4）──────────────
+
+  ctx.tools.register(
+    defineTool({
+      name: 'ask_human',
+      description:
+        'Ask a human for a DECISION and get a structured answer back. This is NOT an ' +
+        'escalation: nothing is broken, the choice simply belongs to a human (a product ' +
+        'tradeoff, a version number, whether to pay for a dependency). Each question is ' +
+        '`select` / `multiselect` / `text` / `textarea`, may carry options with per-option ' +
+        '`impact` (the cost of choosing it, shown under the option) and a `defaultValue` ' +
+        '(what happens if nobody answers). `mode: "interactive"` blocks this call until the ' +
+        'answer arrives or questionnaire.timeoutMinutes elapse, so your turn stays open; ' +
+        '`mode: "async"` returns right away after mailing the ticket, and a human must then ' +
+        'come back to the session and tell you to continue (the plugin cannot wake an agent). ' +
+        'With a `binding`, the answer is written into that draft document section or task ' +
+        'contract as a dated [decision] note — decisions belong in git, not only in state.json. ' +
+        '`kind: "approval"` is the document sign-off flow: it appends the approve/reject ' +
+        'question itself and stamps the drafts\' hashes, and you may NOT answer it (see doc_approve).',
+      parameters: {
+        teamId: { type: 'string', required: true },
+        title: { type: 'string', required: true, description: 'One line: what is being decided' },
+        questions: {
+          type: 'array',
+          required: true,
+          description: 'The questions a human must answer (max 12; more means several rounds)',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              name: {
+                type: 'string',
+                required: true,
+                description: 'Stable key for the answer (also the form field name); [A-Za-z][A-Za-z0-9_.-]*',
+              },
+              label: { type: 'string', required: true, description: 'The question, phrased for a human reader' },
+              type: { type: 'string', required: true, enum: QUESTION_TYPES },
+              options: {
+                type: 'array',
+                description: 'Required for select/multiselect (2+ options), forbidden otherwise',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    value: { type: 'string', required: true, description: 'Answer token; must not contain a comma' },
+                    label: { type: 'string', required: true },
+                    impact: { type: 'string', description: 'What choosing this costs — help them decide with consequences visible' },
+                    recommended: { type: 'boolean', description: 'Your recommendation: preselected in the form' },
+                  },
+                },
+              },
+              required: { type: 'boolean', description: 'Default true; false means the defaultValue covers a skip' },
+              defaultValue: {
+                type: 'string',
+                description: 'Must be one of the option values (multi-selections joined by ", "). Used on timeout, and written to no document',
+              },
+            },
+          },
+        },
+        kind: {
+          type: 'string',
+          enum: QUESTIONNAIRE_KINDS,
+          description: 'intake (requirements), approval (document sign-off), replan (re-scoping); default intake',
+        },
+        binding: {
+          type: 'object',
+          additionalProperties: false,
+          description:
+            'Where the answer lands: {type:"doc", path, section} inside the draft area, or {type:"task", contractId}',
+          properties: {
+            type: { type: 'string', required: true, enum: ['doc', 'task'] },
+            path: { type: 'string', description: 'doc binding: a path under the draft area (accepted docs are read-only)' },
+            section: { type: 'string', description: 'doc binding: heading to append under; empty = end of file' },
+            contractId: { type: 'string', description: 'task binding: the .tasks/<id>.md contract to note on' },
+          },
+        },
+        taskId: { type: 'string', description: 'Task this decision blocks (marks it "waiting for you" on the board and exempts it from stuck detection)' },
+        mode: {
+          type: 'string',
+          enum: QUESTIONNAIRE_MODES,
+          description: 'Defaults to questionnaire.mode; interactive blocks this call, async returns immediately',
+        },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const input = args as {
+          teamId: string;
+          title: string;
+          questions: Question[];
+          kind?: (typeof QUESTIONNAIRE_KINDS)[number];
+          binding?: QuestionBinding;
+          taskId?: string;
+          mode?: (typeof QUESTIONNAIRE_MODES)[number];
+        };
+        const result = await service.askHuman(input);
+        publish(service, exec);
+        return asJson(result);
+      },
+      presentCall: present('Ask a human'),
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'answer_questionnaire',
+      description:
+        'Apply a human\'s answer to an open questionnaire (the same funnel the ticket page ' +
+        'POSTs into), then write it back to its bound document or task contract. Use it when ' +
+        'a human answered you in the session instead of on the ticket page. Pass `actorId` ' +
+        'when you are the leader relaying an answer; omit it when you ARE the human. The ' +
+        'boundary that matters: an `approval` questionnaire relayed from the session must ' +
+        'carry the one-time `code` that only appears in the ticket page or email — a model ' +
+        'cannot approve its own documents (§8-10). Answering "reject" sends the drafts back to ' +
+        'editable and the phase to intake. Missing required questions are refused with a list, ' +
+        'so nobody has to re-answer the whole form.',
+      parameters: {
+        questionnaireId: { type: 'string', required: true },
+        answers: {
+          type: 'json',
+          required: true,
+          description: 'Map of question name → answer value (multi-selections joined by ", ")',
+        },
+        actorId: { type: 'string', description: 'Member id relaying the answer; must be the leader. Omit when you are the human' },
+        code: { type: 'string', description: 'One-time approval code from the ticket/email; required to relay an approval' },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const input = args as {
+          questionnaireId: string;
+          answers: Record<string, string>;
+          actorId?: string;
+          code?: string;
+        };
+        const result = await service.answerQuestionnaire({ ...input, source: 'tool' });
+        publish(service, exec);
+        return asJson(result);
+      },
+      presentCall: present('Answer a questionnaire'),
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'doc_write',
+      description:
+        'Write a markdown document into the DRAFT area (docs.draftDir, default docs/drafts) — ' +
+        'this is the only way any role creates or changes project documents. Formal documents ' +
+        'are read-only for the team: they exist only because a human approved specific bytes, ' +
+        'and doc_approve is what moves a draft into place. Paths outside the draft area are ' +
+        'refused, and so is editing an already-accepted document: write a new draft revision ' +
+        'instead. The result carries the stored path, status, version and the sha256 of the ' +
+        'body. Warning: touching drafts that are currently pending approval cancels those ' +
+        'approval questionnaires — the code a human was shown no longer describes the file, ' +
+        'so it is void rather than silently re-stamped.',
+      parameters: {
+        teamId: { type: 'string', required: true },
+        path: { type: 'string', required: true, description: 'Repo-relative .md path under the draft area, e.g. docs/drafts/prd.md' },
+        body: { type: 'string', required: true, description: 'Markdown body (no frontmatter — status/version are managed here)' },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const result = await service.docWrite(args as { teamId: string; path: string; body: string });
+        publish(service, exec);
+        return asJson(result);
+      },
+      presentCall: present('Write a draft document'),
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'doc_approve',
+      description:
+        'Promote the pending draft bundle into the formal document area, recording who ' +
+        'approved and re-verifying every document\'s sha256 against the bytes the approver was ' +
+        'shown. A human runs this — a model may not: pass `code` (the one-time code from the ' +
+        'approval ticket/email) or call it yourself with no actorId. If any draft changed ' +
+        'after its code was issued, the promotion is refused, the drafts return to editable, ' +
+        'the codes are voided and a fresh approval questionnaire is reopened: approving bundle ' +
+        'A and merging bundle B is exactly the failure this gate exists to make impossible. ' +
+        'Promotion is also blocked when a target path is in security.forbiddenPaths — an ' +
+        'approval can never unlock a configured boundary. On success the team phase moves to ' +
+        'scaffolding and the promoted set is versioned.',
+      parameters: {
+        teamId: { type: 'string', required: true },
+        code: {
+          type: 'string',
+          description: 'One-time approval code; omit only when you are the human approving in the session',
+        },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const input = args as { teamId: string; code?: string };
+        const result = await service.docApprove(input);
+        publish(service, exec);
+        return asJson(result);
+      },
+      presentCall: present('Approve and promote drafts'),
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'contract_create',
+      description:
+        'Create task contracts (.tasks/<id>.md) from a structured batch instead of hand-writing ' +
+        'files. Everything is validated BEFORE anything is written, and one bad contract ' +
+        'refuses the whole batch with a per-field reason: id must be `<DOMAIN>-<number>`, ' +
+        'status may only be pending, depends_on must resolve (within the batch or on the ' +
+        'board) and must not cycle, touches must not intersect the contract\'s own forbidden ' +
+        'list nor security.forbiddenPaths, and one contract may not span more domains than ' +
+        'daemon.crossDomainThreshold (split it per domain). Accepted contracts are committed ' +
+        'and picked up by the next tick, so task_assign can bind to them right away.',
+      parameters: {
+        teamId: { type: 'string', required: true },
+        contracts: {
+          type: 'array',
+          required: true,
+          description: 'The batch of contracts to create',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string', required: true, description: 'Contract id as <DOMAIN>-<number>, e.g. AUTH-12' },
+              title: { type: 'string', required: true },
+              owner: { type: 'string', description: 'Owning role or agent id' },
+              dependsOn: { type: 'array', items: { type: 'string' }, description: 'Contract ids that must be done first' },
+              touches: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Directories this change may touch — the domain lock and overlap checks read this',
+              },
+              forbidden: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Paths this contract must not touch, on top of security.forbiddenPaths',
+              },
+              body: { type: 'string', description: 'Markdown body: requirements + Gherkin acceptance criteria' },
+            },
+          },
+        },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const input = args as { teamId: string; contracts: ContractDraft[] };
+        const result = await service.contractCreate(input);
+        publish(service, exec);
+        return asJson(result);
+      },
+      presentCall: present('Create task contracts'),
     }),
   );
 }

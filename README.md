@@ -156,6 +156,13 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           injectCharBudget: 1200              # 注入字符预算：描述会整体进投影事件推给前端，必须有界
           promoteAfterHits: 3                 # 同因被印证这么多次，就值得人写进项目文档（插件绝不代笔改文档）
           maxEntries: 200                     # 台账上限，超出淘汰"命中少且久未被印证"的记录
+        questionnaire:                        # AI 向人提问（问卷 ≠ 升级：不置 needs-human、不进升级直方图）
+          mode: interactive                   # interactive：ask_human 真的 await 到人答复才返回，组长这一轮不断线
+                                              # async：登记 open 问卷 + 投递后立即返回，人答完回会话说一句「继续」
+          timeoutMinutes: 60                  # interactive 的等待上限；超时按各题 defaultValue 继续并标 expired（不写进文档）
+        docs:                                 # 文档先行的目录约定
+          draftDir: docs/drafts               # AI 唯一可写区：doc_write 只收这个区里的 .md
+          formalDir: docs                     # 正式区唯一落盘出口是 doc_approve（人 + 一次性审批码 + sha256 比对）
         profile:                              # 项目约定适配器（可选，见下方说明）
           preset: agentdeploy                 # 'default' | 'agentdeploy'；留空 = default
           # 其余字段可逐项覆写 preset；缺省回退到 preset 默认值。
@@ -252,6 +259,21 @@ Given/When/Then 验收标准……
 2. **SMTP 邮件通知**：按 `smtp.*` 配置发信到 `mailTo`，正文包含任务、原因、建议动作与工单链接。凭证只取环境变量名并在日志中脱敏，绝不落盘。
 3. **答复闭环**：用户提交后，答复被回写到任务单（`.tasks/<id>.md`），并在 `autoResume: true` 时自动解除升级、把任务改回 `pending`、继续主循环；`autoResume: false` 则保持 `needs-human`，等你主动 `escalation_resolve`。
 
+同一个端点也投递**提问问卷**（`ask_human` 的产物，工单 id 前缀 `qn_`，升级工单是 `esc_`）—— 两者的区别是**为什么要叫人来**：
+
+| | 升级（escalation） | 问卷（questionnaire） |
+| --- | --- | --- |
+| 语义 | 「我卡住了，来个人分诊」 | 「一切正常，只是这个选择得由人来做」 |
+| 任务状态 | 置 `needs-human` | **不动**任务状态，面板标「等人回答」 |
+| 副作用 | 进升级直方图、自动记一条教训 | 两者都不做（没发生的教训不该被记进台账） |
+| 答复落点 | 任务单留言 + 可选自动恢复 | 绑定的文档章节 / 任务契约，作为带时间戳的 `[decision]` 进 git |
+
+- **interactive 模式**：`ask_human` 这一轮 agent 不断线，真的 await 到你答完（或 `questionnaire.timeoutMinutes` 到期）。你在工单页提交后组长立刻继续，不需要回会话说话。超时按各题 `defaultValue` 兜底并如实标 `expired`，**不会**把没人做过的决策写进文档。
+- **async 模式**：问卷登记后立即返回，你答完**要回会话说一句「继续」** —— 插件没有「向会话投一条消息唤醒 agent」的写入口，这条边界不是工程能绕过的。
+- **审批问卷**（`kind: approval`）：邮件/工单页里带一个**一次性审批码**，只有读到那封邮件的人拿得到。你带着码在会话里调 `doc_approve`（或自己直接调，不带 `actorId`）即完成升格；组长自己批不了自己的文档。工单页的审批下拉**预选「不批准」**（超时兜底也是它）——一张表单不该因为有人懒得点一下就交出授权。
+
+> 流程规格（阶段怎么推进、答案怎么回写、为什么这样切分）见 [docs/design-interaction.md](docs/design-interaction.md)；本节只讲配置与人要做什么。
+
 > ⚠️ 工单端点**没有任何鉴权**：能访问它的人就能替你做「人工确认」这个决定。默认只绑 `127.0.0.1`，远程访问优先走 SSH 隧道（`ssh -L 8080:127.0.0.1:8080 …`）。确需公网可达，必须先自行反代加鉴权（basic auth / IP 白名单 / 签名 URL），再考虑开 `autoResume`——否则「答复即放行」是任何人都按得动的按钮。`ticket.publicBaseUrl` 只决定邮件里展示的工单根地址。
 
 ## 安全模型
@@ -261,7 +283,7 @@ Given/When/Then 验收标准……
 3. **forbiddenPaths**：派发期就检查 `touches` 是否踩到契约自声明的禁区；改动落地前再检查分支实际 diff —— `pr_sync` 推送、reviewer approve 合并、`team_branch` 手工合并三条路径共用同一道闸门，触及禁区直接拒绝并升级；ref 解析不出来同样拒绝（不静默放行）。默认禁区自 2026-08-29 起只剩 `LICENSE`。⚠️ 代价要说清：`.github/` 移出后 AI 团队改得了把关自己的 CI workflow，`requireCiGreen` 的考卷和答卷落在同一支笔下面 —— 需要硬保证 CI 配置不被改的项目，自己把 `.github/` 配回 `security.forbiddenPaths`。
 4. **门不过不合并**：`pushRequiresGates=true` 时门未绿禁止 push 与 approve；`requireCiGreen` 是另一道独立的门（不被前者短路），CI 非绿或从未验证（未 `pr_sync`）都禁止 approve —— 但 CI 状态只有 github 平台查得到，其它平台该门不生效；配了 `daemon.maxDiff*` 时改动体量超限也拒。
 5. **破坏性 git 操作禁止**：不 force-push 共享分支（任务/成员分支仅允许 `--force-with-lease`），不 reset 共享分支，不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 ref 名安全校验：不得以 `-` 开头、不得含空格或 `..` —— 否则一个 `-D` 就能被 git 当成「删分支」选项。
-6. **知识回路不碰文档**：教训只写台账（`state.json` / `learnings.md`）与任务描述，`learning_promote` 只翻升格标记，这套工具里没有任何"改写项目文档"的能力。真要改 `AGENTS.md` / `docs/` 走的是通用文件编辑权限（2026-08-29 起它们不再是禁区），按约定必须单独成一次 docs-only 变更。
+6. **文档改动只有「草稿 → 人批」一条路**：`doc_write` 只收 `docs.draftDir` 里的 `.md`，正式区的唯一出口是 `doc_approve` —— 它拒绝任何带 `actorId`（即模型身份）的调用，会话里转述的批准必须带上只出现在工单页 / 邮件里的一次性码，落盘前还要把每份草稿的 `sha256` 与当初给人看的那份比对：正文变过一个字就拒绝升格、作废审批码、重开一份问卷（防「批 A 合 B」）。审批**解锁不了禁区**：目标路径命中 `security.forbiddenPaths` 时升格直接失败，`LICENSE` 不因任何答复而被改。教训侧同理：`learning_promote` 只翻台账标记，把教训写进文档仍然是一次独立的、走同一条审批链的 docs-only 变更。
 
 ## 工具一览
 
@@ -270,6 +292,8 @@ Given/When/Then 验收标准……
 **无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_phase`（读/切团队阶段，见下）/ `autopilot_status` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run`。
 
 **知识回路**：`learning_record`（记一条坑） / `learning_list`（查台账与待升格清单） / `learning_promote`（人落文档后标记，或否掉一条）。
+
+**人工决策与文档先行**：`ask_human`（向人提问并拿到结构化答复；`interactive` 真的等到人答才返回） / `answer_questionnaire`（人在会话里作答，转述作答审批需带一次性码） / `doc_write`（写文档，只收 draft 区） / `doc_approve`（人把审批过的草稿升格进正式区，落盘前比对 sha256） / `contract_create`（建 `.tasks/*.md` 契约，写前校验 id / 依赖 / 成环 / 禁区 / 域数）。
 
 ### 团队阶段（phase）与依赖死锁
 
@@ -289,7 +313,9 @@ Given/When/Then 验收标准……
 
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色）、七列看板（含 needs-human 与 needs-clarification）、质量门徽标与 CI 徽标、升级事件流、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色）、七列看板（含 needs-human 与 needs-clarification，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你回答**（问卷流水：`等你回答` / `已答复，等组长继续` / `已超时`，带工单链接）、升级事件流、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
+
+> 面板上的问卷是**只读**的（M1 口径）：作答入口是浏览器里的工单页，或会话里直接调 `answer_questionnaire`。面板内可作答的问卷卡片属 M2。
 
 另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片（`settings.plugin.item` 键控命名空间）。它绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段（`remote.url`、`baseBranch`、`bootstrap.enabled`、`gates.commands`、`daemon.maxReviewRounds`/`stuckMinutes`/`maxDiffLines`、`learnings.enabled`）供编辑保存，写入用户设置层；服务端通过 `installSettingsSection` 让插件读到生效配置（无设置服务时回退到 entry config）。因命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
 

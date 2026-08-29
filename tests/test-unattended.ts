@@ -93,6 +93,11 @@ function assertNotMerged(service: AutopilotService, teamId: string, repoPath: st
   expect(gitTest(['log', '--format=%s', 'main'], repoPath)).not.toMatch(/^merge: task\//);
 }
 
+/** 真实等待：卡死豁免这类断言要越过 daemon.stuckMinutes 的时间窗，没法用假计时器。 */
+const sleep = async (ms: number): Promise<void> => {
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+};
+
 describe('unattended: daemon loop', () => {
   it('dispatches pending contracts respecting depends_on and domain locks', async () => {
     const { service, teamId, cleanup } = await serviceWithContracts('dispatch', [
@@ -168,6 +173,52 @@ describe('unattended: daemon loop', () => {
       expect(service.getLoopState()).not.toBe('escalated');
       const projection = service.projection();
       expect(projection.blocked.length).toBeGreaterThan(0);
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
+  it('等人回答的任务豁免 stuckMinutes，答完之后才照判（§6.5）', async () => {
+    // 0.02 分钟 = 1.2 秒：派发拍绝不会判死，等人期间才越线。
+    const { service, teamId, cleanup } = await serviceWithContracts(
+      'awaiting',
+      [{ id: 'H-1', title: 'asks a human' }],
+      { daemon: { maxReviewRounds: 3, stuckMinutes: 0.02, pollIntervalSeconds: 1 } },
+    );
+    const taskOf = () => service.teamView(teamId).tasks.find((candidate) => candidate.contractId === 'H-1')!;
+    try {
+      await service.tickOnce(); // 派发 H-1
+      const asked = await service.askHuman({
+        teamId,
+        taskId: taskOf().id,
+        title: '跨域阈值按哪个数算',
+        questions: [{ name: 'threshold', label: '按契约数还是提交数？', type: 'text', options: [], required: true, defaultValue: '' }],
+      });
+      await sleep(1400); // 越过一次卡死窗口
+
+      // 窗口已经过了，豁免必须真的挡住它：一次合法的追问不该变成 needs-human、
+      // 直方图里的一条计数，更不该喂给模型一条根本不存在的教训。
+      expect((await service.tickOnce()).escalated).toEqual([]);
+      expect(taskOf().status).toBe('in_progress');
+      expect(service.escalations.all.some((record) => record.reason === 'task-stuck')).toBe(false);
+      expect(service.teamView(teamId).metrics.escalations['task-stuck']).toBeUndefined();
+
+      const before = taskOf().lastActivityAt;
+      const answered = await service.answerQuestionnaire({
+        questionnaireId: asked.questionnaire.id,
+        answers: { threshold: '按契约数' },
+      });
+      expect(answered.ok).toBe(true);
+      // 答案本身算一次活动：否则人想了 40 分钟，组长一回来任务就被判「40 分钟没动静」。
+      expect(taskOf().lastActivityAt).toBeGreaterThanOrEqual(before);
+
+      // 豁免不是免死金牌：答完之后再越线，就该照常升级。
+      await sleep(1400);
+      const after = await service.tickOnce();
+      expect(after.escalated).toContain(taskOf().id);
+      expect(service.escalations.all.some((record) => record.reason === 'task-stuck')).toBe(true);
+      expect(service.teamView(teamId).metrics.escalations['task-stuck']).toBe(1);
+      expect(taskOf().status).toBe('needs-human');
     } finally {
       await cleanup();
     }

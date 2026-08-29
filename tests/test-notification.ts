@@ -178,6 +178,7 @@ describe('notification: ticket server', () => {
         if (id === 'nope') return null;
         return {
           title: `Confirm ${id}`,
+          notice: '这个升级需要你分诊后再放行',
           fields: [
             { name: 'decision', label: 'Decision', type: 'textarea', required: true },
             { name: 'note', label: 'Note', type: 'text' },
