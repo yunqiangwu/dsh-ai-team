@@ -18,6 +18,14 @@
     "sourceMap": true,
     "skipLibCheck": true
   },
-  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/view.ts"],
+  // view.ts 是类型门面：值依赖 vocab.ts（零依赖、浏览器安全），类型依赖
+  // schema.ts（只有 `export type { ... } from`，zod 不会进客户端产物）。
+  "include": [
+    "src/client/**/*.ts",
+    "src/client/**/*.tsx",
+    "src/view.ts",
+    "src/vocab.ts",
+    "src/schema.ts"
+  ],
   "exclude": ["node_modules", "lib", "tests"]
 }
