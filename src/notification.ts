@@ -49,7 +49,6 @@ export interface MailMessage {
   to: string;
   subject: string;
   text: string;
-  html?: string | undefined;
 }
 
 /**
@@ -243,7 +242,9 @@ export class Mailer {
         'Date: ' + new Date().toUTCString(),
       ].join('\r\n');
 
-      const body = `\r\n${message.text.replace(/\./g, '..').replace(/^\./gm, '..')}`;
+      // RFC 5321 §4.5.2 点填充：仅行首的 `.` 需要再加一个 `.`，接收方会剥掉。
+      // 注意不能把正文里的句点也翻倍 —— 那会原样送达，静默损坏内容。
+      const body = `\r\n${message.text.replace(/^\./gm, '..')}`;
       const payload = `${encodedHeaders}\r\n\r\n${body}\r\n.\r\n`;
       await writeRaw(payload);
       await expect(250);
@@ -523,5 +524,3 @@ ${fields}
     });
   }
 }
-
-export { resolveOptionalEnvRef };

@@ -8,18 +8,6 @@
  *     密钥值都会被替换为 `***`。
  */
 
-/** 从 env var 引用读取密钥。未设置时抛错（快速失败）。 */
-export function resolveEnvRef(envName: string, purpose: string): string {
-  const value = process.env[envName];
-  if (value === undefined || value === '') {
-    throw new Error(
-      `missing credential: environment variable "${envName}" (needed for ${purpose}) is not set. ` +
-        `Set it in the daemon host environment — never in config files or task files.`,
-    );
-  }
-  return value;
-}
-
 /** 读取可选的 env var 引用；未设置时返回 undefined。 */
 export function resolveOptionalEnvRef(envName: string | undefined): string | undefined {
   if (envName === undefined || envName === '') return undefined;
@@ -62,11 +50,4 @@ export class SecretRedactor {
   get size(): number {
     return this.values.length;
   }
-}
-
-/** 针对一组已知值的便捷一次性脱敏。 */
-export function redactSecrets(text: string, values: readonly string[]): string {
-  const redactor = new SecretRedactor();
-  for (const value of values) redactor.register(value);
-  return redactor.redact(text);
 }

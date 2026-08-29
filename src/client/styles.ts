@@ -31,7 +31,7 @@ const CSS = `
 .dsh-ai-team__dot--working { background: #22c55e; }
 .dsh-ai-team__dot--reviewing { background: #3b82f6; }
 .dsh-ai-team__role { opacity: .55; font-size: 10px; }
-.dsh-ai-team__kanban { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 8px; overflow-x: auto; }
+.dsh-ai-team__kanban { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 8px; overflow-x: auto; }
 .dsh-ai-team__column { border: 1px solid rgba(127,127,127,.2); border-radius: 8px; padding: 6px; min-height: 48px; }
 .dsh-ai-team__column-title { display: flex; justify-content: space-between; margin: 0 0 6px; font-size: 11px; opacity: .75; }
 .dsh-ai-team__card { display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 6px; background: rgba(127,127,127,.12); margin-bottom: 6px; }

@@ -148,4 +148,4 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 
 ## 发布
 
-`npm publish` 前 `prepublishOnly` 会自动跑 typecheck + lint + **build** + test（build 必须在 test 前：`smoke-cordis` 测的是 `lib/` 产物），全绿才发包。`files` 含 `lib/`、`preset/`、`README.md`、`LICENSE`、`cordis.patch.yml`。改版本号后先 `pnpm pack --dry-run` 核对清单。
+`npm publish` 前 `prepublishOnly` 会自动跑 typecheck + lint + **build** + test（顺序要求见「测试约定」），全绿才发包。`files` 含 `lib/`、`preset/`、`README.md`、`LICENSE`、`cordis.patch.yml`。改版本号后先 `pnpm pack --dry-run` 核对清单。

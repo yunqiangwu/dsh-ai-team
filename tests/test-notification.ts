@@ -131,6 +131,29 @@ describe('notification: mailer', () => {
     expect(joined).not.toContain('secret-code');
   }, 15_000);
 
+  it('dot-stuffs only leading dots and leaves interior periods intact', async () => {
+    process.env.TEST_SMTP_USER = 'mailer@example.com';
+    process.env.TEST_SMTP_PASS = 'secret-code';
+    const mailer = Mailer.create({
+      host: '127.0.0.1',
+      port: mock!.port,
+      secure: false,
+      startTls: false,
+      userEnv: 'TEST_SMTP_USER',
+      passEnv: 'TEST_SMTP_PASS',
+      redactor: new SecretRedactor(),
+    });
+    await mailer.send({
+      to: 'ops@example.com',
+      subject: 'dot stuffing',
+      text: 'release v1.2 is ready\r\n.hidden dotfile line',
+    });
+    const joined = mock!.lines.join('\n');
+    expect(joined).toContain('release v1.2 is ready');
+    expect(joined).not.toContain('v1..2');
+    expect(joined).toContain('..hidden dotfile line');
+  }, 15_000);
+
   it('fails loudly when SMTP credentials are missing', async () => {
     delete process.env.TEST_SMTP_USER;
     delete process.env.TEST_SMTP_PASS;

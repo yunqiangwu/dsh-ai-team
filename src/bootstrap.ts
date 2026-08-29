@@ -99,7 +99,7 @@ export function checkRequiredEnv(keys: readonly string[]): string[] {
 export async function scaffoldEnvFile(
   envPath: string,
   examplePath: string,
-): Promise<'created' | 'exists' | 'no-example' | 'error'> {
+): Promise<'created' | 'exists' | 'no-example'> {
   try {
     await access(envPath);
     return 'exists';
@@ -326,5 +326,3 @@ export async function bootstrapEnvironment(options: BootstrapOptions): Promise<B
 
   return report;
 }
-
-export { BUN_HOME };
