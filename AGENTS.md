@@ -25,7 +25,7 @@ README.md           人类入口：功能、快速开始、Config 字段语义�
 AGENTS.md           本文件：AI 代理仓库指南（架构铁律、连带改动表、已知坑）
 PILOT.md            操作者 runbook：首次真实环境无人值守怎么跑、看什么、出事怎么办
 docs/               其余文档一律在此，见「文档规范」
-  design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（提案，未实施）
+  design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（M0/M1 已实施，M2/M3 提案）
 src/
   index.ts        插件入口：四导出 name/inject/Config/apply，ctx.provide('autopilot')
   service.ts      AutopilotService —— 状态机宿主与全部编排（纯逻辑请落到 service/，别塞这里）
@@ -34,19 +34,22 @@ src/
     options.ts    AutopilotOptions：Config 校验映射之后的运行时形状
     state.ts      内部记录（= state.json 的形状）+ shortId/clip/noteLines 等共享纯函数
     description.ts 任务描述组装：注入顺序与「所有权 > 教训 > 正文」的预算倒排
+    contracts.ts  contract_create 的写前校验与渲染（id / 悬空依赖 / 成环 / 禁区 / 域数），纯函数不碰盘
     report.ts     完成报告渲染（落在 <stateDir>/completion.md）
   tools.ts        模型可见工具（defineTool 注册），每次变更 publish 一次快照
   vocab.ts        运行时枚举词表（ROLES / TASK_STATUSES / ESCALATION_REASONS …）：零依赖、浏览器安全
   schema.ts       zod 形状真相 + `z.infer` 派生视图类型：视图与投影校验的唯一来源，只依赖 zod 与 vocab
   view.ts         类型门面：`export * from './vocab.js'` + 纯类型 re-export（禁 node、禁值引用 schema）
   events.ts       session 事件与投影的类型声明合并（唯一词汇表）
-  projection.ts   `autopilot` 投影单元的注册（schema 已移到 schema.ts；stateVersion: 4）
+  projection.ts   `autopilot` 投影单元的注册（schema 已移到 schema.ts；stateVersion: 7）
   git.ts          git CLI 薄封装：远端 clone/push、push 安全规则、ref 名校验（assertSafeRef）
   team.ts         .tasks/*.md 契约解析 / 回写 / _board.md 生成、touches 重叠判断
   gates.ts        质量门执行器 + 命令白名单（CommandNotAllowedError）
   bootstrap.ts    裸机引导：探测工具链 → rootless 安装 → setup → verify
   deploy.ts       部署 + 健康检查（指数退避）+ 自动回滚
   escalate.ts     升级记录：打标、写任务单留言、发 webhook
+  questionnaire.ts 问卷实体（与 escalate 平级、绝不合并）：题目校验 / 答案归一 / 状态推进 / 画成工单字段
+  docdraft.ts     文档先行：draft 区读写与 frontmatter、章节定位回写、sha256 钉与升格、禁区比对
   notification.ts Mailer（自研 SMTP，仅用 node:net/tls）+ TicketServer（本地问卷工单）
   secrets.ts      密钥唯一出口：env 引用解析 + SecretRedactor 脱敏
   learnings.ts    知识回路纯逻辑：捕获去重 / 有界注入 / learnings.md 渲染（落 stateDir，真相源在 state.json）
@@ -58,7 +61,7 @@ src/
   client/         Web 端：面板、设置卡片、i18n 字典、样式、宿主契约（React 18，CJS 产物）
 preset/
   autopilot-team/ 插件自带的 agent preset 模板（agent.cordis.yml + preset.yml），随包发布，运行时拷到用户级预设根
-tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict 十一个测试文件 + smoke-cordis 冒烟（含预设落盘断言）
+tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict / questionnaire 十二个测试文件 + smoke-cordis 冒烟（含预设落盘断言）
 ```
 
 ## 运行时拓扑
@@ -124,6 +127,8 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 ## 状态机
 
 - 任务：`pending → in_progress → in_review → done`，`changes_requested` 打回，升级置 `needs-human`（人工处理后可回 `pending`）。
+- 团队阶段：`intake → kickoff_pending_approval → scaffolding → developing ⇄ replanning`。前三个阶段一律不派发（`dispatch` 门），只有 `developing` / `replanning` 会。`intake → kickoff_pending_approval` 由服务端推（需求问卷答完，或 `ask_human(kind: approval)` 把一份非空开工包标成待批），组长不能自己 `autopilot_phase` 越过去；`createTeam` 落在 `developing`（老 state.json 缺 `phase` 也兜底它）。
+- 问卷：`open → answered / expired / cancelled`。它与升级是两件事：一张 open 问卷让任务在面板上标「等人回答」，但**不**置 `needs-human`、不进升级直方图、不产生学习记录，并让 `checkStuck` 豁免这张任务（`checkBudget` 不豁免，所以永远没人答的单最终以 `budget-exceeded` 升级）。
 - 循环：`stopped / running / paused / escalated / completed`。崩溃恢复时持久化的 `running` 一律降为 `paused`，等 `autopilot_resume`。
 - 升级触发条件（命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 任务卡死 / 超出任务墙钟预算（`daemon.maxTaskHours`）/ 部署连续失败 / 引导失败。
 
@@ -160,7 +165,8 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 - `tests/test-exec.ts` **shell runner 的行为锁定**：超时折算成 exitCode 1、只有 abort 才 reject、`CI=true`、日志尾保留最后 4000 字符。改 `exec.ts` 时这组必须一条不改地通过，才是「纯搬家没改行为」。
 - `tests/test-allowlist.ts` **白名单判定语义**：命令替换 / 反引号 / 换行 / 裸 `&` 一律不给静默放行（含一条"标记文件没被创建"的证据断言，证明确实没 spawn），而重定向与 glob 仍放行 —— 判据见「安全硬规则 2」。
 - `tests/test-service-modules.ts` `service/` 下纯函数的直接单测（描述预算倒排、完成报告渲染、state 工具）。
-- `tests/smoke-cordis.ts` Loader 契约冒烟。
+- `tests/test-questionnaire.ts` 问卷闭环：独立实体（不产生升级/教训/直方图）、工单表单渲染与 400 重述、interactive 真 await 与超时兜底、答案 `[decision]` 回写、draft→accepted 审批链（含防「批 A 合 B」）、`contract_create` 写前校验。
+- `tests/smoke-cordis.ts` Loader 契约冒烟。⚠️ 它把**注册工具名清单整条锁死**，新增 tool 必须同步那份数组，否则 `pnpm test` 红在这一条上。
 - 新增断言优先用 `AutopilotOptions` 工厂 `testOptions(fixture, overrides)`，别手搓配置对象。
 - ⚠️ 校验顺序必须是 `typecheck && lint && build && test`：`smoke-cordis` 跑的是 `lib/` 产物，把 build 放在 test 之后会拿上一版 lib 测出**假失败**（本轮实测踩过）。
 
