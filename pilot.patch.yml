@@ -1,0 +1,38 @@
+# L0 试点首跑配置（dogfood：目标仓库 = 本仓库）。
+# 字段语义见 README「配置」；操作顺序见 PILOT.md。密钥一律环境变量名，值绝不写进本文件。
+- insert:
+    - id: autopilot
+      name: dsh-ai-team
+      config:
+        rootDir: .dsh-ai-team
+        baseBranch: main
+        remote:
+          url: git@github.com:yunqiangwu/dsh-ai-team.git
+          sshKeyEnv: AUTOPILOT_GIT_KEY
+          platform: github
+          apiTokenEnv: GITHUB_TOKEN
+        bootstrap:
+          enabled: false            # 本仓库没有 setup/e2e:local 脚本；首跑跳过引导
+        gates:
+          commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
+          requireCiGreen: true
+          timeoutMinutes: 30
+        daemon:
+          maxReviewRounds: 3
+          stuckMinutes: 45
+          pollIntervalSeconds: 30
+          maxTaskHours: 2           # 墙钟预算：试点必开（成本护栏）
+          maxDiffLines: 800         # 体量门：试点建议开（浅审是静默失败）
+          maxDiffFiles: 30
+        escalation:
+          label: needs-human
+          pauseOnEscalation: task
+          webhookUrlEnv: AUTOPILOT_WEBHOOK
+        deploy:
+          enabled: false            # 首跑不部署；部署在 L2 通过后单独验证
+        security:
+          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE']
+          commandAllowlist: [pnpm]  # gates 只跑 pnpm 脚本 → 白名单收到最小；勿放 sh/node/docker
+          pushRequiresGates: true
+        learnings:
+          enabled: true
