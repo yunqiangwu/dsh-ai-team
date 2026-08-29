@@ -1,10 +1,9 @@
 /**
- * Escalation & notification (spec §4.2 escalate, §4.3 escalation triggers).
+ * 升级与通知（spec §4.2 escalate，§4.3 升级触发条件）。
  *
- * An escalation: records the event, labels the task `needs-human`, appends a
- * human-readable note to the task file, and fires the configured webhook with
- * redacted context. It never throws for webhook failures — delivery status is
- * data on the record.
+ * 一次升级：记录事件、把任务标记为 `needs-human`、在任务文件上追加人类可读
+ * 的备注，并用脱敏后的上下文触发配置好的 webhook。它对 webhook 失败绝不抛错
+ * —— 投递状态本身就是记录上的数据。
  */
 import type { EscalationReason, EscalationView, EscalationNotification } from './view.js';
 import { resolveOptionalEnvRef, SecretRedactor } from './secrets.js';
@@ -18,9 +17,9 @@ export interface EscalationInput {
 }
 
 export interface EscalationSink {
-  /** Persist a note on the task contract file (.tasks/<id>.md). */
+  /** 在任务契约文件（.tasks/<id>.md）上持久化一条备注。 */
   writeTaskNote(taskId: string, note: string): Promise<void>;
-  /** Apply the human-attention label to the task. */
+  /** 给任务打上「需人工」标记。 */
   labelTask(taskId: string, label: string): Promise<void>;
 }
 
@@ -29,12 +28,11 @@ export interface EscalationManagerOptions {
   label: string;
   redactor: SecretRedactor;
   sink: EscalationSink;
-  /** Injectable for tests; defaults to global fetch. */
+  /** 测试可注入；默认取全局 fetch。 */
   fetchFn?: typeof fetch;
   /**
-   * Human-notification hook: raise an escalation, then attempt to reach a
-   * person (email a ticket link). Returns the notification state or null when
-   * notification is disabled. Never throws — delivery state is data.
+   * 人工通知钩子：发起升级后尝试联系到人（发一封带工单链接的邮件）。
+   * 返回通知状态，或在通知被禁用时返回 null。绝不抛错——投递状态就是数据。
    */
   notify?: (
     record: EscalationView,
@@ -63,8 +61,8 @@ export class EscalationManager {
   }
 
   /**
-   * Raise an escalation. Side effects: task note + label (when taskId given),
-   * webhook POST (when configured). Returns the stored record.
+   * 发起一次升级。副作用：任务备注 + 标记（当给出 taskId 时）、webhook POST
+   *（当已配置时）。返回存储下来的记录。
    */
   async escalate(input: EscalationInput): Promise<EscalationView> {
     const redactor = this.options.redactor;
@@ -96,10 +94,9 @@ export class EscalationManager {
 
     record.webhookDelivered = await this.deliverWebhook(record);
 
-    // Human-notification is best-effort: a failing mailer must never block the
-    // escalation record. The notify hook lives in the service (it closes over
-    // the TicketServer + Mailer) but is invoked here so delivery state is
-    // captured on the record in one place.
+    // 人工通知是尽力而为的：失败的邮件器绝不能阻塞升级记录。notify 钩子住在
+    // service 里（它闭包引用了 TicketServer + Mailer），但在这里被调用，这样
+    // 投递状态能在一个地方被落到记录上。
     if (this.options.notify !== undefined) {
       try {
         record.notification = await this.options.notify(record);
@@ -119,7 +116,7 @@ export class EscalationManager {
     return record;
   }
 
-  /** Mark an escalation resolved (human triaged the task back to pending). */
+  /** 标记一条升级已解决（人类把任务分诊回 pending）。 */
   resolve(escalationId: string): void {
     const record = this.records.find((candidate) => candidate.id === escalationId);
     if (record !== undefined) record.resolvedAt = Date.now();

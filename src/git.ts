@@ -1,15 +1,12 @@
 /**
- * Thin promisified wrapper around the `git` CLI. Repository topology:
+ * `git` CLI 的 Promise 薄封装。仓库拓扑：
  *
- *   <rootDir>/<teamId>/repo                 shared repository (integration
- *                                           checkout, always on baseBranch)
- *   <rootDir>/<teamId>/workspaces/<memberId> one isolated git worktree per
- *                                           member, sharing the same object
- *                                           store.
+ *   <rootDir>/<teamId>/repo                  共享仓库（集成检出，始终在 baseBranch）
+ *   <rootDir>/<teamId>/workspaces/<memberId>  每个成员一个隔离的 git worktree，
+ *                                             共享同一个 object store。
  *
- * This module adds the remote side: clone of a (possibly empty) remote,
- * authenticated push via GIT_SSH_COMMAND built from an env-var reference,
- * and the push safety rules of spec §4.5.
+ * 本模块补齐了远端一侧：（可能为空的）远端 clone、基于环境变量引用构造
+ * GIT_SSH_COMMAND 的鉴权 push，以及 spec §4.5 的 push 安全规则。
  */
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -86,8 +83,8 @@ async function hasCommits(path: string): Promise<boolean> {
 }
 
 /**
- * Ensure `path` is a git repository on `baseBranch` with at least one commit
- * (worktrees and merges need a HEAD to fork from).
+ * 确保 `path` 是位于 `baseBranch` 上、且至少有一个提交的 git 仓库
+ *（worktree 与合并都需要一个 HEAD 作为 fork 起点）。
  */
 export async function ensureRepo(path: string, baseBranch: string): Promise<void> {
   await mkdir(path, { recursive: true });
@@ -99,7 +96,7 @@ export async function ensureRepo(path: string, baseBranch: string): Promise<void
   }
 }
 
-/** Create branch `branch` from `startPoint` and check it out in a new worktree. */
+/** 从 `startPoint` 创建分支 `branch` 并在一个新的 worktree 中检出。 */
 export async function addWorktree(
   repoPath: string,
   worktreePath: string,
@@ -115,12 +112,12 @@ export async function addWorktree(
   }
 }
 
-/** Remove a worktree (member removal / explicit cleanup). Never deletes the repo. */
+/** 移除一个 worktree（成员移除 / 显式清理）。绝不删除仓库本身。 */
 export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   await git(['worktree', 'remove', '--force', worktreePath], repoPath);
 }
 
-/** Local branch short names; empty array on a repo without commits. */
+/** 本地分支短名；仓库没有提交时返回空数组。 */
 export async function listBranches(repoPath: string): Promise<string[]> {
   try {
     const out = await git(['branch', '--format=%(refname:short)'], repoPath);
@@ -130,31 +127,30 @@ export async function listBranches(repoPath: string): Promise<string[]> {
   }
 }
 
-/** Branch currently checked out in a worktree ('HEAD' when detached). */
+/** worktree 当前检出的分支（detached 时返回 'HEAD'）。 */
 export async function currentBranch(worktreePath: string): Promise<string> {
   return git(['branch', '--show-current'], worktreePath);
 }
 
-/** Create `branch` from `startPoint` without checking it out anywhere. */
+/** 从 `startPoint` 创建分支 `branch`，且不检出到任何地方。 */
 export async function createBranch(repoPath: string, branch: string, startPoint: string): Promise<void> {
   await git(['branch', branch, startPoint], repoPath);
 }
 
-/** Check out an existing branch inside a member's worktree. */
+/** 在成员的 worktree 内检出已存在的分支。 */
 export async function checkout(worktreePath: string, branch: string): Promise<void> {
   await git(['checkout', branch], worktreePath);
 }
 
 /**
- * Merge `source` into `target`. The integration checkout (repoPath) normally
- * sits on the base branch; for a non-base target we temporarily check it out
- * there and restore the base branch afterwards.
+ * 把 `source` 合并进 `target`。集成检出（repoPath）通常停在基础分支上；
+ * 目标不是基础分支时，我们临时切过去、合并完再恢复基础分支。
  *
- * `strategy` controls the merge commit shape:
- *  - `no-ff` (default, historical) — a merge commit with both parents;
- *  - `squash` — a single commit holding the whole diff, keeping `target`
- *    linear and independently revertible (the AgentDeploy rule);
- *  - `merge` — a fast-forward-or-merge-commit without `--no-ff`.
+ * `strategy` 控制合并提交的形状：
+ *  - `no-ff`（默认，历史行为）—— 带两个父提交的合并提交；
+ *  - `squash` —— 一个容纳整个差异的提交，让 `target` 保持线性、可独立回滚
+ *    （AgentDeploy 规则）；
+ *  - `merge` —— 不强制 `--no-ff` 的快进或合并提交。
  */
 export async function mergeBranch(
   repoPath: string,
@@ -168,14 +164,14 @@ export async function mergeBranch(
   if (restore) await git(['checkout', target], repoPath);
   try {
     if (strategy === 'squash') {
-      // --squash stages the whole diff without creating a merge commit; we
-      // then commit it with the plugin identity so the base stays linear.
+      // --squash 暂存整个差异但不创建合并提交；随后我们用插件身份提交它，
+      // 这样基础分支保持线性。
       await git(['merge', '--squash', source], repoPath);
       await git(
         [...COMMITTER, 'commit', '-m', message ?? `merge: ${source} into ${target}`],
         repoPath,
       ).catch(() => {
-        // No staged changes (already merged / empty diff) — nothing to commit.
+        // 没有暂存的变更（已合并 / 空差异）—— 无需提交。
       });
     } else if (strategy === 'merge') {
       await git([...COMMITTER, 'merge', '-m', message ?? `merge: ${source} into ${target}`, source], repoPath);
@@ -190,15 +186,15 @@ export async function mergeBranch(
   }
 }
 
-/** Hard-delete a local branch (used when pruning finished task branches). */
+/** 硬删除一个本地分支（用于清理已结束的任务分支）。 */
 export async function deleteBranch(repoPath: string, branch: string): Promise<void> {
   await git(['branch', '-D', branch], repoPath);
 }
 
 /**
- * Stage everything under `pathspec` and commit with the plugin identity.
- * No-op when there is nothing to commit. Keeps the integration checkout
- * clean after task-contract rewrites (.tasks/*.md, _board.md).
+ * 暂存 `pathspec` 下的所有内容并以插件身份提交。
+ * 没有可提交内容时是空操作。这样能让集成检出在任务契约重写
+ *（.tasks/*.md、_board.md）后保持干净。
  */
 export async function commitAll(repoPath: string, pathspec: string, message: string): Promise<void> {
   await git(['add', '--', pathspec], repoPath);
@@ -208,12 +204,11 @@ export async function commitAll(repoPath: string, pathspec: string, message: str
   });
 }
 
-// ── remote operations ───────────────────────────────────────────────────────
+// ── 远端操作 ───────────────────────────────────────────────────────────────
 
 /**
- * Build the environment for authenticated remote operations. The SSH private
- * key is passed by VALUE through a temp file (mode 0600, removed by the
- * caller's finally) — the key material never touches the repo or the config.
+ * 为带鉴权的远端操作构造环境。SSH 私钥以值的形式经临时文件传入
+ *（mode 0600，由调用方的 finally 删除）—— 密钥内容绝不接触仓库或配置。
  */
 export async function sshEnvForKey(keyValue: string): Promise<{ env: Record<string, string>; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-ai-team-key-'));
@@ -230,9 +225,8 @@ export async function sshEnvForKey(keyValue: string): Promise<{ env: Record<stri
 }
 
 /**
- * Clone `url` into `dest`. Works for empty repositories: after the clone the
- * checkout may be unborn, in which case we create the base branch with an
- * initial empty commit so worktrees can fork from it.
+ * 把 `url` 克隆到 `dest`。支持空仓库：克隆后检出可能是 unborn 状态，
+ * 此时我们用一次初始空提交创建基础分支，让 worktree 可以从中 fork。
  */
 export async function cloneRemote(
   url: string,
@@ -244,8 +238,8 @@ export async function cloneRemote(
   try {
     await git(['clone', '--origin', 'origin', url, dest], dest, { env });
   } catch (error) {
-    // Cloning an empty remote succeeds with a warning on most git versions,
-    // but older versions exit non-zero after creating the directory.
+    // 克隆空远端时大多数 git 版本会带 warning 成功，
+    // 但旧版本在创建目录后会以非零退出。
     if (!(await isRepo(dest))) throw error;
   }
   if (!(await hasCommits(dest))) {
@@ -259,21 +253,20 @@ export async function cloneRemote(
   }
 }
 
-/** True when `url` looks like an SSH remote (git@host:path or ssh://). */
+/** `url` 是否为 SSH 远端（git@host:path 或 ssh://）。 */
 export function isSshRemote(url: string): boolean {
   return url.startsWith('git@') || url.startsWith('ssh://');
 }
 
-/** Fetch all refs from origin. */
+/** 从 origin 抓取所有引用。 */
 export async function fetchRemote(repoPath: string, env?: Record<string, string>): Promise<void> {
   await git(['fetch', 'origin', '--prune'], repoPath, { env });
 }
 
 /**
- * Push `branch` to origin with the safety rules of spec §4.5.5 baked in:
- *  - force push is only ever allowed on task branches, and only as
- *    --force-with-lease;
- *  - everything else is a plain fast-forward push.
+ * 把 `branch` 推到 origin，内置规范 §4.5.5 的安全规则：
+ *  - 强制推送只允许发生在任务分支上，且只能用 --force-with-lease；
+ *  - 其它一律是普通快进推送。
  */
 export async function pushBranch(
   repoPath: string,
@@ -294,7 +287,7 @@ export async function pushBranch(
   await git(args, repoPath, { env: options?.env });
 }
 
-/** Resolve the sha of a (possibly remote) ref; null when it does not exist. */
+/** 解析一个（可能为远端的）引用的 sha；不存在时返回 null。 */
 export async function resolveRef(repoPath: string, ref: string): Promise<string | null> {
   try {
     return await git(['rev-parse', '--verify', ref], repoPath);
@@ -303,16 +296,15 @@ export async function resolveRef(repoPath: string, ref: string): Promise<string 
   }
 }
 
-/** List files changed between two refs (diff --name-only). */
+/** 列出两个引用之间变更的文件（diff --name-only）。 */
 export async function changedFiles(repoPath: string, fromRef: string, toRef: string): Promise<string[]> {
   const out = await git(['diff', '--name-only', fromRef, toRef], repoPath);
   return out === '' ? [] : out.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
 /**
- * Pre-push guard (spec §4.5.3): reject when any path changed between
- * `fromRef..toRef` matches a forbidden prefix (human-only zone).
- * Returns the offending paths (empty array = clean).
+ * 推送前守卫（规范 §4.5.3）：当 `fromRef..toRef` 之间任何变更的路径命中禁用前缀
+ * （human-only 区）时拒绝。返回违规路径（空数组 = 干净）。
  */
 export async function forbiddenPathViolations(
   repoPath: string,
@@ -324,7 +316,7 @@ export async function forbiddenPathViolations(
   return files.filter((file) => forbiddenPaths.some((prefix) => file.startsWith(prefix) || file === prefix.replace(/\/$/, '')));
 }
 
-/** Number of commits on `branch` not reachable from `sinceRef` (git activity probe). */
+/** `branch` 上从 `sinceRef` 不可达的提交数（git 活动探针）。 */
 export async function countNewCommits(repoPath: string, branch: string, sinceRef: string): Promise<number> {
   try {
     const out = await git(['rev-list', '--count', `${sinceRef}..${branch}`], repoPath);
@@ -334,7 +326,7 @@ export async function countNewCommits(repoPath: string, branch: string, sinceRef
   }
 }
 
-/** Unix timestamp of the latest commit on a ref; null when none. */
+/** 某个引用上最新提交的 Unix 时间戳；无提交时返回 null。 */
 export async function lastCommitAt(repoPath: string, ref: string): Promise<number | null> {
   try {
     const out = await git(['log', '-1', '--format=%ct', ref], repoPath);

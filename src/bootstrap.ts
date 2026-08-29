@@ -1,12 +1,12 @@
 /**
- * Bare-machine bootstrap (spec §4.2 autopilot_init):
+ * 裸机 bootstrap（spec §4.2 autopilot_init）：
  *
- *   detect toolchain → rootless-install what's missing → run the repo's
- *   setupCommand → run verifyCommand as an environment self-check.
+ *   探测工具链 → rootless 安装缺失项 → 执行仓库的
+ *   setupCommand → 执行 verifyCommand 作为环境自检。
  *
- * Everything runs through the command allowlist; every output is redacted.
- * Installers are fixed, audited commands (Bun official script → ~/.bun),
- * never model-generated shell.
+ * 所有命令都经由命令白名单执行；所有输出都会脱敏。
+ * 安装脚本是固定的、经过审计的命令（Bun 官方脚本 → ~/.bun），
+ * 绝不使用模型生成的 shell。
  */
 import { execFile } from 'node:child_process';
 import { access, copyFile } from 'node:fs/promises';
@@ -29,12 +29,12 @@ export interface BootstrapReport {
   verifyRan: boolean;
   verifyPassed: boolean;
   verifyLogTail: string | null;
-  /** System packages that were installed via packageManagerCommand. */
+  /** 通过 packageManagerCommand 安装的系统包。 */
   systemPackages: string[];
-  /** Env file path that was scaffolded from envExample, when applicable. */
+  /** 由 envExample 生成的 env 文件路径（若适用）。 */
   envFile: string | null;
   envScaffolded: boolean;
-  /** Env-var names required by the project but currently unset. */
+  /** 项目需要但当前未设置的环境变量名。 */
   missingEnvKeys: string[];
 }
 
@@ -56,7 +56,7 @@ const VERSION_FLAGS: Record<string, string[]> = {
   docker: ['--version'],
 };
 
-/** Probe a single tool: resolve its binary and version. */
+/** 探测单个工具：解析其可执行文件与版本。 */
 export async function probeTool(tool: string, extraPaths: string[] = []): Promise<ToolchainProbe> {
   const flag = VERSION_FLAGS[tool] ?? ['--version'];
   const candidates = [tool, ...extraPaths.map((dir) => join(dir, tool))];
@@ -70,7 +70,7 @@ export async function probeTool(tool: string, extraPaths: string[] = []): Promis
       });
       return { tool, available: true, version: versionOut.trim().split('\n')[0] ?? null };
     } catch {
-      // try next candidate path
+      // 尝试下一个候选路径
     }
   }
   return { tool, available: false, version: null };
@@ -80,9 +80,8 @@ const BUN_HOME = join(homedir(), '.bun', 'bin');
 const NODE_HOME = join(homedir(), '.node', 'bin');
 
 /**
- * Return the subset of `keys` that are not set in the environment. Used to
- * fail-loud (with the exact key names) when the project requires secrets the
- * bare machine has not been given, instead of a generic setup error.
+ * 返回 `keys` 中尚未在环境里设置的那些键。当项目需要裸机尚未提供的密钥时，
+ * 用它来显式报错（给出确切的键名），而不是抛出笼统的 setup 错误。
  */
 export function checkRequiredEnv(keys: readonly string[]): string[] {
   return keys.filter((key) => {
@@ -92,9 +91,9 @@ export function checkRequiredEnv(keys: readonly string[]): string[] {
 }
 
 /**
- * Scaffold a `.env` file from a committed example (e.g. `.env.example`).
- * Never overwrites an existing file, and silently no-ops when there is no
- * example. Returns what happened so the bootstrap report can surface it.
+ * 根据已提交的示例文件（如 `.env.example`）生成 `.env` 文件。
+ * 绝不覆盖已存在的文件；若示例文件不存在则静默跳过。
+ * 返回实际发生的情况，以便 bootstrap 报告呈现出来。
  */
 export async function scaffoldEnvFile(
   envPath: string,
@@ -104,7 +103,7 @@ export async function scaffoldEnvFile(
     await access(envPath);
     return 'exists';
   } catch {
-    // envPath absent — fall through.
+    // envPath 不存在 — 继续往下。
   }
   try {
     await copyFile(examplePath, envPath);
@@ -115,9 +114,8 @@ export async function scaffoldEnvFile(
 }
 
 /**
- * Rootless install of a missing tool. Currently supported: bun (official
- * install script into ~/.bun). Anything else must be provisioned by a human
- * (reported back so autopilot_init escalates with a precise message).
+ * 以 rootless 方式安装缺失的工具。目前支持：bun（官方安装脚本，装到 ~/.bun）。
+ * 其他工具必须由人工提供（结果会回报，以便 autopilot_init 带着精确信息升级上报）。
  */
 export async function installTool(
   tool: string,
@@ -130,16 +128,15 @@ export async function installTool(
     return { ok: result.exitCode === 0, logTail: result.logTail };
   }
   if (tool === 'pnpm') {
-    // pnpm via corepack (bundled with node) or standalone script.
+    // pnpm 通过 corepack（node 自带）或独立脚本安装。
     const result = await runShell('corepack enable pnpm || curl -fsSL https://get.pnpm.io/install.sh | sh -', homedir(), redactor, signal);
     return { ok: result.exitCode === 0, logTail: result.logTail };
   }
   if (tool === 'node') {
-    // Rootless Node via the official portable tarball into ~/.node. Best
-    // effort: the build chain (nuxt / pnpm CLI) is a Node program, and a bare
-    // Linux box may not have it. We do NOT put bare-metal packages (build-essential
-    // / python3 / make / g++ for native modules like better-sqlite3) here — those
-    // belong in `systemPackages` via a configured package-manager command.
+    // 通过官方 portable tarball 以 rootless 方式把 Node 装到 ~/.node。尽最大努力即可：
+    // 构建链（nuxt / pnpm CLI）本身就是 Node 程序，而裸 Linux 机器可能没有。
+    // 这里不放裸机系统包（供 better-sqlite3 这类原生模块使用的 build-essential
+    // / python3 / make / g++）—— 它们应通过配置好的包管理器命令放进 `systemPackages`。
     const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
     const command = `curl -fsSL https://nodejs.org/dist/latest-v22.x/ | grep -m1 -oE 'node-v[0-9]+\\.[0-9]+\\.[0-9]+-linux-${arch}\\.tar\\.xz' | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' | tail -1 | xargs -I{} sh -c 'curl -fsSL https://nodejs.org/dist/{}/node-{}-linux-${arch}.tar.xz | tar -xJ -C "$HOME/.node" --strip-components=1'`;
     const result = await runShell(command, homedir(), redactor, signal);
@@ -151,7 +148,7 @@ export async function installTool(
   };
 }
 
-/** Locations probed and added to PATH for rootless toolchains. */
+/** rootless 工具链的探测位置，会被加入 PATH。 */
 const EXTRA_BIN_DIRS = [BUN_HOME, NODE_HOME];
 
 async function runShell(
@@ -190,31 +187,30 @@ export interface BootstrapOptions {
   toolchain: readonly string[];
   setupCommand: string;
   verifyCommand: string;
-  /** Repository checkout the setup/verify commands run in. */
+  /** setup/verify 命令运行的仓库检出目录。 */
   repoPath: string;
   allowlist: readonly string[];
   redactor: SecretRedactor;
   signal?: AbortSignal;
   /**
-   * System packages to provision for native-module builds (e.g.
-   * `['python3', 'make', 'g++']` for node-gyp modules such as better-sqlite3).
-   * Installed via `packageManagerCommand`; must be allowlisted.
+   * 为原生模块构建准备的系统包（例如 better-sqlite3 这类 node-gyp 模块
+   * 需要 `['python3', 'make', 'g++']`）。
+   * 通过 `packageManagerCommand` 安装；必须在白名单内。
    */
   systemPackages?: readonly string[] | undefined;
-  /** Package-manager command (allowlist-checked), e.g. `sudo apt-get install -y`. */
+  /** 包管理器命令（会做白名单校验），例如 `sudo apt-get install -y`。 */
   packageManagerCommand?: string | undefined;
-  /** Path to scaffold a `.env` from the committed example, when absent. */
+  /** 当 `.env` 缺失时，根据已提交示例生成它的路径。 */
   envFile?: string | undefined;
-  /** Path to the committed `.env.example`. */
+  /** 已提交的 `.env.example` 的路径。 */
   envExample?: string | undefined;
-  /** Env-var names the project requires at boot; missing ones fail loud. */
+  /** 项目启动时需要设置的环境变量名；缺失时显式报错。 */
   requiredEnvKeys?: readonly string[] | undefined;
 }
 
 /**
- * Full bootstrap sequence. Throws BootstrapError (carrying the report) when
- * the toolchain cannot be satisfied or setup/verify fail — the caller
- * escalates with the report attached.
+ * 完整的 bootstrap 流程。当工具链无法满足或 setup/verify 失败时，
+ * 抛出 BootstrapError（附带报告）—— 调用方会带着报告升级上报。
  */
 export async function bootstrapEnvironment(options: BootstrapOptions): Promise<BootstrapReport> {
   const report: BootstrapReport = {
@@ -231,7 +227,7 @@ export async function bootstrapEnvironment(options: BootstrapOptions): Promise<B
     missingEnvKeys: [],
   };
 
-  // 1. Probe, then rootless-install what is missing.
+  // 1. 探测工具链，然后 rootless 安装缺失项。
   for (const tool of options.toolchain) {
     let probe = await probeTool(tool, EXTRA_BIN_DIRS);
     if (!probe.available) {
@@ -251,7 +247,7 @@ export async function bootstrapEnvironment(options: BootstrapOptions): Promise<B
     );
   }
 
-  // 1b. Provision native-build system packages (allowlist-checked).
+  // 1b. 准备原生构建所需的系统包（会做白名单校验）。
   const systemPackages = options.systemPackages ?? [];
   if (systemPackages.length > 0) {
     const pm = options.packageManagerCommand ?? '';
@@ -274,7 +270,7 @@ export async function bootstrapEnvironment(options: BootstrapOptions): Promise<B
     }
   }
 
-  // 1c. Scaffold .env from the committed example, then fail-loud on missing keys.
+  // 1c. 根据已提交的示例生成 .env，然后在缺少键时显式报错。
   if (options.envFile !== undefined && options.envFile !== '') {
     const state = await scaffoldEnvFile(options.envFile, options.envExample ?? '');
     report.envScaffolded = state === 'created';
@@ -287,7 +283,7 @@ export async function bootstrapEnvironment(options: BootstrapOptions): Promise<B
     );
   }
 
-  // 2. setup / verify commands must pass the allowlist like any member command.
+  // 2. setup / verify 命令必须像任何成员命令一样通过白名单校验。
   for (const command of [options.setupCommand, options.verifyCommand]) {
     if (commandHead(command) !== '' && !isAllowed(command, options.allowlist)) {
       throw new BootstrapError(

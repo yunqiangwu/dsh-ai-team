@@ -148,7 +148,7 @@ const autopilotProjectionSchema = zod.object({
   blocked: zod.array(zod.string()),
 });
 
-/** Register the projection unit when the projection seam is available. */
+/** 当投影缝可用时注册投影单元。 */
 export function registerAutopilotProjection(ctx: Context): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
     projectionCtx.sessionProjections.register({
@@ -160,7 +160,7 @@ export function registerAutopilotProjection(ctx: Context): void {
         viewSchema: autopilotProjectionSchema.nullable(),
         view: (state): AutopilotProjection | null => state,
       },
-      // v2: escalation views gained a `notification` block. Bump on shape change.
+      // v2：escalation 视图新增了 `notification` 块。变更形状时需递增。
       stateVersion: 2,
     });
   });

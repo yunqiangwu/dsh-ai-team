@@ -1,11 +1,10 @@
 /**
- * Task-contract integration (spec §4.4).
+ * 任务契约集成（spec §4.4）。
  *
- * The single source of truth for tasks lives in the target repository at
- * `.tasks/*.md`: YAML frontmatter (`id` / `status` / `owner` / `depends_on` /
- * `touches`) plus a Markdown body with Gherkin acceptance criteria. The
- * plugin reads contracts to validate assignments and rewrites frontmatter +
- * regenerates `.tasks/_board.md` on every state change.
+ * 任务的唯一真相源位于目标仓库的 `.tasks/*.md`：YAML frontmatter
+ * （`id` / `status` / `owner` / `depends_on` / `touches`）加上带 Gherkin
+ * 验收标准的 Markdown 正文。插件读取契约来校验派发，并在每次状态变更时重写
+ * frontmatter、重新生成 `.tasks/_board.md`。
  */
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -20,17 +19,17 @@ export interface TaskContract {
   owner: string | null;
   dependsOn: string[];
   touches: string[];
-  /** Restricted paths declared by the task (per-task forbidden zones). */
+  /** 任务声明的受限路径（按任务划分的禁区）。 */
   forbidden: string[];
-  /** Absolute path of the contract file. */
+  /** 契约文件的绝对路径。 */
   path: string;
-  /** Markdown body (acceptance criteria etc.), frontmatter excluded. */
+  /** Markdown 正文（验收标准等），不含 frontmatter。 */
   body: string;
 }
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 
-/** Parse one `.tasks/*.md` file. Throws on malformed frontmatter. */
+/** 解析一个 `.tasks/*.md` 文件。frontmatter 格式错误时抛错。 */
 export function parseTaskContract(path: string, content: string): TaskContract {
   const match = FRONTMATTER_RE.exec(content);
   if (match === null) {
@@ -63,7 +62,7 @@ function toStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
-/** Load every task contract in <repoPath>/.tasks (files ending in .md, _board excluded). */
+/** 加载 <repoPath>/.tasks 里的每个任务契约（以 .md 结尾，排除 _board）。 */
 export async function loadTaskContracts(repoPath: string): Promise<TaskContract[]> {
   const dir = join(repoPath, '.tasks');
   let entries: string[];
@@ -88,15 +87,14 @@ interface FrontmatterPatch {
 }
 
 /**
- * Set (or remove) a single top-level frontmatter key **in place**, preserving
- * the byte-for-byte ordering and formatting of every other line. Re-stringifying
- * the whole frontmatter with a YAML serializer can reorder keys / reflow block
- * lists, which trips projects' strict `validate:docs` checks (e.g. AgentDeploy).
+ * 就地设置（或删除）一个顶层 frontmatter key，**逐字节**保留其它每一行的
+ * 顺序与格式。用 YAML 序列化器重新字符串化整个 frontmatter 会重排 key / 重排
+ * 块级列表，触发项目严格的 `validate:docs` 检查（例如 AgentDeploy）。
  */
 function setFrontmatterKey(frontmatter: string, key: string, value: string | null): string {
   const matcher = new RegExp(`^${key}:.*$`, 'm');
   if (value === null) {
-    // Remove the key line (owner cleared). Collapse a resulting blank line.
+    // 删除该 key 行（owner 被清空），并把产生的空行折叠掉。
     const without = frontmatter.replace(matcher, '');
     return without.replace(/^\n+/, '').trimEnd();
   }
@@ -120,15 +118,15 @@ export async function patchTaskContract(path: string, patch: FrontmatterPatch): 
   await writeFile(path, `---\n${frontmatter}\n---\n${body}`, 'utf8');
 }
 
-/** Append a human/agent note (escalation messages, progress) to a contract body. */
+/** 在契约正文上追加一条人类/AI 备注（升级消息、进度）。 */
 export async function appendTaskNote(path: string, note: string): Promise<void> {
   const content = await readFile(path, 'utf8').catch(() => '');
   await writeFile(path, `${content.trimEnd()}\n${note}`, 'utf8');
 }
 
 /**
- * Regenerate `.tasks/_board.md` from the current contracts (status table +
- * blocked list). Never hand-edited; called after every status change.
+ * 根据当前契约重新生成 `.tasks/_board.md`（状态表 + 阻塞清单）。
+ * 绝不手改；每次状态变更后被调用。
  */
 export async function regenerateBoard(repoPath: string, contracts: TaskContract[]): Promise<void> {
   const lines: string[] = [
@@ -156,8 +154,8 @@ export async function regenerateBoard(repoPath: string, contracts: TaskContract[
 }
 
 /**
- * Domain-lock check (spec §4.3.3): the touches directories of in-progress
- * tasks are locked; a candidate overlapping any of them must not dispatch.
+ * 领域锁检查（spec §4.3.3）：进行中任务的 touches 目录被锁定，
+ * 与其中任何目录重叠的候选任务不得派发。
  */
 export function touchesOverlap(a: readonly string[], b: readonly string[]): boolean {
   for (const left of a) {

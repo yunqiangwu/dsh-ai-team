@@ -1,7 +1,7 @@
 /**
- * Panel styles, injected once per document. Plain CSS with a dsh-ai-team__
- * prefix to avoid collisions; colors follow the host theme via currentColor
- * and neutral alpha overlays, with semantic accents for status.
+ * 面板样式，每个 document 只注入一次。使用 dsh-ai-team__ 前缀的纯 CSS
+ * 以避免命名冲突；配色通过 currentColor 与中性 alpha 叠加层跟随宿主主题，
+ * 并为状态提供语义化强调色。
  */
 const CSS = `
 .dsh-ai-team { border: 1px solid rgba(127,127,127,.25); border-radius: 12px; margin: 8px 0; overflow: hidden; font-size: 12px; }
@@ -49,7 +49,7 @@ const CSS = `
 .dsh-ai-team__feed-check { color: #22c55e; }
 .dsh-ai-team__deploy { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed rgba(127,127,127,.2); }
 .dsh-ai-team__empty { opacity: .5; font-style: italic; }
-/* ── Plugin settings card (settings.plugin.item / autopilot namespace) ── */
+/* ── 插件设置卡片（settings.plugin.item / autopilot namespace） ── */
 .dsh-ai-team__config { display: flex; flex-direction: column; gap: 12px; }
 .dsh-ai-team__config-intro { margin: 0 0 2px; font-size: 12px; opacity: .6; }
 .dsh-ai-team__config-field { display: flex; flex-direction: column; gap: 4px; }
@@ -68,7 +68,7 @@ const CSS = `
 
 let injected = false;
 
-/** Inject the stylesheet once; safe to call on every client plugin load. */
+/** 只注入一次样式表；每次客户端插件加载时调用都是安全的。 */
 export function ensurePanelStyles(): void {
   if (injected || typeof document === 'undefined') return;
   injected = true;

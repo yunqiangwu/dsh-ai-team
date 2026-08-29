@@ -1,11 +1,10 @@
 /**
- * The ONE home of dsh-ai-team's session-log vocabulary: the
- * `autopilot/update` whole-state snapshot event plus the `autopilot`
- * projection key, declared via declaration merging exactly like the official
- * plugins. Pure types — no runtime imports — so both halves can pull this in.
+ * dsh-ai-team 会话日志词汇表的唯一家：`autopilot/update` 全量状态快照事件，
+ * 外加 `autopilot` 投影 key，通过与官方插件完全一致的声明合并完成。纯类型 ——
+ * 无运行时 import —— 因此 host 与 client 两侧都能引入。
  *
- * Whole-value rule: every `autopilot/update` carries the complete replacement
- * AutopilotProjection, so the projection fold is last-write-wins.
+ * 整值规则：每条 `autopilot/update` 都携带完整的替代 AutopilotProjection，
+ * 因此投影折叠是 last-write-wins。
  */
 import type { AutopilotProjection } from './view.js';
 // Pull the augmented modules into the program so the declaration merges
@@ -17,7 +16,7 @@ import type {} from '@deepseek-ai/dsh-session-projection/types';
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
-    /** Whole-state snapshot of the autopilot; latest write wins on replay. */
+    /** autopilot 的全量状态快照；重放时最新写者获胜。 */
     'autopilot/update': {
       state: AutopilotProjection;
     };
@@ -27,14 +26,13 @@ declare module '@deepseek-ai/dsh-session/types' {
 declare module '@deepseek-ai/dsh-session-projection/types' {
   interface SessionProjectionMap {
     /**
-     * Loop state, teams, task board, gate results, escalation feed and
-     * deploy history rendered by the autopilot panel, or null before the
-     * first update.
+     * autopilot 面板渲染的循环状态、团队、任务看板、门结果、升级流与部署历史，
+     * 或在首次更新前为 null。
      */
     autopilot: AutopilotProjection | null;
   }
   interface SessionProjectionStateMap {
-    /** Host fold state for the autopilot unit: same whole-value snapshot. */
+    /** autopilot 单元的 host 折叠状态：同一份整值快照。 */
     autopilot: AutopilotProjection | null;
   }
 }

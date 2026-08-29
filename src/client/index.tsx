@@ -3,7 +3,7 @@ import { AutopilotPanel } from './AutopilotPanel.js';
 import { AutopilotSettingsCard } from './settings-card.js';
 import type { ClientContext } from './contract.js';
 
-/** Required services: sessions (projection seat), slots, locale, settings scope. */
+/** 依赖的服务：sessions（projection 席位）、slots、locale、settings scope。 */
 export const inject = ['sessions', 'slots', 'locale', 'settingsScope'];
 
 const zh = {
@@ -138,7 +138,7 @@ const en: Record<keyof typeof zh, string> = {
   'config.save': 'Save',
 };
 
-/** Client plugin body. */
+/** 客户端插件主体。 */
 export function apply(ctx: ClientContext): void {
   ensurePanelStyles();
   ctx.effect(() => ctx.locale.register('autopilot', { zh, en }), 'autopilot: dictionaries');
@@ -153,8 +153,8 @@ export function apply(ctx: ClientContext): void {
       AutopilotPanel,
     ),
   );
-  // Settings card: pairs the `autopilot` Host namespace with a browser card.
-  // Keyed on the namespace so the Plugins config tab matches the two ledgers.
+  // 设置卡片：把 `autopilot` 这个 Host namespace 与浏览器端卡片配对。
+  // 以 namespace 作为 key，这样插件配置页才能把两份账对上。
   const autopilotScope = ctx.settingsScope.bind<Record<string, unknown>>({ namespace: 'autopilot' });
   ctx.slots.inject('settings.plugin.item', () =>
     ctx.slots.register(

@@ -1,26 +1,21 @@
 /**
- * Human-notification loop — how the unattended daemon reaches a person when it
- * needs one (spec §4.4 "needs-human": confirm a decision, provide a secret,
- * answer a question).
+ * 人工通知闭环 —— 无人值守的守护进程在需要人时如何联系到人
+ * （spec §4.4 "needs-human"：确认决策、提供密钥、回答问题）。
  *
- * Two halves, deliberately decoupled from the daemon loop and from cordis:
+ * 由两半组成，刻意与守护进程主循环以及 cordis 解耦：
  *
- * 1. **`Mailer`** — an SMTP client built on Node's built-in `net`/`tls` (no
- *    third-party dependency, so it works on a bare host with only Node
- *    present). Credentials are read from env var NAMES and registered with the
- *    SecretRedactor so nothing sensitive ever hits a log. It sends the
- *    human-readable summary plus a ticket link.
+ * 1. **`Mailer`** —— 基于 Node 内置 `net`/`tls` 实现的 SMTP 客户端（无第三方
+ *    依赖，因此在只装了 Node 的裸机上也可用）。凭据按 env var NAMES 读取，并
+ *    注册到 SecretRedactor，确保敏感信息绝不落入日志。它负责发送人类可读的
+ *    摘要以及工单链接。
  *
- * 2. **`TicketServer`** — a tiny local HTTP endpoint serving one form per
- *    escalation (`GET /ticket/<id>`), and accepting the POSTed answers
- *    (`POST /ticket/<id>`). It never stores anything on disk; the submitted
- *    payload is handed to a callback the service wires up, which writes the
- *    answer back to the task contract and (when `autoResume`) clears the
- *    escalation and resumes the loop.
+ * 2. **`TicketServer`** —— 一个极小的本地 HTTP 端点，为每次升级提供一张表单
+ *    （`GET /ticket/<id>`），并接收 POST 上来的答复（`POST /ticket/<id>`）。
+ *    它不往磁盘存任何东西；提交的内容会交给 service 装配的回调，由回调把答复
+ *    写回任务契约，并在开启 `autoResume` 时清除升级状态、恢复主循环。
  *
- * Delivery status is data on the record (mailDelivered, ticketUrl, submitted),
- * so the Web panel and the escalation feed can surface whether the human was
- * actually reached and whether a ticket has been answered.
+ * 投递状态作为记录上的数据（mailDelivered、ticketUrl、submitted）保存，
+ * 这样 Web 面板和升级信息流就能呈现是否真的联系上了人、工单是否已被答复。
  */
 import net from 'node:net';
 import tls from 'node:tls';
@@ -34,17 +29,17 @@ import { resolveOptionalEnvRef, SecretRedactor } from './secrets.js';
 export interface MailerOptions {
   host: string;
   port: number;
-  /** Env var name for the SMTP login username (account). */
+  /** SMTP 登录用户名的环境变量名（账号）。 */
   userEnv: string;
-  /** Env var name for the SMTP password / auth code. */
+  /** SMTP 密码 / 授权码的环境变量名。 */
   passEnv: string;
-  /** Env var name for the "From" address; defaults to userEnv. */
+  /** "From" 地址的环境变量名；缺省回落到 userEnv。 */
   fromEnv?: string | undefined;
-  /** Implicit TLS (port 465). When true, no plaintext precedes AUTH. */
+  /** 隐式 TLS（端口 465）。为 true 时，AUTH 之前没有明文阶段。 */
   secure: boolean;
   /**
-   * Issue STARTTLS on a plaintext connection (port 587/25). Defaults to true.
-   * Set false for a bare host / test relay with no TLS at all.
+   * 在明文连接上发起 STARTTLS（端口 587/25）。默认 true。
+   * 对完全没有 TLS 的裸机 / 测试 relay 设为 false。
    */
   startTls?: boolean | undefined;
   redactor: SecretRedactor;
@@ -58,9 +53,9 @@ export interface MailMessage {
 }
 
 /**
- * A deliberately minimal SMTP client. Supports AUTH LOGIN + STARTTLS (and
- * implicit TLS via `secure`), which covers QQ / 163 / Gmail / generic relays.
- * Failures are surfaced as thrown strings; the caller decides delivery policy.
+ * 一个刻意保持极简的 SMTP 客户端。支持 AUTH LOGIN + STARTTLS（以及通过
+ * `secure` 的隐式 TLS），可覆盖 QQ / 163 / Gmail / 通用 relay。
+ * 失败以抛出的字符串呈现；由调用方决定投递策略。
  */
 export class Mailer {
   constructor(private readonly options: MailerOptions) {}
@@ -86,7 +81,7 @@ export class Mailer {
     return value ?? this.user();
   }
 
-  /** Split a comma/space-separated recipient list into addresses. */
+  /** 把逗号/空格分隔的收件人列表拆成地址。 */
   private recipients(to: string): string[] {
     return to
       .split(/[,\s;]+/)
@@ -94,7 +89,7 @@ export class Mailer {
       .filter(Boolean);
   }
 
-  /** Send one message. Throws a descriptive string on any protocol error. */
+  /** 发送一条消息。任何协议错误都会抛出一个描述性的字符串。 */
   async send(message: MailMessage): Promise<{ ok: true; messageId: string }> {
     const user = this.user();
     const pass = this.pass();
@@ -102,13 +97,13 @@ export class Mailer {
     const recipients = this.recipients(message.to);
     if (recipients.length === 0) throw new Error('notification: no recipients in mail message');
 
-    // Register credentials so any accidental log line is scrubbed.
+    // 登记凭据，这样任何意外进入日志的行都会被抹掉。
     this.options.redactor.register(user);
     this.options.redactor.register(pass);
 
     let socket: net.Socket | tls.TLSSocket | null = null;
 
-    /** Read one SMTP reply: code + final line. Accumulates multi-line (250-) replies. */
+    /** 读一条 SMTP 回复：code + 最终行。累加多行（250-）回复。 */
     const readLine = (): Promise<{ code: number; line: string }> =>
       new Promise((resolvePromise, reject) => {
         const done = (code: number, line: string) => {
@@ -133,7 +128,7 @@ export class Mailer {
               fail(new Error(`SMTP unexpected reply: ${line}`));
               return;
             }
-            // A reply's final line is "<code> <text>"; continuation lines use '<code>-'.
+            // 一条回复的最终行是 "<code> <text>"；续行用 '<code>-'.
             if (pendingCode === null) {
               pendingCode = code;
               lastLine = line;
@@ -143,7 +138,7 @@ export class Mailer {
             const isFinal = line.length > 3 ? line[3] === ' ' : true;
             if (!isFinal) {
               index = buffer.indexOf('\n');
-              continue; // more continuation lines coming
+              continue; // 后面还有续行
             }
             done(pendingCode, lastLine);
             return;
@@ -197,7 +192,7 @@ export class Mailer {
       await expect(220); // greeting
 
       if (!this.options.secure && this.options.startTls !== false) {
-        // Plain connect → STARTTLS upgrade (port 587/25 → implicit TLS).
+        // 明文连接 → STARTTLS 升级（端口 587/25 → 隐式 TLS）。
         await sendLine('EHLO dsh-ai-team');
         const ehlo = await readLine();
         if (ehlo.code !== 250) throw new Error(`SMTP EHLO failed: ${ehlo.line}`);
@@ -214,8 +209,8 @@ export class Mailer {
         const ehloTls = await readLine();
         if (ehloTls.code !== 250) throw new Error(`SMTP EHLO after TLS failed: ${ehloTls.line}`);
       } else {
-        // implicit TLS (secure:true) or a plaintext relay with startTls off:
-        // nothing to upgrade, just take EHLO then AUTH.
+        // 隐式 TLS（secure:true）或关闭 startTls 的明文 relay：
+        // 无需升级，直接 EHLO 后 AUTH。
         await sendLine('EHLO dsh-ai-team');
         const ehlo = await readLine();
         if (ehlo.code !== 250) throw new Error(`SMTP EHLO failed: ${ehlo.line}`);
@@ -275,15 +270,15 @@ function sanitizeHeader(value: string): string {
 
 // ── ticket server ───────────────────────────────────────────────────────────
 
-/** Where a filled ticket lands: the callbacks the service wires up. */
+/** 填好的工单落到哪里：由 service 接线的回调。 */
 export interface TicketStore {
   /**
-   * Render the form for one escalation. The store implementation is free to
-   * look up escalation context (reason / message / suggestion / taskId) by id
-   * and shape it into fields; this module stays agnostic of escalation shape.
+   * 为一次升级渲染表单。store 实现可以自由地按 id 去查升级上下文
+   *（reason / message / suggestion / taskId）并塑造成字段；本模块对升级的
+   * 具体形状保持无感。
    */
   renderTicket(id: string): Promise<{ title: string; fields: TicketField[] } | null>;
-  /** Called once a ticket is submitted; returns answers to persist. */
+  /** 工单被提交时调用；返回要持久化的答复。 */
   handleSubmit(
     id: string,
     answers: Record<string, string>,
@@ -303,7 +298,7 @@ export interface TicketServerOptions {
   host: string;
   port: number;
   store: TicketStore;
-  /** "From" label shown on the form; not network-bound. */
+  /** 表单上展示的"From"标签；不参与网络绑定。 */
   publicUrl?: string | undefined;
 }
 
@@ -411,10 +406,9 @@ ${body}
 }
 
 /**
- * The local ticket endpoint. Listens on host:port; every request carries a
- * ticket id. GET renders the form; POST parses urlencoded answers and hands
- * them to the store. Returns null on failure to bind (the service records a
- * warning and keeps going — notification is best-effort, never fatal).
+ * 本地工单端点。监听 host:port；每个请求都携带一个工单 id。GET 渲染表单，
+ * POST 解析 urlencoded 答复并交给 store。绑定失败时返回 null（service 记录
+ * 一条警告并继续 —— 通知是尽力而为的，绝不致命）。
  */
 export class TicketServer {
   private server: Server | null = null;
@@ -430,7 +424,7 @@ export class TicketServer {
     });
   }
 
-  /** Start listening. Resolves once bound. */
+  /** 开始监听。绑定完成后 resolve。 */
   start(): Promise<void> {
     if (this.server !== null) return this.bound;
     const server = createServer((request, response) => {
@@ -448,7 +442,7 @@ export class TicketServer {
     return this.bound;
   }
 
-  /** The actual bound endpoint (e.g. 127.0.0.1:0 → 127.0.0.1:43210). */
+  /** 实际绑定的端点（例如 127.0.0.1:0 → 127.0.0.1:43210）。 */
   get address(): { host: string; port: number } | null {
     return this.boundTo;
   }

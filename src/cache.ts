@@ -1,15 +1,14 @@
 /**
- * Build-cache sharing (opt-in). For a Nuxt/Nitro or other build-heavy repo,
- * every task re-running `build`/`e2e` from a cold worktree is wasteful. When
- * `buildCache.enabled`, the plugin symlinks configured cache dirs (`.nuxt`,
- * `.output`, `coverage`, `node_modules/.cache`, …) to a per-branch shared
- * location so consecutive tasks reuse prior output instead of rebuilding from
- * scratch. Purely best-effort and opt-in — a failed link is silently skipped.
+ * 构建缓存共享（可选开启）。对于 Nuxt/Nitro 或其他构建密集型仓库，每个任务
+ * 都在全新 worktree 上重跑 `build`/`e2e` 是很浪费的。当 `buildCache.enabled`
+ * 时，插件会把配置好的缓存目录（`.nuxt`、`.output`、`coverage`、
+ * `node_modules/.cache` 等）符号链接到按分支共享的位置，让后续任务复用已有
+ * 产物，而不是从零重建。纯属尽力而为的可选能力 —— 链接失败会被静默跳过。
  */
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** Default shared cache dirs (gitignored build/test output). */
+/** 默认共享缓存目录（已被 gitignore 的构建/测试产物）。 */
 export const DEFAULT_CACHE_DIRS = [
   '.nuxt',
   '.output',
@@ -20,9 +19,9 @@ export const DEFAULT_CACHE_DIRS = [
 ];
 
 /**
- * Symlink `workspace/<dir>` → `cacheDir/<dir>`, creating both as needed.
- * Returns false (and leaves the workspace untouched) when linking fails, so a
- * cache misconfiguration never blocks the gate run.
+ * 建立符号链接 `workspace/<dir>` → `cacheDir/<dir>`，按需创建两端。
+ * 链接失败时返回 false（并保持 workspace 不被改动），这样缓存配置错误
+ * 永远不会阻塞门禁运行。
  */
 export async function linkSharedCacheDir(workspacePath: string, cacheDir: string, dir: string): Promise<boolean> {
   try {
@@ -38,7 +37,7 @@ export async function linkSharedCacheDir(workspacePath: string, cacheDir: string
   }
 }
 
-/** Link every configured cache dir; returns the ones that were linked. */
+/** 链接所有已配置的缓存目录；返回实际链接成功的那些。 */
 export async function linkSharedCacheDirs(
   workspacePath: string,
   cacheDir: string,

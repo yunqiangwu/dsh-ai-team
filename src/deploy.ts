@@ -1,13 +1,11 @@
 /**
- * Deploy & rollback loop (spec §4.2 deploy_run).
+ * 部署与回滚循环（spec §4.2 deploy_run）。
  *
- *   deploy.command → health-check with exponential backoff → on 3 failed
- *   probes run rollbackCommand and surface a failed DeployView (the service
- *   escalates it).
+ *   deploy.command → 指数退避的健康检查 → 连续 3 次探测失败则执行
+ *   rollbackCommand 并把失败的 DeployView 抛给上层（由 service 升级）。
  *
- * Only allowlisted commands run; secrets needed by the deploy command come
- * from the secretsEnv whitelist of env var names — values are registered
- * with the redactor so they can never leak through logs.
+ * 只有白名单内的命令才会执行；部署命令需要的密钥来自 secretsEnv 里列出的
+ * 环境变量名 —— 值会登记进脱敏器，因此绝不泄漏到日志。
  */
 import { execFile } from 'node:child_process';
 import type { DeployView } from './view.js';
@@ -24,11 +22,11 @@ export interface DeployOptions {
   cwd: string;
   branch: string;
   signal?: AbortSignal;
-  /** Injectable for tests. */
+  /** 测试可注入。 */
   fetchFn?: typeof fetch;
-  /** Backoff base in ms (tests shrink it). */
+  /** 退避基数（毫秒），测试会缩短它。 */
   backoffMs?: number;
-  /** Health-check attempts before rollback (default 3). */
+  /** 回滚前的健康检查次数（默认 3）。 */
   maxHealthAttempts?: number;
 }
 
@@ -98,8 +96,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Execute one deploy. The returned DeployView carries the terminal status;
- * this function throws only for allowlist violations and aborts.
+ * 执行一次部署。返回的 DeployView 携带终态；本函数只在白名单违规与中止时抛错。
  */
 export async function runDeploy(options: DeployOptions): Promise<DeployView> {
   if (!isAllowed(options.command, options.allowlist)) {
@@ -107,8 +104,7 @@ export async function runDeploy(options: DeployOptions): Promise<DeployView> {
       `deploy command "${options.command}" is not on the command allowlist [${options.allowlist.join(', ')}]`,
     );
   }
-  // Whitelisted deploy secrets: values stay in the child env only, and are
-  // registered with the redactor so logs can never leak them.
+  // 白名单部署密钥：值只存在于子进程环境里，并登记进脱敏器，日志绝不泄漏。
   const secretEnv: Record<string, string> = {};
   for (const name of options.secretsEnv) {
     const value = resolveOptionalEnvRef(name);

@@ -1,8 +1,8 @@
 /**
- * dsh-ai-team plugin entry.
+ * dsh-ai-team 插件入口。
  *
- * Named exports only (name / inject / Config / apply): the Loader's default
- * unwrapping drops the Config schema when a default export is mixed in.
+ * 仅使用具名导出（name / inject / Config / apply）：当混入 default 导出时，
+ * Loader 的默认解包行为会丢掉 Config schema。
  */
 import z from '@deepseek-ai/schemastery';
 import type { Context } from '@deepseek-ai/cordis';
@@ -18,13 +18,13 @@ import { registerAutopilotTools } from './tools.js';
 
 export const name = 'dsh-ai-team';
 
-/** Name of the auto-created demo team rendered in the kanban panel. */
+/** 看板面板中渲染的、自动创建的演示团队名称。 */
 const DEMO_TEAM_NAME = 'demo';
 
-/** The tool runtime is mandatory; sessionProjections is optional (headless). */
+/** 工具运行时是必需依赖；sessionProjections 为可选（无头模式）。 */
 export const inject = ['tools'];
 
-/** Post-validation config shape (every field resolved, defaults applied). */
+/** 校验完成后的配置形态（所有字段均已解析，默认值已应用）。 */
 export interface Config {
   rootDir: string;
   stateDir: string;
@@ -92,18 +92,17 @@ export interface Config {
     pushRequiresGates: boolean;
   };
   /**
-   * Opt-in build-cache sharing: symlink gitignored build/test cache dirs to a
-   * shared per-branch location so consecutive tasks reuse prior output.
+   * 可选的构建缓存共享：把 gitignore 的构建/测试缓存目录软链到按分支共享的位置，
+   * 让相邻任务复用先前的产物。
    */
   buildCache?: {
     enabled: boolean;
     dirs: string[];
   };
   /**
-   * Project-profile adapter (see src/profile.ts): encode a target
-   * repository's conventions (branch/PR naming, merge strategy, conditional
-   * gates, forbidden-zone policy, ownership routing). `preset: agentdeploy`
-   * seeds the AgentDeploy conventions; inline fields override them.
+   * 项目 profile 适配器（见 src/profile.ts）：把目标仓库的协作约定编码进来
+   * （branch/PR 命名、合并策略、条件化 gates、禁区策略、ownership 路由）。
+   * `preset: agentdeploy` 预置 AgentDeploy 的约定，内联字段可覆盖它们。
    */
   profile?: ProjectProfileInput;
 }
@@ -201,8 +200,8 @@ export const Config: z<Config> = z.object({
       ticket: z
         .object({
           host: z.string().default('127.0.0.1'),
-          // 0 picks an ephemeral port (used when the server has no fixed port or
-          // when publicBaseUrl is provided by a reverse proxy).
+          // 0 表示选择临时端口（适用于服务没有固定端口、
+          // 或 publicBaseUrl 由反向代理提供的场景）。
           port: z.number().step(1).min(0).default(0),
           publicBaseUrl: z.string().default(''),
         })
@@ -287,17 +286,16 @@ export const Config: z<Config> = z.object({
 });
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
-  // Optional settings seam (Web "Plugin configuration" tab): register the
-  // `autopilot` namespace so the browser card can edit key fields, and read the
-  // effective config from the resolved scope when a settings service is mounted.
-  // When none is mounted (headless), the source falls back to the entry config.
+  // 可选的 settings 接缝（Web 端“插件配置”标签页）：注册 `autopilot` 命名空间，
+  // 让浏览器卡片可以编辑关键字段；当 settings 服务已挂载时，从解析后的作用域
+  // 读取生效配置。未挂载（无头模式）时，数据源回退到入口配置。
   let current: () => Config = () => config;
   installSettingsSection(ctx, settingsNamespace('autopilot'), Config, config, {
     setSource: (get) => {
       current = get as () => Config;
     },
     onChange: () => {
-      // Re-judge derived state here if the plugin ever needs live config edits.
+      // 若插件将来需要运行时热改配置，可在此处重新推导派生状态。
     },
   });
   const effective = current();
@@ -356,16 +354,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     buildCache: { enabled: effective.buildCache?.enabled ?? false, dirs: effective.buildCache?.dirs ?? DEFAULT_CACHE_DIRS },
     profile: resolveProjectProfile(effective.profile, effective.gates.commands),
   });
-  // Expose the service for other plugins (and for tests driving the host).
+  // 把服务暴露给其它插件（以及驱动 host 的测试）。
   ctx.provide('autopilot', service);
-  // Host → Web UI data flow: `autopilot` session projection. The optional
-  // inject seam keeps headless profiles working.
+  // Host → Web UI 数据流：`autopilot` session projection。
+  // 可选的 inject 接缝保证无头 profile 也能工作。
   registerAutopilotProjection(ctx);
-  // Model-facing tools; each mutation appends `autopilot/update` to the log.
+  // 面向模型的工具；每次变更都会向日志追加一条 `autopilot/update`。
   registerAutopilotTools(ctx, service);
-  // Ship the `autopilot-team` agent preset: copy it into a user preset root on
-  // load (best-effort, never overwrites) so the roster exposes the mode on a
-  // fresh install without manual file creation.
+  // 随包提供 `autopilot-team` agent preset：加载时把它复制到用户 preset 根目录
+  // （尽力而为，绝不覆盖），这样全新安装后 roster 就能出现该模式，
+  // 无需手工创建文件。
   ctx.inject(['agentPresets'], (presetCtx) => {
     const presets = (presetCtx as unknown as {
       agentPresets: { roots: { trust: string; path: string }[] };
@@ -373,9 +371,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const userRoot = presets.roots.filter((root) => root.trust === 'user').pop()?.path;
     void ensureAutopilotTeamPreset(userRoot);
   });
-  // Auto-provision UX: when a session joins the `autopilot-team` agent preset,
-  // ensure a demo team exists and push the projection to that session so the
-  // kanban panel lights up immediately — no manual first tool call needed.
+  // 自动供给的用户体验：当某个 session 选用 `autopilot-team` agent preset 时，
+  // 确保演示团队存在，并把 projection 推送给该 session，让看板面板立即点亮——
+  // 无需手工发起第一次工具调用。
   ctx.on('session/event', (rawSession, rawEvent) => {
     const adoptedEvent = rawEvent as unknown as { type?: string; data?: { agentPreset?: string } };
     if (adoptedEvent.type !== 'agent-preset/selected') return;
@@ -389,9 +387,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         if (service.projection().teams.length === 0) {
           await service.createTeam({ name: DEMO_TEAM_NAME });
         }
-        // Always yield to a microtask before appending: we are running inside
-        // the `agent-preset/selected` append's publication boundary, and a
-        // synchronous re-entrant `session.append` is rejected.
+        // 追加前必须让出到微任务：我们正处在 `agent-preset/selected` 追加操作的
+        // 发布边界内，同步重入的 `session.append` 会被拒绝。
         await Promise.resolve();
         session.append('autopilot/update', {
           state: service.projection(),
@@ -401,8 +398,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       }
     })();
   });
-  // State persistence, loop shutdown and listener teardown ride the plugin
-  // lifecycle: unloading the plugin stops the daemon and flushes state.json.
+  // 状态持久化、循环停止与监听器卸载都挂在插件生命周期上：
+  // 卸载插件会停止守护循环并刷写 state.json。
   ctx.effect(
     () => () => void service.dispose(),
     'autopilot: stop loop and flush state',

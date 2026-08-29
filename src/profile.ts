@@ -1,51 +1,44 @@
 /**
- * Project-profile adapter — the mechanism that lets one engine drive
- * repositories with *different* collaboration conventions.
+ * 项目画像适配器 —— 让同一个引擎能驱动采用 *不同* 协作约定的仓库。
  *
- * AgentDeploy (ai-yunke) is a concrete example of a target whose rules are
- * "same shape, different grain" from the plugin's historical defaults: branch
- * `agent/<id>-<slug>` (not `task/<id>`), PR title `feat(scope): [id] desc`
- * (not `[id] title`), **squash** merge (not `--no-ff`), and quality gates
- * that are *conditional on the task's touches* and partly CI-only. Rather
- * than hard-code these, we encode them as a {@link ProjectProfile} and let
- * the service read its conventions from here.
+ * AgentDeploy（ai-yunke）就是一个具体例子，其规则与插件历史默认值是
+ * "同形但不同粒度"：分支 `agent/<id>-<slug>`（而非 `task/<id>`）、PR 标题
+ * `feat(scope): [id] desc`（而非 `[id] title`）、**squash** 合并（而非
+ * `--no-ff`），以及 *依赖任务 touches* 的、部分仅 CI 执行的质量门。与其硬编码
+ * 这些，不如编码成 {@link ProjectProfile}，让 service 从这里读取约定。
  *
- * The default profile reproduces the plugin's original behavior exactly, so
- * existing deployments and tests are unaffected; project presets override
- * only the fields that diverge.
+ * 默认画像逐字复刻插件的原始行为，因此存量部署与测试不受影响；项目预设只
+ * 覆盖有差异的字段。
  *
- * This module is host-only logic and must not import node builtins (it is not
- * inlined into the client bundle, but keeping it pure keeps it testable).
+ * 本模块是纯 host 逻辑，不得 import node 内置模块（它不会被内联进 client
+ * bundle，但保持纯净便于测试）。
  */
 import { touchesOverlap } from './team.js';
 
-/** Merge strategy applied when a reviewed task is merged into the base. */
+/** 评审后的任务合入基础分支时采用的合并策略。 */
 export type MergeStrategy = 'no-ff' | 'squash' | 'merge';
 
 /**
- * One quality-gate command, optionally conditional on the task's touches and
- * optionally CI-only.
+ * 一条质量门命令，可以可选地按任务 touches 条件触发、并且可选地仅 CI 执行。
  */
 export interface GateDef {
   command: string;
   /**
-   * Prefixes of the task's `touches`. When present, the gate runs only if the
-   * task touches at least one matching path. Example: `when: ['server/db/']`
-   * makes `db:check-parity` run only for tasks that touch the DB layer.
+   * 任务 `touches` 的前缀。给出时，门仅在任务至少命中一条匹配路径时才运行。
+   * 例：`when: ['server/db/']` 让 `db:check-parity` 只对触及 DB 层的任务运行。
    */
   when?: string[] | undefined;
   /**
-   * `local` → run in the member worktree (default).
-   * `ci` → enforced only by the repository's remote CI, never run locally.
-   * Used for gates that fail on a local machine for environmental reasons
-   * (e.g. `pnpm audit` under a private registry with no audit endpoint) but
-   * are still required in CI — local approve is not blocked by a `ci` gate,
-   * and the remote CI gate (`requireCiGreen`) owns the enforcement.
+   * `local` → 在成员 worktree 里运行（默认）。
+   * `ci` → 只由仓库的远端 CI 强制，绝不在本地运行。
+   * 用于那些因环境原因在本地必然失败（例如私有 registry 下没有 audit 端点的
+   * `pnpm audit`）、但 CI 里仍然要求的门 —— 本地 approve 不被 `ci` 门阻塞，
+   * 由远端 CI 门（`requireCiGreen`）负责强制。
    */
   role?: 'local' | 'ci' | undefined;
 }
 
-/** How a forbidden path is treated when a task branch touches it. */
+/** 任务分支触及禁区路径时的处理方式。 */
 export type ForbiddenMode = 'block' | 'needs-approval' | 'high-conflict';
 
 export interface ForbiddenRule {
@@ -53,44 +46,44 @@ export interface ForbiddenRule {
   mode: ForbiddenMode;
 }
 
-/** Path→domain-owner mapping used for specialization routing (extensible). */
+/** 路径→域所有者映射，用于专精路由（可扩展）。 */
 export interface OwnershipRule {
   glob: string;
-  /** Owner label the project expects (e.g. `@agent-database`), or a role hint. */
+  /** 项目期望的 owner 标签（如 `@agent-database`），或角色提示。 */
   role: string;
-  /** Domain-specific hard rules to inject when a task falls in this glob. */
+  /** 当任务落入该 glob 时注入的领域专属硬规则。 */
   rules?: string[] | undefined;
 }
 
 export interface ProjectProfile {
   /**
-   * Branch-name template. `{id}` → task/contract id, `{slug}` → kebab-case
-   * slug of the title. Default `task/{id}`.
+   * 分支名模板。`{id}` → 任务/契约 id，`{slug}` → 标题的 kebab-case
+   * slug。默认 `task/{id}`。
    */
   branchTemplate: string;
-  /** PR-title template. `{id}`, `{title}`, `{scope}`. */
+  /** PR 标题模板。`{id}`、`{title}`、`{scope}`。 */
   prTitleTemplate: string;
-  /** PR-body template (may be multiline). `{id}`, `{title}`, `{touches}`, `{scope}`, `{assignment}`. */
+  /** PR 正文模板（可多行）。`{id}`、`{title}`、`{touches}`、`{scope}`、`{assignment}`。 */
   prBodyTemplate: string;
   mergeStrategy: MergeStrategy;
   /**
-   * Ordered quality gates. Empty → fall back to the legacy
-   * `options.gates.commands` list (each as an unconditional `local` gate).
+   * 有序质量门。为空 → 回落到历史
+   * `options.gates.commands` 列表（每条作为无条件的 `local` 门）。
    */
   gates: GateDef[];
   /**
-   * Forbidden-zone policy. `block` paths hard-block a push (like
-   * `security.forbiddenPaths`); `needs-approval` / `high-conflict` paths are
-   * merged in and surfaced but do not block.
+   * 禁区策略。`block` 路径硬阻断推送（如同
+   * `security.forbiddenPaths`）；`needs-approval` / `high-conflict` 路径会被
+   * 合入并呈现但不阻断。
    */
   forbidden: ForbiddenRule[];
-  /** Ownership / specialization routing rules. */
+  /** 所有权 / 专精路由规则。 */
   ownership: OwnershipRule[];
-  /** Escalate when a task touches more than this many distinct domains. */
+  /** 当任务触及的独立领域数超过该值时升级。 */
   crossDomainThreshold: number;
 }
 
-/** Kebab-case ASCII slug of a title (stable, git-ref safe). */
+/** 标题的 kebab-case ASCII slug（稳定、git-ref 安全）。 */
 export function slugify(text: string): string {
   return text
     .trim()
@@ -100,7 +93,7 @@ export function slugify(text: string): string {
     .slice(0, 80);
 }
 
-/** Heuristic PR scope from the most specific touch path (e.g. `server/db/` → `db`). */
+/** 从最具体的 touch 路径启发式推导 PR 范围（如 `server/db/` → `db`）。 */
 export function deriveScope(touches: readonly string[] | undefined): string {
   if (touches === undefined || touches.length === 0) return 'core';
   let best = '';
@@ -112,12 +105,12 @@ export function deriveScope(touches: readonly string[] | undefined): string {
   return best === '' ? 'core' : best;
 }
 
-/** Render a branch name from a template and a title. */
+/** 根据模板与标题渲染分支名。 */
 export function renderBranchName(template: string, id: string, title: string): string {
   return template.replace(/\{id\}/g, id).replace(/\{slug\}/g, slugify(title));
 }
 
-/** Render a PR title from a template. */
+/** 根据模板渲染 PR 标题。 */
 export function renderPrTitle(template: string, id: string, title: string, touches: readonly string[] | undefined): string {
   return template
     .replace(/\{id\}/g, id)
@@ -125,7 +118,7 @@ export function renderPrTitle(template: string, id: string, title: string, touch
     .replace(/\{scope\}/g, deriveScope(touches));
 }
 
-/** Render a PR body from a template. */
+/** 根据模板渲染 PR 正文。 */
 export function renderPrBody(
   template: string,
   id: string,
@@ -141,7 +134,7 @@ export function renderPrBody(
     .replace(/\{assignment\}/g, assignment);
 }
 
-/** The default profile — reproduces the plugin's historical behavior exactly. */
+/** 默认画像 —— 逐字复刻插件的原始行为。 */
 export function defaultProfile(fallbackCommands: readonly string[] = []): ProjectProfile {
   return {
     branchTemplate: 'task/{id}',
@@ -155,7 +148,7 @@ export function defaultProfile(fallbackCommands: readonly string[] = []): Projec
   };
 }
 
-/** The AgentDeploy (ai-yunke) project profile. */
+/** AgentDeploy（ai-yunke）项目画像。 */
 export function agentdeployProfile(fallbackCommands: readonly string[] = []): ProjectProfile {
   const base = defaultProfile(fallbackCommands);
   return {
@@ -181,9 +174,8 @@ export function agentdeployProfile(fallbackCommands: readonly string[] = []): Pr
       { command: 'pnpm run test' },
       { command: 'pnpm run db:check-parity', when: ['server/db/'] },
       { command: 'pnpm run test:contracts' },
-      // Heavy gates are throttled to tasks that touch source: a docs/.tasks-only
-      // task skips the full Nuxt build/e2e locally (remote CI is still the
-      // correctness authority via requireCiGreen).
+      // 重门限流到触及源码的任务：docs/.tasks-only 的任务本地跳过完整的 Nuxt
+      // build/e2e（远端 CI 仍是正确性权威，由 requireCiGreen 把关）。
       { command: 'pnpm run build', when: ['server/', 'app/', 'shared/', 'packages/', 'modules/', 'nuxt.config.ts'] },
       { command: 'pnpm run test:e2e', when: ['server/', 'app/', 'shared/', 'packages/', 'modules/', 'e2e/', 'nuxt.config.ts'] },
       { command: 'pnpm audit --audit-level=high', role: 'ci' },
@@ -217,14 +209,14 @@ export function agentdeployProfile(fallbackCommands: readonly string[] = []): Pr
   };
 }
 
-/** Partial profile as supplied through Config (named preset or inline overrides). */
+/** 经由 Config 提供的部分画像（命名预设或内联覆盖）。 */
 export interface ProjectProfileInput {
-  /** `default` | `agentdeploy`; empty string means the `default` preset. */
+  /** `default` | `agentdeploy`；空串表示 `default` 预设。 */
   preset?: string | undefined;
   branchTemplate?: string | undefined;
   prTitleTemplate?: string | undefined;
   prBodyTemplate?: string | undefined;
-  /** `no-ff` | `squash` | `merge`; empty string means "use the preset". */
+  /** `no-ff` | `squash` | `merge`；空串表示"用预设"。 */
   mergeStrategy?: string | undefined;
   gates?: GateDef[] | undefined;
   forbidden?: ForbiddenRule[] | undefined;
@@ -234,25 +226,25 @@ export interface ProjectProfileInput {
 
 const MERGE_STRATEGIES: readonly MergeStrategy[] = ['no-ff', 'squash', 'merge'];
 
-/** Pick an override string, or fall back to the preset when empty/absent. */
+/** 取一个覆盖字符串，为空/缺失时回落到预设。 */
 function pickText(value: string | undefined, fallback: string): string {
   return value === undefined || value === '' ? fallback : value;
 }
 
-/** Pick an override merge strategy, validating it against the known set. */
+/** 取一个覆盖合并策略，并针对已知集合校验。 */
 function pickMergeStrategy(value: string | undefined, fallback: MergeStrategy): MergeStrategy {
   return value !== undefined && value !== '' && MERGE_STRATEGIES.includes(value as MergeStrategy)
     ? (value as MergeStrategy)
     : fallback;
 }
 
-/** Match a repo-relative path against a forbidden rule's path prefix. */
+/** 判断仓库相对路径是否命中某条禁区规则的路径前缀。 */
 function pathMatchesRule(path: string, rulePath: string): boolean {
   const normalized = rulePath.endsWith('/') ? rulePath : `${rulePath}/`;
   return path.startsWith(normalized) || path === rulePath.replace(/\/$/, '');
 }
 
-/** Compile a path glob (`**`, `*`, `?`) into a RegExp; a trailing `/` = subtree. */
+/** 把路径 glob（`**`、`*`、`?`）编译成 RegExp；结尾 `/` = 子树。 */
 function globToRegex(glob: string): RegExp {
   let pattern = glob;
   if (pattern.endsWith('/')) pattern = `${pattern}**`;
@@ -275,17 +267,17 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
-/** True when a repo-relative path matches an ownership glob. */
+/** 仓库相对路径是否命中所有权 glob。 */
 export function globMatchesRule(path: string, glob: string): boolean {
   return globToRegex(glob).test(path);
 }
 
-/** Ownership rules whose glob matches at least one of the task's touches. */
+/** glob 命中了任务至少一条 touches 的所有权规则。 */
 export function matchedOwnershipRules(touches: readonly string[], ownership: readonly OwnershipRule[]): OwnershipRule[] {
   return ownership.filter((rule) => touches.some((touch) => globMatchesRule(touch, rule.glob)));
 }
 
-/** The most specific (longest glob) matching owner role, or null when none. */
+/** 最具体（最长 glob）匹配的 owner 角色，无匹配时返回 null。 */
 export function ownerRoleForTouches(touches: readonly string[], ownership: readonly OwnershipRule[]): string | null {
   const matched = matchedOwnershipRules(touches, ownership);
   if (matched.length === 0) return null;
@@ -296,7 +288,7 @@ export function ownerRoleForTouches(touches: readonly string[], ownership: reado
   return best.role;
 }
 
-/** Append the matched domain owners/hard rules to a task description. */
+/** 把匹配到的域所有者/硬规则追加到任务描述里。 */
 export function enrichDescriptionWithOwnership(
   description: string,
   touches: readonly string[],
@@ -313,9 +305,8 @@ export function enrichDescriptionWithOwnership(
 }
 
 /**
- * Classify changed files against the profile's forbidden-zone policy.
- * Returns the paths that hard-block a push (`mode: 'block'`) and those that
- * merely need approval / a dedicated PR (`needs-approval` / `high-conflict`).
+ * 按画像的禁区策略对变更文件分类。返回硬阻断推送的路径
+ *（`mode: 'block'`）与仅需批准 / 专用 PR 的路径（`needs-approval` / `high-conflict`）。
  */
 export function classifyForbiddenFiles(files: readonly string[], rules: readonly ForbiddenRule[]): {
   blocks: string[];
@@ -337,9 +328,8 @@ export function classifyForbiddenFiles(files: readonly string[], rules: readonly
 }
 
 /**
- * Build the effective forbidden-zone rules: the profile's own rules plus the
- * legacy `security.forbiddenPaths` forced to `block` mode (they are the
- * human-only zone). Profile rules win on duplicate paths.
+ * 构造生效的禁区规则：画像自身的规则，加上被强制为 `block` 模式的遗留
+ * `security.forbiddenPaths`（它们属于 human-only 区）。重复路径上画像规则优先。
  */
 export function effectiveForbiddenRules(
   profile: ProjectProfile,
@@ -353,11 +343,9 @@ export function effectiveForbiddenRules(
 }
 
 /**
- * Count distinct "domains" among a task's touches, using the same prefix
- * semantics as the domain lock: two paths belong to the same domain when one
- * is a prefix of the other. This is the generic proxy for "how many different
- * plugin domains does this task span" — AgentDeploy escalates when it exceeds
- * `crossDomainThreshold` (default 3).
+ * 统计任务 touches 的独立"领域"数，复用与领域锁一致的前缀语义：两条路径当
+ * 一条是另一条的前缀时属于同一领域。这是"该任务跨了多少个不同插件领域"的
+ * 通用代理 —— AgentDeploy 在其超过 `crossDomainThreshold`（默认 3）时升级。
  */
 export function distinctDomainCount(touches: readonly string[]): number {
   const normalized = [...new Set(touches.map((touch) => (touch.endsWith('/') ? touch : `${touch}/`)))].filter(
@@ -373,12 +361,11 @@ export function distinctDomainCount(touches: readonly string[]): number {
 }
 
 /**
- * Resolve a Config-level {@link ProjectProfileInput} into a full
- * {@link ProjectProfile}. A named `preset` seeds the defaults; any inline
- * fields override them. Because schemastery default-fills every field, we
- * treat empty-string / empty-array / zero as "not overridden" and fall back
- * to the preset base. An empty `gates` list makes the profile fall back to
- * the legacy `gates.commands` (see {@link resolveGateDefs}).
+ * 把 Config 层级的 {@link ProjectProfileInput} 解析成完整 {@link ProjectProfile}。
+ * 命名 `preset` 提供默认值；任何内联字段覆盖它们。由于 schemastery 会给每个
+ * 字段填默认值，我们把空串 / 空数组 / 0 视为"未覆盖"并回落到预设基座。
+ * 空 `gates` 列表会让画像回落到遗留的 `gates.commands`
+ *（见 {@link resolveGateDefs}）。
  */
 export function resolveProjectProfile(
   input: ProjectProfileInput | undefined,
@@ -403,8 +390,8 @@ export function resolveProjectProfile(
 }
 
 /**
- * Resolve the effective gate definitions for a profile. A profile with no
- * gates falls back to the legacy `gates.commands` list (each unconditional).
+ * 解析一个画像的生效门定义。没有门的画像回落到遗留 `gates.commands`
+ * 列表（每条都是无条件门）。
  */
 export function resolveGateDefs(profile: ProjectProfile, fallbackCommands: readonly string[]): GateDef[] {
   if (profile.gates.length > 0) return profile.gates;
@@ -412,10 +399,9 @@ export function resolveGateDefs(profile: ProjectProfile, fallbackCommands: reado
 }
 
 /**
- * Select the gate commands that actually run for a given task, honoring
- * `when` (touches-conditional) and `role: 'ci'` (never run locally).
- * Returns the commands to execute locally plus a list of CI-only commands
- * that were deliberately skipped so the caller can surface them.
+ * 选出真实会对给定任务生效的门命令，尊重 `when`（按 touches 条件触发）与
+ * `role: 'ci'`（绝不在本地运行）。返回本地要执行的命令列表，外加被刻意
+ * 跳过的 CI-only 命令，让调用方可以把它们呈现出来。
  */
 export function selectGateCommands(
   profile: ProjectProfile,

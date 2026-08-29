@@ -6,9 +6,9 @@ import './events.js';
 import { ROLES } from './roles.js';
 
 /**
- * View objects are plain JSON by construction but lack an index signature,
- * so they cannot satisfy the recursive JsonValue union structurally. This
- * cast is the single audited escape hatch.
+ * View 对象在构造上就是纯 JSON，但缺少索引签名，
+ * 因此结构上无法满足递归的 JsonValue 联合类型。
+ * 这里的 cast 是唯一经过审计的逃生出口。
  */
 const asJson = (value: unknown): JsonValue => value as JsonValue;
 
@@ -19,15 +19,13 @@ const jsonOutput = {
   ],
 } as const;
 
-/** Push the whole-state snapshot to the calling agent's session log. */
+/** 把全量状态快照推送到调用方 agent 的 session 日志。 */
 function publish(service: AutopilotService, exec?: ToolRunContext): void {
-  // `autopilot/update` is the plugin's own informational whole-state snapshot.
-  // Passing `{ ignorable: true }` lets a reader that does not understand the
-  // type (e.g. the core persistence read guard) skip it instead of refusing the
-  // whole log. The option is only typed on harness builds that ship the
-  // write-side marker, so a controlled cast keeps us buildable against older
-  // `@deepseek-ai/dsh-session` typings while still stamping the marker at
-  // runtime when the harness supports it.
+  // `autopilot/update` 是本插件自己的信息型全量状态快照。传入 `{ ignorable: true }`
+  // 后，读不懂该类型的读取方（例如内核持久化的读取守卫）可以选择跳过它，
+  // 而不是拒绝整条日志。该选项只在提供了写入侧标记的 harness 构建上有类型定义，
+  // 因此这里用一次受控的 cast：既能对旧版 `@deepseek-ai/dsh-session` 类型编译通过，
+  // 又能在 harness 支持时在运行时打上该标记。
   const session = exec?.agent?.session;
   if (session !== undefined) {
     (session.append as unknown as (
@@ -41,9 +39,9 @@ function publish(service: AutopilotService, exec?: ToolRunContext): void {
 const present = (title: string) => () =>
   ({ card: 'generic', title, kind: 'other', rawInput: {} }) as const;
 
-/** Register all dsh-ai-team tools on the shared tool runtime. */
+/** 在共享的工具运行时上注册全部 dsh-ai-team 工具。 */
 export function registerAutopilotTools(ctx: Context, service: AutopilotService): void {
-  // ── core team / collaboration tools ──────────────────────────────────────
+  // ── 核心团队 / 协作工具 ──────────────────────────────────────────────────
 
   ctx.tools.register(
     defineTool({

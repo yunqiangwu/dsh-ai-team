@@ -1,9 +1,8 @@
 /**
- * Autopilot panel: renders the `autopilot` projection — loop state lamp,
- * member roster, task kanban with quality-gate badges, escalation event
- * feed, and deploy history — into the conversation input dock. The
- * projection seat is reactive: every `autopilot/update` session event
- * re-renders the panel live.
+ * Autopilot 面板：把 `autopilot` projection 渲染到会话输入框下方的 dock 中，
+ * 内容包括循环状态指示灯、成员名单、带质量门徽章的任务看板、升级事件流
+ * 和部署历史。projection 席位是响应式的：每次 `autopilot/update` 会话事件
+ * 都会实时重绘面板。
  */
 import { useState } from 'react';
 import type { SlotProps, Translator } from './contract.js';
@@ -175,8 +174,8 @@ function TeamBody({ team, t }: { team: TeamView; t: Translator }) {
 }
 
 /**
- * The panel itself. Renders nothing until a team exists, so an ordinary
- * conversation stays clean.
+ * 面板本体。在团队存在之前不渲染任何内容，
+ * 以便普通会话保持清爽。
  */
 export function AutopilotPanel({ useProjection, t }: SlotProps) {
   const [open, setOpen] = useState(true);

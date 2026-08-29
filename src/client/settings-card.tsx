@@ -1,17 +1,15 @@
 /**
- * Autopilot settings card — one `settings.plugin.item` card keyed on the
- * `autopilot` namespace. This is the "Plugin configuration" tab card that
- * appears for any plugin that (a) registers a Host settings namespace and
- * (b) registers a browser card under that namespace. The tab pairs the two
- * ledgers without interpreting the namespace, so this card owns every part of
- * its own chrome and form model; it binds the namespace scope and renders only
- * the KEY fields the user chose to expose for editing (the rest stay
- * composition-managed / YAML).
+ * Autopilot 设置卡片 —— 一张以 `autopilot` namespace 为 key 的
+ * `settings.plugin.item` 卡片。这就是“插件配置”标签页里的卡片：任何插件只要
+ * (a) 注册了 Host 侧的 settings namespace，且 (b) 在该 namespace 下注册了浏览器端
+ * 卡片，就会出现这张卡。标签页只负责把两份账配对，并不解释 namespace 的内容，
+ * 因此本卡片自己拥有全部外观与表单模型：它绑定 namespace scope，并且只渲染用户
+ * 选择暴露出来供编辑的那些 KEY 字段（其余字段仍由组合层 / YAML 管理）。
  */
 import { useCallback, useSyncExternalStore, useState } from 'react';
 import type { SettingsScope, Translator } from './contract.js';
 
-/** Dot-path expression over the resolved config. */
+/** 作用于已解析配置之上的点路径表达式。 */
 interface KeyField {
   path: string;
   label: string;
@@ -19,7 +17,7 @@ interface KeyField {
   kind: 'text' | 'boolean' | 'number' | 'list';
 }
 
-/** The key fields surfaced for editing (mirrors the Config shape subset). */
+/** 暴露出来供编辑的关键字段（镜像 Config 结构的一个子集）。 */
 export const AUTOPILOT_KEY_FIELDS: KeyField[] = [
   { path: 'remote.url', label: 'config.remoteUrl', hint: 'remoteUrlHint', kind: 'text' },
   { path: 'baseBranch', label: 'config.baseBranch', kind: 'text' },
@@ -30,7 +28,7 @@ export const AUTOPILOT_KEY_FIELDS: KeyField[] = [
   { path: 'daemon.stuckMinutes', label: 'config.stuckMinutes', kind: 'number' },
 ];
 
-/** Walk a dot path across a plain object; undefined on any missing hop. */
+/** 沿点路径遍历普通对象；任一跳缺失则返回 undefined。 */
 function at(source: unknown, path: string): unknown {
   let node: unknown = source;
   for (const hop of path.split('.')) {
@@ -40,7 +38,7 @@ function at(source: unknown, path: string): unknown {
   return node;
 }
 
-/** A field is overridden by its PRESENCE in the raw user layer, not its value. */
+/** 字段是否被覆盖，取决于它在原始 user 层中的“存在性”，而非取值。 */
 function isOverridden(user: unknown, path: string): boolean {
   if (path === '') return false;
   let node: unknown = user;
@@ -60,7 +58,7 @@ function isOverridden(user: unknown, path: string): boolean {
     : false;
 }
 
-/** Render the current resolved value of a field into editable text. */
+/** 把字段当前解析出的值渲染成可编辑文本。 */
 function toText(kind: KeyField['kind'], value: unknown): string {
   if (kind === 'boolean') return value === true ? 'true' : 'false';
   if (kind === 'list') return Array.isArray(value) ? value.join('\n') : '';
@@ -68,7 +66,7 @@ function toText(kind: KeyField['kind'], value: unknown): string {
   return String(value);
 }
 
-/** Parse draft text back into a typed value for `scope.set`. */
+/** 把草稿文本解析回带类型的值，供 `scope.set` 使用。 */
 function fromText(kind: KeyField['kind'], text: string): unknown {
   if (kind === 'boolean') return text === 'true';
   if (kind === 'number') {
@@ -80,10 +78,10 @@ function fromText(kind: KeyField['kind'], text: string): unknown {
 }
 
 /**
- * The card itself. Props arrive from the slot's `inject()`: a locale-bound `t`
- * and the namespace scope. Draft writes are staged locally and committed on
- * Save (each through the scope, which fences every write with the revision it
- * read); Discard drops the drafts.
+ * 卡片本体。props 来自 slot 的 `inject()`：一个绑定了 locale 的 `t`
+ * 以及该 namespace 的 scope。草稿写入先在本地暂存，点保存时才提交
+ * （每次都经由 scope，它会用读到的 revision 为每次写入加围栏）；
+ * 放弃则直接丢弃草稿。
  */
 export function AutopilotSettingsCard({
   t,
@@ -92,11 +90,10 @@ export function AutopilotSettingsCard({
   t: Translator;
   scope: SettingsScope<Record<string, unknown>>;
 }) {
-  // `scope` is a SettingsScope instance whose `subscribe` relies on `this`
-  // (it reads `this.store` inside). Passing the bare method reference to
-  // `useSyncExternalStore` drops `this` on the first callback, so wrap it in an
-  // arrow that invokes it as a method — React calls the subscribe callback as a
-  // free function, not as `scope.subscribe(...)`.
+  // `scope` 是一个 SettingsScope 实例，其 `subscribe` 依赖 `this`
+  // （内部会读 `this.store`）。若把裸方法引用传给 `useSyncExternalStore`，
+  // 首次回调时就会丢掉 `this`，所以要用箭头函数包一层，以方法形式调用它 ——
+  // React 是把 subscribe 回调当作自由函数来调用的，而不是 `scope.subscribe(...)`。
   const subscribeScope = useCallback((listener: () => void) => scope.subscribe(listener), [scope]);
   const snapshot = useSyncExternalStore(subscribeScope, () => scope.getSnapshot());
   const { status, value, user, writable } = snapshot;

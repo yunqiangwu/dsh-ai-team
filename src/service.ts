@@ -1,19 +1,16 @@
 /**
- * AutopilotService — the heart of dsh-ai-team.
+ * AutopilotService —— dsh-ai-team 的中枢。
  *
- * The collaboration model (isolated per-member git worktrees on one shared
- * repository, leader → developer task board, reviewer-gated merges) provides
- * the substrate; layered above it is everything unattended operation needs:
- * remote clone/push, bare-machine bootstrap, objective quality gates, a
- * daemon run loop with crash recovery, escalation, and the deploy loop.
+ * 协作模型（共享仓库上按成员隔离的 git worktree、leader → developer 任务板、
+ * 由 reviewer 把关的合并）只是底座；叠加在它之上的是无人值守运行所需的一切：
+ * 远端 clone/push、裸机引导、客观质量门、带崩溃恢复的守护循环、升级与部署。
  *
- * The service is runtime-agnostic on purpose: it never touches cordis or the
- * session log, so integration tests can drive it directly. The plugin entry
- * (index.ts) provides it as the `autopilot` service and the tool layer
- * (tools.ts) translates mutations into session events.
+ * 本服务刻意与运行时无关：它从不接触 cordis 与会话日志，因此集成测试可以
+ * 直接驱动它。插件入口（index.ts）把它提供为 `autopilot` 服务，工具层
+ * （tools.ts）负责把状态变更翻译成会话事件。
  *
- * State persists to <stateDir>/state.json (debounced) plus a heartbeat file
- * on every loop tick; dispose() flushes.
+ * 状态落到 <stateDir>/state.json（防抖写入），每个循环 tick 再写一次心跳文件；
+ * dispose() 做最终 flush。
  */
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -39,9 +36,10 @@ import {
   sshEnvForKey,
 } from './git.js';
 import { bootstrapEnvironment, type BootstrapReport } from './bootstrap.js';
-import { DEFAULT_CACHE_DIRS, linkSharedCacheDirs } from './cache.js';
+import { linkSharedCacheDirs } from './cache.js';
 import { runGates } from './gates.js';
 import { runDeploy } from './deploy.js';
+import { checkRunStatus, githubRepoSlug, upsertPullRequest } from './github.js';
 import { EscalationManager, type EscalationInput } from './escalate.js';
 import { Mailer, TicketServer, type TicketStore } from './notification.js';
 import {
@@ -84,9 +82,33 @@ import type {
   TeamView,
 } from './view.js';
 
+// ── 常量 ────────────────────────────────────────────────────────────────────
+
+/** 状态落盘的防抖窗口（毫秒）：一次 tick 内的多次变更合并成一次写。 */
+const PERSIST_DEBOUNCE_MS = 100;
+
+/** 契约正文写入任务描述时的最大长度，避免超长契约撑爆提示词。 */
+const CONTRACT_BODY_LIMIT = 2000;
+
+/** 仓库内任务契约目录。 */
+const TASKS_DIR = '.tasks';
+
+/** 全部任务完成后的完成报告文件名。 */
+const COMPLETION_FILE = '_completion.md';
+
+/** 连续空闲多少个 tick 后开始放大轮询间隔。 */
+const IDLE_BACKOFF_TICKS = 5;
+
+/** 空闲退避的最大倍数：最多把轮询间隔放大到 4 倍。 */
+const MAX_IDLE_BACKOFF_FACTOR = 4;
+
+/** 生成短 id（team_xxxxxxxx / task_xxxxxxxx / m_xxxxxxxx / rev_xxxxxxxx）。 */
 const shortId = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;
 
-// ── runtime options (post-Config-validation) ────────────────────────────────
+/** 成员的个人分支名：任务之外成员默认停留在这里。 */
+const memberBranch = (memberId: string) => `member/${memberId}`;
+
+// ── 运行时选项（Config 校验之后） ───────────────────────────────────────────
 
 export interface AutopilotOptions {
   rootDir: string;
@@ -105,15 +127,15 @@ export interface AutopilotOptions {
     toolchain: string[];
     setupCommand: string;
     verifyCommand: string;
-    /** Native-build system packages (e.g. python3/make/g++ for node-gyp). */
+    /** 原生模块编译所需的系统包（如 node-gyp 用的 python3/make/g++）。 */
     systemPackages?: string[] | undefined;
-    /** Package-manager command (allowlist-checked), e.g. `sudo apt-get install -y`. */
+    /** 包管理器命令（受白名单约束），例如 `sudo apt-get install -y`。 */
     packageManagerCommand?: string | undefined;
-    /** `.env` path to scaffold from the committed example (fail-loud if missing essentials). */
+    /** 要从提交在仓库里的示例文件生成的 `.env` 路径（缺关键项时报错）。 */
     envFile?: string | undefined;
-    /** Committed `.env.example` path. */
+    /** 仓库中已提交的 `.env.example` 路径。 */
     envExample?: string | undefined;
-    /** Env-var names required at boot; missing ones fail loud. */
+    /** 启动时必需的环境变量名；缺失即响亮失败。 */
     requiredEnvKeys?: string[] | undefined;
   };
   gates: {
@@ -135,7 +157,7 @@ export interface AutopilotOptions {
   };
   notification?: {
     enabled: boolean;
-    /** SMTP transport. */
+    /** SMTP 传输配置。 */
     smtp: {
       host: string;
       port: number;
@@ -145,21 +167,21 @@ export interface AutopilotOptions {
       fromEnv?: string | undefined;
       startTls?: boolean | undefined;
     };
-    /** Recipient(s) of the human-notification email (comma/space separated). */
+    /** 人工通知邮件的收件人（逗号/空格分隔多个）。 */
     mailTo: string;
-    /** Local HTTP ticket endpoint bind host/port. */
+    /** 本地工单端点监听地址。 */
     ticket: {
       host: string;
       port: number;
-      /** Base URL presented in the email (e.g. http://server:8080). */
+      /** 邮件里展示给人的访问基址（例如 http://server:8080）。 */
       publicBaseUrl: string;
     };
     /**
-     * Auto-resume: when a ticket is answered, write the answer back and clear
-     * the escalation (task → pending) without waiting for escalation_resolve.
+     * 自动恢复：工单被答复后直接回写答案并清除升级（任务回到 pending），
+     * 无需再等一次 escalation_resolve。
      */
     autoResume: boolean;
-    /** Env var name for the "From" header; defaults to smtp.fromEnv. */
+    /** "From" 头的环境变量名；缺省回落到 smtp.fromEnv。 */
     fromEnv?: string | undefined;
   } | undefined;
   deploy?: {
@@ -175,25 +197,23 @@ export interface AutopilotOptions {
     pushRequiresGates: boolean;
   };
   /**
-   * Project-profile adapter: the repository's collaboration conventions
-   * (branch/PR naming, merge strategy, conditional gates, forbidden-zone
-   * policy, ownership routing). The default profile reproduces the plugin's
-   * historical behavior; project presets (e.g. AgentDeploy) override it.
+   * 项目画像适配器：目标仓库的协作约定（分支/PR 命名、合并策略、条件质量门、
+   * 禁区策略、所有权路由）。默认画像完全复刻插件的历史行为，项目预设
+   * （如 AgentDeploy）只需覆盖有差异的字段。
    */
   profile: ProjectProfile;
   /**
-   * Opt-in build-cache sharing: symlink gitignored build/test cache dirs to a
-   * per-branch shared location so consecutive tasks reuse prior output
-   * instead of rebuilding from scratch. Best-effort; on by default is OFF.
+   * 可选的构建缓存共享：把被 gitignore 的构建/测试缓存目录软链到按分支共享的
+   * 位置，让相邻任务复用上一次产物而不是从头构建。尽力而为，默认关闭。
    */
   buildCache?: { enabled: boolean; dirs: string[] } | undefined;
-  /** Test hook: shrink loop sleeps/backoffs. */
+  /** 测试钩子：缩短循环中的 sleep/退避时长。 */
   tickSleepMs?: number | undefined;
-  /** Test hook: injectable fetch for webhook/CI/health-check calls. */
+  /** 测试钩子：注入 fetch，用于 webhook / CI / 健康检查调用。 */
   fetchFn?: typeof fetch | undefined;
 }
 
-// ── internal records ────────────────────────────────────────────────────────
+// ── 内部记录 ────────────────────────────────────────────────────────────────
 
 interface MemberRecord {
   id: string;
@@ -204,13 +224,18 @@ interface MemberRecord {
   branch: string;
   status: MemberStatus;
   currentTaskId: string | null;
-  /** Optional domain specialization (matches an ownership rule's role). */
+  /** 可选的领域专精（与所有权规则的 role 匹配）。 */
   specialization?: string | undefined;
 }
 
 interface TaskRecord {
   id: string;
   contractId: string | null;
+  /**
+   * 契约文件的真实路径。老版本持久化数据里没有这个字段，读取时回退到
+   * `.tasks/<contractId>.md`（见 contractPathFor）。
+   */
+  contractPath?: string | undefined;
   title: string;
   description: string;
   assigneeId: string;
@@ -271,6 +296,8 @@ export interface TickReport {
   completed: boolean;
 }
 
+// ── 服务主体 ────────────────────────────────────────────────────────────────
+
 export class AutopilotService {
   private teams = new Map<string, TeamRecord>();
   private listeners = new Set<() => void>();
@@ -300,17 +327,15 @@ export class AutopilotService {
       sink: {
         writeTaskNote: async (taskId, note) => {
           const found = this.tryFindTask(taskId);
-          if (found?.task.contractId != null) {
-            const contractPath = join(found.team.repoPath, '.tasks', `${found.task.contractId}.md`);
-            await appendTaskNote(contractPath, note);
+          if (found !== null && found.task.contractId !== null) {
+            await appendTaskNote(this.contractPathFor(found.team, found.task), note);
             await this.commitTasksDir(found.team, `tasks: note on ${found.task.contractId}`);
           }
         },
         labelTask: async (taskId) => {
           const found = this.tryFindTask(taskId);
-          if (found?.task.contractId != null) {
-            const contractPath = join(found.team.repoPath, '.tasks', `${found.task.contractId}.md`);
-            await patchTaskContract(contractPath, { status: 'needs-human' });
+          if (found !== null && found.task.contractId !== null) {
+            await patchTaskContract(this.contractPathFor(found.team, found.task), { status: 'needs-human' });
             await this.commitTasksDir(found.team, `tasks: ${found.task.contractId} needs-human`);
           }
         },
@@ -318,7 +343,7 @@ export class AutopilotService {
       notify: (record) => this.notifyEscalation(record),
       ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
     });
-  // Register every env-referenced secret with the redactor up front.
+    // 提前把所有以环境变量引用的密钥登记进脱敏器，之后任何输出都不会漏出明文。
     this.redactor.registerEnvNames([
       options.remote.sshKeyEnv,
       options.remote.apiTokenEnv,
@@ -328,16 +353,17 @@ export class AutopilotService {
     this.initNotification();
   }
 
+  // ── 人工通知回路 ──────────────────────────────────────────────────────────
+
   /**
-   * Wire the human-notification loop (SMTP mailer + local ticket endpoint).
-   * Best-effort: a broken config never stops the daemon — it just records a
-   * failed notification on escalation and carries on.
+   * 接通人工通知回路（SMTP 邮件 + 本地工单端点）。
+   * 尽力而为：配置有问题绝不能拖垮守护进程，只会在升级记录上记一次发送失败。
    */
   private initNotification(): void {
     const config = this.options.notification;
     if (config?.enabled !== true) return;
     try {
-      const mailer = Mailer.create({
+      this.notificationMailer = Mailer.create({
         host: config.smtp.host,
         port: config.smtp.port,
         secure: config.smtp.secure,
@@ -347,8 +373,6 @@ export class AutopilotService {
         fromEnv: config.smtp.fromEnv ?? config.fromEnv,
         redactor: this.redactor,
       });
-      this.notificationMailer = mailer;
-
       const server = new TicketServer({
         host: config.ticket.host,
         port: config.ticket.port,
@@ -362,32 +386,29 @@ export class AutopilotService {
     }
   }
 
-  /** The ticket store feeds on the live escalation records (by id). */
+  /** 工单数据源直接读活的升级记录（按 id 查找）。 */
   private ticketStore(): TicketStore {
     return {
       renderTicket: async (id) => {
-        const record = this.escalations.all.find((candidate) => candidate.id === id);
+        const record = this.escalationById(id);
         if (record === undefined) return null;
-        const taskTitle =
-          record.taskId !== null ? this.taskTitleFor(record.taskId) ?? record.taskId : 'deploy / global';
-        const fields = [
-          {
-            name: 'decision',
-            label: '请确认如何处理该问题（填写你的决策）',
-            type: 'textarea' as const,
-            required: true,
-            placeholder: '例如：同意该方案 / 更换密钥 / 变更需求……',
-          },
-          {
-            name: 'note',
-            label: '补充说明（可选；密钥请通过环境变量提供，勿直接粘贴）',
-            type: 'text' as const,
-            placeholder: '任何需要 AI 团队知道的上下文',
-          },
-        ];
         return {
-          title: `人工确认：${taskTitle}`,
-          fields,
+          title: `人工确认：${this.escalationSubject(record)}`,
+          fields: [
+            {
+              name: 'decision',
+              label: '请确认如何处理该问题（填写你的决策）',
+              type: 'textarea' as const,
+              required: true,
+              placeholder: '例如：同意该方案 / 更换密钥 / 变更需求……',
+            },
+            {
+              name: 'note',
+              label: '补充说明（可选；密钥请通过环境变量提供，勿直接粘贴）',
+              type: 'text' as const,
+              placeholder: '任何需要 AI 团队知道的上下文',
+            },
+          ],
         };
       },
       handleSubmit: (id, answers) => this.submitTicketAnswer(id, answers),
@@ -395,100 +416,58 @@ export class AutopilotService {
   }
 
   /**
-   * Apply a submitted ticket answer to a live escalation. This is the closure
-   * the TicketServer reaches: write the answer back to the record/task note and
-   * (with autoResume) clear the escalation + resume the loop. Public so the
-   * exact same path can be driven from tools and tests.
+   * 把工单答复应用到一条存活的升级记录上。
+   * 这是 TicketServer 持有的回调：回写答案，并在开启 autoResume 时清除升级、
+   * 恢复循环。设为 public 是为了让工具层和测试能走完全相同的路径。
    */
   async submitTicketAnswer(
     escalationId: string,
     answers: Record<string, string>,
   ): Promise<{ ok: boolean; message?: string }> {
-    const record = this.escalations.all.find((candidate) => candidate.id === escalationId);
+    const record = this.escalationById(escalationId);
     if (record === undefined) return { ok: false, message: 'ticket not found' };
     const answer = answers.decision ?? answers.note ?? '';
     if (answer.trim() === '') return { ok: false, message: 'decision is required' };
     record.notification = {
-      ...(record.notification ?? {
-        status: 'sent' as const,
-        mailTo: '',
-        mailDelivered: false,
-        ticketUrl: null,
-        submitted: null,
-        submittedAt: null,
-        autoResumed: false,
-        error: null,
-      }),
+      ...(record.notification ?? emptyNotification()),
       submitted: this.redactAnswers(answers),
       submittedAt: Date.now(),
     };
-    // Apply the human decision: write note + (with autoResume) clear the
-    // escalation and re-open the task without waiting for escalation_resolve.
+    // 应用人工决策：写入任务备注；开启 autoResume 时直接清除升级并重开任务，
+    // 不必再等一次 escalation_resolve。
     await this.applyHumanDecision(record, answer);
     record.notification.autoResumed = this.options.notification?.autoResume === true;
     this.changed();
     return { ok: true };
   }
 
-  private taskTitleFor(taskId: string): string | null {
-    for (const team of this.teams.values()) {
-      const task = team.tasks.find((candidate) => candidate.id === taskId);
-      if (task !== undefined) return task.title;
-    }
-    return null;
-  }
-
-  private redactAnswers(answers: Record<string, string>): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(answers)) {
-      out[key] = this.redactor.redact(value);
-    }
-    return out;
-  }
-
   /**
-   * A human answered the ticket. Write the decision into the task note and,
-   * when autoResume, restore the escalation to running + task to pending.
+   * 人答复了工单：把决策写进任务备注；开启 autoResume 时把循环恢复为
+   * running、任务退回 pending。
    */
   private async applyHumanDecision(record: EscalationView, answer: string): Promise<void> {
-    if (record.taskId !== null) {
-      const found = this.tryFindTask(record.taskId);
-      if (found !== null && found.task.contractId !== null) {
-        const contractPath = join(found.team.repoPath, '.tasks', `${found.task.contractId}.md`);
-        const note = [
-          '',
-          `> [human]: ${new Date().toISOString()} decision recorded`,
-          `> ${this.redactor.redact(answer)}`,
-          '',
-        ].join('\n');
-        await appendTaskNote(contractPath, note).catch(() => {});
-        await this.commitTasksDir(found.team, `tasks: human decision on ${found.task.contractId}`);
-      }
+    const found = record.taskId === null ? null : this.tryFindTask(record.taskId);
+    if (found !== null && found.task.contractId !== null) {
+      const note = [
+        '',
+        `> [human]: ${new Date().toISOString()} decision recorded`,
+        `> ${this.redactor.redact(answer)}`,
+        '',
+      ].join('\n');
+      await appendTaskNote(this.contractPathFor(found.team, found.task), note).catch(() => {});
+      await this.commitTasksDir(found.team, `tasks: human decision on ${found.task.contractId}`);
     }
-    if (this.options.notification?.autoResume === true) {
-      this.escalations.resolve(record.id);
-      if (record.taskId !== null) {
-        const found = this.tryFindTask(record.taskId);
-        if (found !== null && found.task.status === 'needs-human') {
-          found.task.status = 'pending';
-          found.task.reviewRound = 0;
-          found.task.updatedAt = Date.now();
-          if (found.task.contractId !== null) {
-            const contractPath = join(found.team.repoPath, '.tasks', `${found.task.contractId}.md`);
-            await patchTaskContract(contractPath, { status: 'pending', owner: null }).catch(() => {});
-            await this.syncBoard(found.team);
-            await this.commitTasksDir(found.team, 'tasks: board update');
-          }
-        }
-      }
-      if (this.loopState === 'escalated') this.loopState = 'running';
+    if (this.options.notification?.autoResume !== true) return;
+    this.escalations.resolve(record.id);
+    if (found !== null && found.task.status === 'needs-human') {
+      await this.reopenTask(found.team, found.task);
     }
+    if (this.loopState === 'escalated') this.loopState = 'running';
   }
 
   /**
-   * notify hook invoked by EscalationManager after an escalation is recorded:
-   * build the ticket link, render & send the email. Best-effort — returns the
-   * notification state (disabled / sent / failed) and never throws.
+   * EscalationManager 记录升级后回调的通知钩子：拼出工单链接、渲染并发送邮件。
+   * 尽力而为——只返回通知状态（disabled / sent / failed），绝不抛异常。
    */
   private async notifyEscalation(record: EscalationView): Promise<EscalationNotification | null> {
     const config = this.options.notification;
@@ -505,17 +484,16 @@ export class AutopilotService {
       autoResumed: false,
       error: null,
     };
-    // No mailer configured or no ticket endpoint: surface the link but mark
-    // mail as undelivered so the panel makes it obvious the human wasn't reached.
+    // 没有邮件器就只有工单链接：把 mail 标记为未送达，面板上要能一眼看出
+    // 人其实没被触达。
     if (this.notificationMailer === null) {
       return { ...initial, status: 'failed', error: 'notification: mailer disabled' };
     }
-    const taskTitle =
-      record.taskId !== null ? this.taskTitleFor(record.taskId) ?? record.taskId : 'deploy / global';
+    const subject = this.escalationSubject(record);
     const text = [
       `[dsh-ai-team] 需要你的人工确认`,
       ``,
-      `任务: ${taskTitle}`,
+      `任务: ${subject}`,
       `原因: ${record.reason}`,
       `说明: ${record.message}`,
       ``,
@@ -526,11 +504,7 @@ export class AutopilotService {
       `回答会回写到任务单；如需密钥请用环境变量提供，勿粘贴明文。`,
     ].join('\n');
     try {
-      await this.notificationMailer.send({
-        to: config.mailTo,
-        subject: `[dsh-ai-team] 人工确认: ${taskTitle}`,
-        text,
-      });
+      await this.notificationMailer.send({ to: config.mailTo, subject: `[dsh-ai-team] 人工确认: ${subject}`, text });
       return { ...initial, mailDelivered: true, status: 'sent' };
     } catch (error) {
       return {
@@ -541,7 +515,19 @@ export class AutopilotService {
     }
   }
 
-  /** Create the service and reload any persisted state (crash recovery). */
+  private escalationById(escalationId: string): EscalationView | undefined {
+    return this.escalations.all.find((candidate) => candidate.id === escalationId);
+  }
+
+  /** 升级事件的展示主体：有任务就用任务标题，否则是部署/全局事件。 */
+  private escalationSubject(record: EscalationView): string {
+    if (record.taskId === null) return 'deploy / global';
+    return this.taskTitleFor(record.taskId) ?? record.taskId;
+  }
+
+  // ── 生命周期 ──────────────────────────────────────────────────────────────
+
+  /** 创建服务并加载已持久化的状态（崩溃恢复）。 */
   static async create(options: AutopilotOptions): Promise<AutopilotService> {
     const resolved = {
       ...options,
@@ -554,7 +540,25 @@ export class AutopilotService {
     return service;
   }
 
-  // ── persistence ──────────────────────────────────────────────────────────
+  /** 停止服务：flush 未落盘的状态并停掉循环。用 ctx.effect() 注册。 */
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    await this.stopLoop();
+    if (this.notificationServer !== null) {
+      await this.notificationServer.close().catch(() => {});
+      this.notificationServer = null;
+    }
+    this.notificationMailer = null;
+    // 取消待触发的防抖写，改为立刻落盘一次，保证退出前状态完整。
+    if (this.persistTimer !== null) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    await this.flush();
+    this.listeners.clear();
+  }
+
+  // ── 持久化 ────────────────────────────────────────────────────────────────
 
   private get stateFile(): string {
     return join(this.options.stateDir, 'state.json');
@@ -569,7 +573,7 @@ export class AutopilotService {
     try {
       raw = await readFile(this.stateFile, 'utf8');
     } catch {
-      return; // first run
+      return; // 首次运行，没有历史状态
     }
     try {
       const state = JSON.parse(raw) as PersistedState;
@@ -577,6 +581,7 @@ export class AutopilotService {
       this.activeTeamId = state.activeTeamId ?? null;
       this.escalations.restore(state.escalations ?? []);
       this.deploys = state.deploys ?? [];
+      // 崩崩恢复的硬规则：持久化的 running 一律降级为 paused，等人来 resume。
       this.loopState = state.loopState === 'running' ? 'paused' : (state.loopState ?? 'stopped');
       this.tick = state.tick ?? 0;
       this.bootstrapped = state.bootstrapped ?? false;
@@ -585,7 +590,7 @@ export class AutopilotService {
         team.branches = await listBranches(team.repoPath).catch(() => team.branches);
       }
     } catch {
-      // Corrupt state file: start empty rather than crash the host.
+      // 状态文件损坏：宁可空着启动，也不能把宿主进程带崩。
     }
   }
 
@@ -603,35 +608,22 @@ export class AutopilotService {
     };
   }
 
+  /** 立即把当前状态写入 state.json（失败静默：退出路径不该抛）。 */
+  private async flush(): Promise<void> {
+    await writeFile(this.stateFile, `${JSON.stringify(this.snapshot(), null, 2)}\n`, 'utf8').catch(() => {});
+  }
+
+  /** 防抖落盘：一次 tick 内的多次变更合并成一次写。 */
   private persist(): void {
     if (this.disposed) return;
     if (this.persistTimer !== null) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      void writeFile(this.stateFile, `${JSON.stringify(this.snapshot(), null, 2)}\n`, 'utf8').catch(() => {});
-    }, 100);
+      void this.flush();
+    }, PERSIST_DEBOUNCE_MS);
   }
 
-  /** Flush pending state and stop the service. Register via ctx.effect(). */
-  async dispose(): Promise<void> {
-    this.disposed = true;
-    await this.stopLoop();
-    if (this.notificationServer !== null) {
-      await this.notificationServer.close().catch(() => {});
-      this.notificationServer = null;
-    }
-    this.notificationMailer = null;
-    if (this.persistTimer !== null) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-      await writeFile(this.stateFile, `${JSON.stringify(this.snapshot(), null, 2)}\n`, 'utf8').catch(() => {});
-    } else {
-      await writeFile(this.stateFile, `${JSON.stringify(this.snapshot(), null, 2)}\n`, 'utf8').catch(() => {});
-    }
-    this.listeners.clear();
-  }
-
-  // ── change notification ──────────────────────────────────────────────────
+  // ── 变更通知 ──────────────────────────────────────────────────────────────
 
   onChange(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -644,7 +636,7 @@ export class AutopilotService {
     for (const listener of this.listeners) listener();
   }
 
-  // ── views ────────────────────────────────────────────────────────────────
+  // ── 视图 ──────────────────────────────────────────────────────────────────
 
   private memberView(member: MemberRecord): MemberView {
     return {
@@ -711,7 +703,7 @@ export class AutopilotService {
     return this.memberOf(this.teamOf(teamId), memberId).systemPrompt;
   }
 
-  /** Whole-state projection snapshot — the value pushed to the Web UI. */
+  /** 全量状态投影快照——推给 Web 面板的值。 */
   projection() {
     const blocked: string[] = [];
     for (const team of this.teams.values()) {
@@ -730,7 +722,7 @@ export class AutopilotService {
     };
   }
 
-  // ── lookups ──────────────────────────────────────────────────────────────
+  // ── 查找 ──────────────────────────────────────────────────────────────────
 
   private teamOf(teamId: string): TeamRecord {
     const team = this.teams.get(teamId);
@@ -758,6 +750,7 @@ export class AutopilotService {
     return found;
   }
 
+  /** 按 id 或 contractId 查找任务；找不到返回 null 而不是抛错。 */
   private tryFindTask(taskId: string): { team: TeamRecord; task: TaskRecord } | null {
     for (const team of this.teams.values()) {
       const task = team.tasks.find((candidate) => candidate.id === taskId || candidate.contractId === taskId);
@@ -766,13 +759,29 @@ export class AutopilotService {
     return null;
   }
 
-  // ── remote helpers ───────────────────────────────────────────────────────
+  private taskTitleFor(taskId: string): string | null {
+    for (const team of this.teams.values()) {
+      const task = team.tasks.find((candidate) => candidate.id === taskId);
+      if (task !== undefined) return task.title;
+    }
+    return null;
+  }
+
+  private redactAnswers(answers: Record<string, string>): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(answers)) {
+      out[key] = this.redactor.redact(value);
+    }
+    return out;
+  }
+
+  // ── 仓库辅助 ──────────────────────────────────────────────────────────────
 
   private get hasRemote(): boolean {
     return this.options.remote.url !== '';
   }
 
-  /** Build authenticated env for remote git ops; undefined for local/generic. */
+  /** 构造远端 git 操作的认证环境；本地仓库或无 SSH 远端时返回空环境。 */
   private async remoteEnv(): Promise<{ env?: Record<string, string>; cleanup: () => Promise<void> }> {
     if (!this.hasRemote || !isSshRemote(this.options.remote.url)) return { cleanup: async () => {} };
     const key = process.env[this.options.remote.sshKeyEnv];
@@ -786,53 +795,111 @@ export class AutopilotService {
     return { env, cleanup };
   }
 
-  // ── bootstrap (autopilot_init) ───────────────────────────────────────────
+  /** 用远端凭据推送分支，并保证临时 SSH key 一定被清理。 */
+  private async pushWithRemoteEnv(team: TeamRecord, branch: string): Promise<void> {
+    const { env, cleanup } = await this.remoteEnv();
+    try {
+      await pushBranch(team.repoPath, branch, { env });
+    } finally {
+      await cleanup();
+    }
+  }
+
+  /** 刷新团队缓存的分支列表。 */
+  private async refreshBranches(team: TeamRecord): Promise<void> {
+    team.branches = await listBranches(team.repoPath);
+  }
+
+  /** 刷新任务的活动时间戳（卡死检测依赖它）。 */
+  private touchTask(task: TaskRecord): void {
+    task.lastActivityAt = Date.now();
+    task.updatedAt = Date.now();
+  }
 
   /**
-   * Unattended bootstrap: clone the remote into a fresh team's repo slot,
-   * satisfy the toolchain rootlessly, run setupCommand + verifyCommand.
-   * Failures escalate with the bootstrap report attached.
+   * 任务契约文件的路径。优先用建任务时记下的真实路径；老版本持久化数据没有
+   * 该字段，回退到 `.tasks/<contractId>.md`。
+   */
+  private contractPathFor(team: TeamRecord, task: TaskRecord): string {
+    return task.contractPath ?? join(team.repoPath, TASKS_DIR, `${task.contractId ?? task.id}.md`);
+  }
+
+  /** 重新生成 .tasks/_board.md（best effort）。 */
+  private async syncBoard(team: TeamRecord): Promise<void> {
+    const contracts = await loadTaskContracts(team.repoPath).catch(() => null);
+    if (contracts !== null) await regenerateBoard(team.repoPath, contracts).catch(() => {});
+  }
+
+  /**
+   * 提交 .tasks/ 的改动，让集成检出始终保持干净、可合并
+   * （best effort：没有 .tasks 目录时是空操作）。
+   */
+  private async commitTasksDir(team: TeamRecord, message: string): Promise<void> {
+    await commitAll(team.repoPath, TASKS_DIR, message).catch(() => {});
+  }
+
+  /**
+   * 回写任务契约的状态，并同步看板、提交 .tasks/。
+   *
+   * `owner` 省略时不动契约里的 owner 字段（任务完成不该把 owner 抹掉）；
+   * 显式传 null 才会把 owner 行删掉（任务退回待派发时这么做）。
+   * 全部 best effort：契约文件缺失或提交失败都不该打断主流程。
+   */
+  private async updateContractStatus(
+    team: TeamRecord,
+    task: TaskRecord,
+    status: TaskStatus,
+    owner?: string | null,
+  ): Promise<void> {
+    if (task.contractId === null) return;
+    const patch: { status: TaskStatus; owner?: string | null } = { status };
+    if (owner !== undefined) patch.owner = owner;
+    await patchTaskContract(this.contractPathFor(team, task), patch).catch(() => {});
+    await this.syncBoard(team);
+    await this.commitTasksDir(team, 'tasks: board update');
+  }
+
+  /** 重开任务：回到 pending、清零返工轮次并清空 owner，让循环可以重新派发。 */
+  private async reopenTask(team: TeamRecord, task: TaskRecord): Promise<void> {
+    task.status = 'pending';
+    task.reviewRound = 0;
+    task.updatedAt = Date.now();
+    await this.updateContractStatus(team, task, 'pending', null);
+  }
+
+  /**
+   * 让成员脱离任务分支、回到自己的个人分支并标记空闲。
+   * 传入 team 时额外把基础分支的最新进展合并回个人分支（评审通过后走这条路），
+   * 保证下一个任务从最新的基础分支开工；合并冲突静默忽略。
+   */
+  private async releaseMemberWorkspace(member: MemberRecord, team?: TeamRecord): Promise<void> {
+    const branch = memberBranch(member.id);
+    await checkout(member.workspacePath, branch).catch(() => {});
+    if (team !== undefined) {
+      await mergeBranch(team.repoPath, team.baseBranch, branch, team.baseBranch).catch(() => {});
+    }
+    member.branch = branch;
+    member.status = 'idle';
+    member.currentTaskId = null;
+  }
+
+  // ── 引导（autopilot_init） ────────────────────────────────────────────────
+
+  /**
+   * 无人值守引导：把远端克隆到新团队的仓库位置，rootless 补齐工具链，
+   * 依次运行 setupCommand 与 verifyCommand。失败时带上引导报告升级。
    */
   async initAutopilot(teamName = 'autopilot'): Promise<{ teamId: string; report: BootstrapReport | null }> {
     if (!this.options.bootstrap.enabled && !this.hasRemote) {
       throw new Error('nothing to initialize: bootstrap.disabled and no remote.url configured');
     }
-    // Reuse an existing team when init is retried (idempotent).
+    // 重复 init 要幂等：已有团队就直接复用。
     let team = [...this.teams.values()][0];
     if (team === undefined) {
       const view = await this.createTeam({ name: teamName, members: [{ role: 'leader' }], cloneRemote: this.hasRemote });
       team = this.teamOf(view.id);
     } else if (this.hasRemote && !(await this.isCloneOfRemote(team.repoPath))) {
-      // The team predates the remote configuration: adopt the remote only
-      // when the local repo is still pristine (nothing but the initial
-      // commit), otherwise make the conflict explicit instead of silently
-      // diverging.
-      const branches = await listBranches(team.repoPath);
-      const pristine = branches.length <= 1 && team.members.length <= 1;
-      if (!pristine) {
-        throw new Error(
-          `team repo ${team.repoPath} is not a clone of remote "${this.options.remote.url}" and already has local work; ` +
-            `set the remote up manually or start from a fresh rootDir`,
-        );
-      }
-      const { env, cleanup } = await this.remoteEnv();
-      try {
-        await rm(team.repoPath, { recursive: true, force: true });
-        await cloneRemote(this.options.remote.url, team.repoPath, team.baseBranch, env);
-      } finally {
-        await cleanup();
-      }
-      // Recreate the leader's worktree against the fresh clone.
-      const repo = team.repoPath;
-      const base = team.baseBranch;
-      const leader = team.members[0];
-      if (leader !== undefined) {
-        await rm(leader.workspacePath, { recursive: true, force: true });
-        await addWorktree(repo, leader.workspacePath, leader.branch, base).catch(async () => {
-          await deleteBranch(repo, leader.branch).catch(() => {});
-          await addWorktree(repo, leader.workspacePath, leader.branch, base);
-        });
-      }
+      await this.adoptRemote(team);
     }
     if (!this.options.bootstrap.enabled || this.bootstrapped) {
       return { teamId: team.id, report: null };
@@ -867,13 +934,35 @@ export class AutopilotService {
     }
   }
 
-  private async probeRemote(env?: Record<string, string>): Promise<boolean> {
-    try {
-      await git(['ls-remote', this.options.remote.url, 'HEAD'], this.options.rootDir, { env });
-      return true;
-    } catch {
-      return false;
+  /**
+   * 团队早于远端配置而存在时，把远端接管过来。
+   * 只有本地仓库仍然干净（除初始提交外什么都没有）才自动重建；否则把冲突
+   * 明确抛出来，而不是让两份历史悄悄分叉。
+   */
+  private async adoptRemote(team: TeamRecord): Promise<void> {
+    const branches = await listBranches(team.repoPath);
+    const pristine = branches.length <= 1 && team.members.length <= 1;
+    if (!pristine) {
+      throw new Error(
+        `team repo ${team.repoPath} is not a clone of remote "${this.options.remote.url}" and already has local work; ` +
+          `set the remote up manually or start from a fresh rootDir`,
+      );
     }
+    const { env, cleanup } = await this.remoteEnv();
+    try {
+      await rm(team.repoPath, { recursive: true, force: true });
+      await cloneRemote(this.options.remote.url, team.repoPath, team.baseBranch, env);
+    } finally {
+      await cleanup();
+    }
+    // 用新克隆重建 leader 的 worktree。
+    const leader = team.members[0];
+    if (leader === undefined) return;
+    await rm(leader.workspacePath, { recursive: true, force: true });
+    await addWorktree(team.repoPath, leader.workspacePath, leader.branch, team.baseBranch).catch(async () => {
+      await deleteBranch(team.repoPath, leader.branch).catch(() => {});
+      await addWorktree(team.repoPath, leader.workspacePath, leader.branch, team.baseBranch);
+    });
   }
 
   private async isCloneOfRemote(repoPath: string): Promise<boolean> {
@@ -885,17 +974,18 @@ export class AutopilotService {
     }
   }
 
-  // ── team & member management ─────────────────────────────────────────────
+  // ── 团队与成员 ────────────────────────────────────────────────────────────
 
   async createTeam(input: {
     name: string;
     members?: { role: Role; name?: string; specialization?: string }[];
-    /** Internal: clone the configured remote instead of a local init. */
+    /** 内部用：克隆配置好的远端，而不是本地 init。 */
     cloneRemote?: boolean;
   }): Promise<TeamView> {
     const id = shortId('team');
     const repoPath = join(this.options.rootDir, id, 'repo');
     const workspaceRoot = join(this.options.rootDir, id, 'workspaces');
+    const requested = input.members ?? [{ role: 'leader' as const }];
     if (input.cloneRemote === true && this.hasRemote) {
       const { env, cleanup } = await this.remoteEnv();
       try {
@@ -918,9 +1008,9 @@ export class AutopilotService {
       reviews: [],
       createdAt: Date.now(),
     };
+    // 先入册再逐个加成员：addMember 依赖 team 已经在表里。
     this.teams.set(id, team);
-    const requested = input.members ?? [{ role: 'leader' as const }];
-    if (requested.filter((m) => m.role === 'leader').length !== 1) {
+    if (requested.filter((member) => member.role === 'leader').length !== 1) {
       this.teams.delete(id);
       throw new Error('a team needs exactly one leader member');
     }
@@ -943,14 +1033,14 @@ export class AutopilotService {
     if (team.members.length >= this.options.maxMembers) {
       throw new Error(`team "${team.name}" already has the maximum of ${this.options.maxMembers} members`);
     }
-    if (input.role === 'leader' && team.members.some((m) => m.role === 'leader')) {
+    if (input.role === 'leader' && team.members.some((member) => member.role === 'leader')) {
       throw new Error(`team "${team.name}" already has a leader`);
     }
     const id = shortId('m');
     const role = input.role;
-    const index = team.members.filter((m) => m.role === role).length + 1;
+    const index = team.members.filter((member) => member.role === role).length + 1;
     const name = input.name ?? defaultMemberName(role, index);
-    const branch = `member/${id}`;
+    const branch = memberBranch(id);
     const workspacePath = join(team.workspaceRoot, id);
     await addWorktree(team.repoPath, workspacePath, branch, team.baseBranch);
     const member: MemberRecord = {
@@ -970,18 +1060,17 @@ export class AutopilotService {
       ...(input.specialization !== undefined ? { specialization: input.specialization } : {}),
     };
     team.members.push(member);
-    team.branches = await listBranches(team.repoPath);
+    await this.refreshBranches(team);
     this.changed(team.id);
     return this.memberView(member);
   }
 
-  // ── task board ───────────────────────────────────────────────────────────
+  // ── 任务看板 ──────────────────────────────────────────────────────────────
 
   /**
-   * Assign a task (leader or the daemon dispatcher): creates the task branch
-   * from base, checks it out in the assignee's workspace. When contractId is
-   * given, the contract file must exist in the repo's .tasks/ and its status
-   * must be pending (spec §4.4).
+   * 派发任务（leader 或守护循环的 dispatcher）：从 base 建任务分支，
+   * 在接手者的工作区里检出。给定 contractId 时，契约文件必须存在于仓库的
+   * .tasks/ 且状态为 pending（规范 §4.4）。
    */
   async assignTask(input: {
     teamId: string;
@@ -1016,9 +1105,10 @@ export class AutopilotService {
     const id = shortId('task');
     const destination = contract?.id ?? id;
     const domainCount = distinctDomainCount(contract?.touches ?? []);
-    if (domainCount > this.options.profile.crossDomainThreshold) {
+    const threshold = this.options.profile.crossDomainThreshold;
+    if (domainCount > threshold) {
       throw new Error(
-        `task "${input.title}" touches ${domainCount} distinct domains (limit ${this.options.profile.crossDomainThreshold}); ` +
+        `task "${input.title}" touches ${domainCount} distinct domains (limit ${threshold}); ` +
           `split it into per-domain tasks or escalate for a cross-domain change`,
       );
     }
@@ -1026,11 +1116,13 @@ export class AutopilotService {
     await createBranch(team.repoPath, branch, team.baseBranch);
     await checkout(assignee.workspacePath, branch);
     const now = Date.now();
+    const rawDescription = input.description ?? contract?.body.slice(0, CONTRACT_BODY_LIMIT) ?? '';
     const task: TaskRecord = {
       id,
       contractId: contract?.id ?? null,
+      contractPath: contract?.path,
       title: contract?.title ?? input.title,
-      description: input.description ?? contract?.body.slice(0, 2000) ?? '',
+      description: enrichDescriptionWithOwnership(rawDescription, contract?.touches ?? [], this.options.profile.ownership),
       assigneeId: assignee.id,
       status: 'pending',
       branch,
@@ -1044,22 +1136,15 @@ export class AutopilotService {
       createdAt: now,
       updatedAt: now,
     };
-    task.description = enrichDescriptionWithOwnership(
-      input.description ?? contract?.body.slice(0, 2000) ?? '',
-      task.touches,
-      this.options.profile.ownership,
-    );
     team.tasks.push(task);
     assignee.branch = branch;
     assignee.status = 'working';
     assignee.currentTaskId = id;
     if (contract !== null) {
-      await patchTaskContract(contract.path, { status: 'in_progress', owner: assignee.name }).catch(() => {});
-      await this.syncBoard(team);
-      await this.commitTasksDir(team, "tasks: board update");
+      await this.updateContractStatus(team, task, 'in_progress', assignee.name);
       task.status = 'in_progress';
     }
-    team.branches = await listBranches(team.repoPath);
+    await this.refreshBranches(team);
     this.changed(team.id);
     return this.taskView(team, task);
   }
@@ -1069,41 +1154,25 @@ export class AutopilotService {
     const contract = contracts.find((candidate) => candidate.id === contractId);
     if (contract === undefined) {
       throw new Error(
-        `no task contract "${contractId}" in ${join(team.repoPath, '.tasks')}; known: ${contracts.map((c) => c.id).join(', ') || '(none)'}`,
+        `no task contract "${contractId}" in ${join(team.repoPath, TASKS_DIR)}; known: ${contracts.map((c) => c.id).join(', ') || '(none)'}`,
       );
     }
     return contract;
   }
 
-  /** Regenerate .tasks/_board.md from the repo's contracts (best effort). */
-  private async syncBoard(team: TeamRecord): Promise<void> {
-    const contracts = await loadTaskContracts(team.repoPath).catch(() => null);
-    if (contracts !== null) await regenerateBoard(team.repoPath, contracts).catch(() => {});
-  }
-
   /**
-   * Commit .tasks/ changes in the integration checkout so the working tree
-   * stays clean for merges (best effort: no-op without a .tasks directory).
-   */
-  private async commitTasksDir(team: TeamRecord, message: string): Promise<void> {
-    await commitAll(team.repoPath, '.tasks', message).catch(() => {});
-  }
-
-  /**
-   * Move a task along the board. Manual transitions are restricted to
-   * pending / in_progress / in_review — done and changes_requested are owned
-   * by the review flow, needs-human by the escalation flow.
+   * 手动推进任务状态。只允许在 pending / in_progress / in_review 之间切换：
+   * done 与 changes_requested 归评审流程所有，needs-human 归升级流程所有。
    */
   async updateTask(input: { taskId: string; status: 'pending' | 'in_progress' | 'in_review' }): Promise<TaskView> {
     const { team, task } = this.findTask(input.taskId);
     task.status = input.status;
-    task.lastActivityAt = Date.now();
-    task.updatedAt = Date.now();
+    this.touchTask(task);
     this.changed(team.id);
     return this.taskView(team, task);
   }
 
-  // ── branch collaboration ─────────────────────────────────────────────────
+  // ── 分支协作 ──────────────────────────────────────────────────────────────
 
   async branch(input: {
     teamId: string;
@@ -1115,63 +1184,59 @@ export class AutopilotService {
     const team = this.teamOf(input.teamId);
     switch (input.action) {
       case 'list': {
-        team.branches = await listBranches(team.repoPath);
+        await this.refreshBranches(team);
         this.changed(team.id);
         return { action: 'list', branches: team.branches, detail: `${team.branches.length} branches` };
       }
       case 'create': {
         const branch = requireBranch(input.branch);
-        await createBranch(team.repoPath, branch, input.target ?? team.baseBranch);
-        team.branches = await listBranches(team.repoPath);
+        const startPoint = input.target ?? team.baseBranch;
+        await createBranch(team.repoPath, branch, startPoint);
+        await this.refreshBranches(team);
         this.changed(team.id);
-        return {
-          action: 'create',
-          branches: team.branches,
-          detail: `created ${branch} from ${input.target ?? team.baseBranch}`,
-        };
+        return { action: 'create', branches: team.branches, detail: `created ${branch} from ${startPoint}` };
       }
       case 'switch': {
         const branch = requireBranch(input.branch);
         const member = this.memberOf(team, requireMember(input.memberId));
-        const branches = await listBranches(team.repoPath);
-        if (!branches.includes(branch)) {
-          throw new Error(`branch "${branch}" does not exist; known branches: ${branches.join(', ')}`);
+        await this.refreshBranches(team);
+        if (!team.branches.includes(branch)) {
+          throw new Error(`branch "${branch}" does not exist; known branches: ${team.branches.join(', ')}`);
         }
         await checkout(member.workspacePath, branch);
         member.branch = branch;
         this.changed(team.id);
-        return { action: 'switch', branches, detail: `${member.name} switched to ${branch}` };
+        return { action: 'switch', branches: team.branches, detail: `${member.name} switched to ${branch}` };
       }
       case 'merge': {
         const branch = requireBranch(input.branch);
         const target = input.target ?? team.baseBranch;
         await mergeBranch(team.repoPath, branch, target, team.baseBranch, `merge: ${branch} into ${target} (dsh-ai-team)`);
-        team.branches = await listBranches(team.repoPath);
+        await this.refreshBranches(team);
         this.changed(team.id);
         return { action: 'merge', branches: team.branches, detail: `merged ${branch} into ${target}` };
       }
     }
   }
 
-  // ── quality gates ────────────────────────────────────────────────────────
+  // ── 质量门 ────────────────────────────────────────────────────────────────
 
   /**
-   * Run the configured gate commands in the workspace of the task's
-   * assignee. The summary is stored on the task (code_review approve
-   * requires it green).
+   * 在任务接手者的工作区里跑配置好的质量门命令。结果存在任务上
+   * （code_review 的 approve 要求它全绿）。
    */
   async runGatesForTask(input: { taskId: string; signal?: AbortSignal }): Promise<GateSummary> {
     const { team, task } = this.findTask(input.taskId);
     const assignee = this.memberOf(team, task.assigneeId);
-    // Profile-aware gate selection: honors `when` (touches-conditional) and
-    // `role: 'ci'` (enforced by remote CI only, never run locally).
+    // 按画像选门：honor `when`（按 touches 条件触发）与 `role: 'ci'`
+    //（只由远端 CI 执行，本地绝跑不）。
     const { commands, skippedCi } = selectGateCommands(
       this.options.profile,
       task.touches,
       this.options.gates.commands,
     );
-    // Opt-in build-cache: link gitignored cache dirs to a shared per-branch
-    // location before running gates, so `build`/`e2e` reuse prior output.
+    // 可选的构建缓存共享：跑门前先把被 gitignore 的缓存目录软链到按分支共享的
+    // 位置，让 build / e2e 复用上一次产物。
     if (this.options.buildCache?.enabled === true) {
       const cacheDir = join(this.options.rootDir, team.id, 'build-cache', task.branch);
       await linkSharedCacheDirs(assignee.workspacePath, cacheDir, this.options.buildCache.dirs).catch(() => {});
@@ -1187,8 +1252,8 @@ export class AutopilotService {
       branch: task.branch,
     });
     if (skippedCi.length > 0) {
-      // Surface the deliberately-skipped CI-only gates so the model/reviewer
-      // knows the local run is intentionally not the whole enforcement story.
+      // 明确标出被有意跳过的 CI-only 门，让模型与 reviewer 知道本地这轮
+      // 本来就不是全部约束。
       summary.results.push({
         command: `(ci-only, not run locally) ${skippedCi.join(' && ')}`,
         passed: true,
@@ -1198,19 +1263,17 @@ export class AutopilotService {
       });
     }
     task.gates = summary;
-    task.lastActivityAt = Date.now();
-    task.updatedAt = Date.now();
+    this.touchTask(task);
     this.changed(team.id);
     return summary;
   }
 
-  // ── code review (gated) ──────────────────────────────────────────────────
+  // ── 代码评审（受门约束） ──────────────────────────────────────────────────
 
   /**
-   * Reviewer verdict on a task in review. approve requires green quality
-   * gates when pushRequiresGates is set (spec §4.5.4), then --no-ff merges
-   * into base; conflicts fail and the task stays in_review. request_changes
-   * bumps the round and hands the task back.
+   * reviewer 对处于评审中的任务给出结论。approve 在开启 pushRequiresGates 时
+   * 要求质量门全绿（规范 §4.5.4），随后按画像的合并策略合入 base；冲突则失败，
+   * 任务停留在 in_review。request_changes 累加轮次并把任务退回。
    */
   async review(input: {
     taskId: string;
@@ -1241,19 +1304,7 @@ export class AutopilotService {
     team.reviews.push(review);
     let merged = false;
     if (input.verdict === 'approve') {
-      if (this.options.security.pushRequiresGates) {
-        const gates = task.gates;
-        if (gates === null || !gates.allPassed) {
-          throw new Error(
-            `cannot approve: quality gates are not green for task "${task.title}" — run gates_run first and make every gate pass`,
-          );
-        }
-        if (this.options.gates.requireCiGreen && this.hasRemote && task.ciStatus !== null && task.ciStatus !== 'success') {
-          throw new Error(
-            `cannot approve: remote CI status is "${task.ciStatus ?? 'unknown'}" — wait for CI to go green (pr_sync polls it)`,
-          );
-        }
-      }
+      this.assertMergeAllowed(task);
       await mergeBranch(
         team.repoPath,
         task.branch,
@@ -1264,56 +1315,54 @@ export class AutopilotService {
       );
       merged = true;
       task.status = 'done';
-      assignee.status = 'idle';
-      assignee.currentTaskId = null;
-      if (task.contractId !== null) {
-        const contractPath = join(team.repoPath, '.tasks', `${task.contractId}.md`);
-        await patchTaskContract(contractPath, { status: 'done' }).catch(() => {});
-        await this.syncBoard(team);
-        await this.commitTasksDir(team, "tasks: board update");
-      }
-      await checkout(assignee.workspacePath, `member/${assignee.id}`).catch(() => {});
-      await mergeBranch(team.repoPath, team.baseBranch, `member/${assignee.id}`, team.baseBranch).catch(() => {});
-      assignee.branch = `member/${assignee.id}`;
-      // Push the merged base branch to the remote when one is configured.
-      if (this.hasRemote) {
-        const { env, cleanup } = await this.remoteEnv();
-        try {
-          await pushBranch(team.repoPath, team.baseBranch, { env });
-        } finally {
-          await cleanup();
-        }
-      }
+      await this.updateContractStatus(team, task, 'done');
+      // 让开发者的个人分支跟上刚合入的 base，再回到空闲。
+      await this.releaseMemberWorkspace(assignee, team);
+      if (this.hasRemote) await this.pushWithRemoteEnv(team, team.baseBranch);
     } else {
       task.status = 'changes_requested';
       task.reviewRound += 1;
       assignee.status = 'working';
     }
-    task.lastActivityAt = Date.now();
-    task.updatedAt = Date.now();
-    team.branches = await listBranches(team.repoPath);
+    this.touchTask(task);
+    await this.refreshBranches(team);
     this.changed(team.id);
     return { review: this.reviewView(team, review), task: this.taskView(team, task), merged };
   }
 
-  /** Remove a merged task branch from the shared repository. */
+  /** approve 前的硬校验：质量门与远端 CI 必须先绿。 */
+  private assertMergeAllowed(task: TaskRecord): void {
+    if (!this.options.security.pushRequiresGates) return;
+    const gates = task.gates;
+    if (gates === null || !gates.allPassed) {
+      throw new Error(
+        `cannot approve: quality gates are not green for task "${task.title}" — run gates_run first and make every gate pass`,
+      );
+    }
+    if (this.options.gates.requireCiGreen && this.hasRemote && task.ciStatus !== null && task.ciStatus !== 'success') {
+      throw new Error(
+        `cannot approve: remote CI status is "${task.ciStatus ?? 'unknown'}" — wait for CI to go green (pr_sync polls it)`,
+      );
+    }
+  }
+
+  /** 从共享仓库里删掉已合并的任务分支。 */
   async pruneTaskBranch(taskId: string): Promise<void> {
     const { team, task } = this.findTask(taskId);
     if (task.status !== 'done') {
       throw new Error(`task "${task.title}" is not done; only merged task branches can be pruned`);
     }
     await deleteBranch(team.repoPath, task.branch);
-    team.branches = await listBranches(team.repoPath);
+    await this.refreshBranches(team);
     this.changed(team.id);
   }
 
-  // ── pr_sync ──────────────────────────────────────────────────────────────
+  // ── pr_sync ───────────────────────────────────────────────────────────────
 
   /**
-   * Push the task branch to the remote (spec §4.2 pr_sync). Pre-push guards:
-   * gates green (pushRequiresGates) and no forbidden paths in the branch diff
-   * (spec §4.5.3). Creates/updates a PR on github via the api token; generic
-   * remotes just get the push. Also refreshes CI status once.
+   * 把任务分支推到远端（规范 §4.2 pr_sync）。推送前的护栏：质量门要绿
+   * （pushRequiresGates），分支 diff 不能碰禁区（规范 §4.5.3）。github 平台会
+   * 用 api token 创建/更新 PR，其它平台只做推送。顺带刷新一次 CI 状态。
    */
   async prSync(input: { taskId: string }): Promise<{ pushed: boolean; prUrl: string | null; ciStatus: CiStatus }> {
     const { team, task } = this.findTask(input.taskId);
@@ -1328,126 +1377,102 @@ export class AutopilotService {
     const { env, cleanup } = await this.remoteEnv();
     try {
       await fetchRemote(team.repoPath, env);
-      const baseSha = await resolveRef(team.repoPath, `origin/${team.baseBranch}`);
-      const branchSha = await resolveRef(team.repoPath, task.branch);
-      if (baseSha !== null && branchSha !== null) {
-        // Forbidden-zone policy is profile-aware and mode-aware:
-        //  - `block` (human-only) → hard-block the push and escalate;
-        //  - `needs-approval` / `high-conflict` → hold the push for a human /
-        //    owner decision (a dedicated PR), escalating without pushing.
-        const rules = effectiveForbiddenRules(this.options.profile, this.options.security.forbiddenPaths);
-        const files = await changedFiles(team.repoPath, baseSha, branchSha);
-        const { blocks, approvals } = classifyForbiddenFiles(files, rules);
-        if (blocks.length > 0) {
-          await this.escalateTask({
-            taskId: task.id,
-            reason: 'forbidden-paths',
-            message: `branch ${task.branch} touches human-only/blocked paths: ${blocks.join(', ')}`,
-            suggestion: 'remove the forbidden changes from the task branch, rebase onto base, then pr_sync again',
-          });
-          throw new Error(`push blocked: forbidden paths modified: ${blocks.join(', ')}`);
-        }
-        if (approvals.length > 0) {
-          await this.escalateTask({
-            taskId: task.id,
-            reason: 'manual',
-            message: `branch ${task.branch} touches paths needing owner/human approval or a dedicated PR: ${approvals.join(', ')}`,
-            suggestion:
-              'confirm the change may land only as a separate PR after owner/human approval, or split it out of this task',
-          });
-          throw new Error(`push held for approval: ${approvals.join(', ')}`);
-        }
-      }
+      await this.assertBranchDiffAllowed(team, task);
       await pushBranch(team.repoPath, task.branch, { env });
     } finally {
       await cleanup();
     }
-    // PR creation (github only; other platforms fall back to push-only).
+    // PR 创建只支持 github；其它平台退化为纯推送。
     if (this.options.remote.platform === 'github') {
-      task.prUrl = await this.githubUpsertPr(team, task).catch(() => task.prUrl);
-      task.ciStatus = await this.githubCiStatus(team, task.branch).catch((): CiStatus => 'unknown');
+      task.prUrl = await this.upsertPullRequest(team, task).catch(() => task.prUrl);
+      task.ciStatus = await this.ciStatusFor(team, task.branch).catch((): CiStatus => 'unknown');
     } else {
       task.ciStatus = 'unknown';
     }
-    task.lastActivityAt = Date.now();
-    task.updatedAt = Date.now();
+    this.touchTask(task);
     this.changed(team.id);
     return { pushed: true, prUrl: task.prUrl, ciStatus: task.ciStatus ?? 'unknown' };
   }
 
-  private githubRepoSlug(): string {
-    const url = this.options.remote.url;
-    const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(url);
-    if (match === null) throw new Error(`cannot parse github owner/repo from remote url "${url}"`);
-    return match[1] ?? '';
+  /**
+   * 推送前的禁区检查（规范 §4.5.3）。策略由画像决定且区分模式：
+   *  - `block`（human-only）→ 硬阻断推送并升级；
+   *  - `needs-approval` / `high-conflict` → 先压住推送，等人或 owner 决策
+   *    （走独立 PR），升级但不推。
+   */
+  private async assertBranchDiffAllowed(team: TeamRecord, task: TaskRecord): Promise<void> {
+    const baseSha = await resolveRef(team.repoPath, `origin/${team.baseBranch}`);
+    const branchSha = await resolveRef(team.repoPath, task.branch);
+    if (baseSha === null || branchSha === null) return;
+    const rules = effectiveForbiddenRules(this.options.profile, this.options.security.forbiddenPaths);
+    const files = await changedFiles(team.repoPath, baseSha, branchSha);
+    const { blocks, approvals } = classifyForbiddenFiles(files, rules);
+    if (blocks.length > 0) {
+      await this.escalateTask({
+        taskId: task.id,
+        reason: 'forbidden-paths',
+        message: `branch ${task.branch} touches human-only/blocked paths: ${blocks.join(', ')}`,
+        suggestion: 'remove the forbidden changes from the task branch, rebase onto base, then pr_sync again',
+      });
+      throw new Error(`push blocked: forbidden paths modified: ${blocks.join(', ')}`);
+    }
+    if (approvals.length > 0) {
+      await this.escalateTask({
+        taskId: task.id,
+        reason: 'manual',
+        message: `branch ${task.branch} touches paths needing owner/human approval or a dedicated PR: ${approvals.join(', ')}`,
+        suggestion:
+          'confirm the change may land only as a separate PR after owner/human approval, or split it out of this task',
+      });
+      throw new Error(`push held for approval: ${approvals.join(', ')}`);
+    }
   }
 
-  private async githubUpsertPr(team: TeamRecord, task: TaskRecord): Promise<string | null> {
+  /** 为任务分支创建/更新 PR；拿不到新 URL 时保留旧值。 */
+  private async upsertPullRequest(team: TeamRecord, task: TaskRecord): Promise<string | null> {
     const token = resolveOptionalEnvRef(this.options.remote.apiTokenEnv);
     if (token === undefined) return null;
+    // token 一读出来就登记进脱敏器：外发 body 与日志都不会出现明文。
     this.redactor.register(token);
-    const fetchImpl = this.options.fetchFn ?? fetch;
-    const slug = this.githubRepoSlug();
     const id = task.contractId ?? task.id;
-    const title = renderPrTitle(this.options.profile.prTitleTemplate, id, task.title, task.touches);
-    const body = renderPrBody(
-      this.options.profile.prBodyTemplate,
-      id,
-      task.title,
-      task.touches,
-      this.memberOf(team, task.assigneeId).name,
-    );
-    const response = await fetchImpl(`https://api.github.com/repos/${slug}/pulls`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: 'application/vnd.github+json',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        title,
-        head: task.branch,
-        base: this.options.baseBranch,
-        body: this.redactor.redact(body),
-      }),
-      signal: AbortSignal.timeout(15_000),
+    const result = await upsertPullRequest({
+      token,
+      slug: githubRepoSlug(this.options.remote.url),
+      title: renderPrTitle(this.options.profile.prTitleTemplate, id, task.title, task.touches),
+      body: this.redactor.redact(
+        renderPrBody(
+          this.options.profile.prBodyTemplate,
+          id,
+          task.title,
+          task.touches,
+          this.memberOf(team, task.assigneeId).name,
+        ),
+      ),
+      head: task.branch,
+      base: team.baseBranch,
+      ...(this.options.fetchFn !== undefined ? { fetchFn: this.options.fetchFn } : {}),
     });
-    if (!response.ok) {
-      // 422 usually means the PR already exists — keep the previous URL.
-      return task.prUrl;
-    }
-    const bodyJson = (await response.json()) as { html_url?: string };
-    return bodyJson.html_url ?? null;
+    return result.created ? result.url : task.prUrl;
   }
 
-  private async githubCiStatus(team: TeamRecord, branch: string): Promise<CiStatus> {
-    const token = resolveOptionalEnvRef(this.options.remote.apiTokenEnv);
-    const fetchImpl = this.options.fetchFn ?? fetch;
-    const slug = this.githubRepoSlug();
+  /** 查询某个分支当前 HEAD 的 CI 汇总状态；查不到 sha 时返回 unknown。 */
+  private async ciStatusFor(team: TeamRecord, branch: string): Promise<CiStatus> {
     const sha = await resolveRef(team.repoPath, branch);
     if (sha === null) return 'unknown';
-    const response = await fetchImpl(`https://api.github.com/repos/${slug}/commits/${sha}/check-runs`, {
-      headers: {
-        accept: 'application/vnd.github+json',
-        ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}),
-      },
-      signal: AbortSignal.timeout(15_000),
+    const token = resolveOptionalEnvRef(this.options.remote.apiTokenEnv);
+    return checkRunStatus({
+      slug: githubRepoSlug(this.options.remote.url),
+      sha,
+      ...(token !== undefined ? { token } : {}),
+      ...(this.options.fetchFn !== undefined ? { fetchFn: this.options.fetchFn } : {}),
     });
-    if (!response.ok) return 'unknown';
-    const body = (await response.json()) as { check_runs?: { conclusion: string | null; status: string }[] };
-    const runs = body.check_runs ?? [];
-    if (runs.length === 0) return 'pending';
-    if (runs.some((run) => run.status !== 'completed')) return 'pending';
-    return runs.every((run) => run.conclusion === 'success' || run.conclusion === 'neutral' || run.conclusion === 'skipped')
-      ? 'success'
-      : 'failure';
   }
 
-  // ── escalation ───────────────────────────────────────────────────────────
+  // ── 升级 ──────────────────────────────────────────────────────────────────
 
   /**
-   * Raise an escalation (spec §4.3 trigger list): record + task note + label
-   * + webhook, then pause per escalation.pauseOnEscalation.
+   * 发起升级（规范 §4.3 触发清单）：记录 + 任务备注 + 打标 + webhook，
+   * 然后按 escalation.pauseOnEscalation 决定是否暂停。
    */
   async escalateTask(input: EscalationInput): Promise<EscalationView> {
     const record = await this.escalations.escalate(input);
@@ -1456,14 +1481,11 @@ export class AutopilotService {
       if (found !== null) {
         found.task.status = 'needs-human';
         found.task.updatedAt = Date.now();
-        // Free the assignee so triage + redispatch can pick any developer:
-        // the task branch must not stay checked out in their worktree.
+        // 释放接手者，让分诊与重新派发可以挑任意开发者：任务分支不能一直
+        // 占着他的工作区。
         const assignee = found.team.members.find((member) => member.id === found.task.assigneeId);
         if (assignee !== undefined && assignee.currentTaskId === found.task.id) {
-          await checkout(assignee.workspacePath, `member/${assignee.id}`).catch(() => {});
-          assignee.branch = `member/${assignee.id}`;
-          assignee.status = 'idle';
-          assignee.currentTaskId = null;
+          await this.releaseMemberWorkspace(assignee);
         }
       }
     }
@@ -1474,34 +1496,25 @@ export class AutopilotService {
     return record;
   }
 
-  /** Human/other-plugin triage: resolve an escalation and re-open the task. */
+  /** 人工（或其它插件）分诊：解决升级并把任务退回 pending。 */
   async resolveEscalation(input: { escalationId: string }): Promise<void> {
     this.escalations.resolve(input.escalationId);
-    const record = this.escalations.all.find((candidate) => candidate.id === input.escalationId);
+    const record = this.escalationById(input.escalationId);
     if (record?.taskId != null) {
       const found = this.tryFindTask(record.taskId);
       if (found !== null && found.task.status === 'needs-human') {
-        found.task.status = 'pending';
-        found.task.reviewRound = 0;
-        found.task.updatedAt = Date.now();
-        if (found.task.contractId !== null) {
-          const contractPath = join(found.team.repoPath, '.tasks', `${found.task.contractId}.md`);
-          await patchTaskContract(contractPath, { status: 'pending', owner: null }).catch(() => {});
-          await this.syncBoard(found.team);
-          await this.commitTasksDir(found.team, "tasks: board update");
-        }
+        await this.reopenTask(found.team, found.task);
       }
     }
     if (this.loopState === 'escalated') this.loopState = 'running';
     this.changed();
   }
 
-  // ── deploy ───────────────────────────────────────────────────────────────
+  // ── 部署 ──────────────────────────────────────────────────────────────────
 
   /**
-   * Deploy from the base branch (spec §4.2 deploy_run): only when deploy is
-   * enabled, base is green, and base moved since the last deploy. Failed
-   * health checks trigger rollback + escalation inside runDeploy/here.
+   * 从基础分支部署（规范 §4.2 deploy_run）：仅在启用部署、base 健康且 base
+   * 自上次部署后又有推进时执行。健康检查失败会在 runDeploy 内部触发回滚并升级。
    */
   async deployRun(teamId?: string): Promise<DeployView> {
     const deploy = this.options.deploy;
@@ -1541,15 +1554,14 @@ export class AutopilotService {
     return view;
   }
 
-  // ── daemon loop ──────────────────────────────────────────────────────────
+  // ── 守护循环 ──────────────────────────────────────────────────────────────
 
   getLoopState(): LoopState {
     return this.loopState;
   }
 
   /**
-   * Start the unattended loop (autopilot_run). Idempotent: repeated calls
-   * while running just return the current state.
+   * 启动无人值守循环（autopilot_run）。幂等：运行期间重复调用只返回当前状态。
    */
   async startLoop(): Promise<{ loopState: LoopState; tick: number }> {
     if (this.loopPromise !== null && (this.loopState === 'running' || this.loopState === 'paused')) {
@@ -1565,7 +1577,7 @@ export class AutopilotService {
     return { loopState: this.loopState, tick: this.tick };
   }
 
-  /** Pause the loop (autopilot_pause) — humans or other plugins step in. */
+  /** 暂停循环（autopilot_pause）——人或其它插件要介入时调用。 */
   pauseLoop(): LoopState {
     if (this.loopState === 'running') {
       this.loopState = 'paused';
@@ -1574,7 +1586,7 @@ export class AutopilotService {
     return this.loopState;
   }
 
-  /** Resume a paused/escalated loop (autopilot_resume). */
+  /** 恢复暂停或升级中的循环（autopilot_resume）。 */
   resumeLoop(): LoopState {
     if (this.loopState === 'paused' || this.loopState === 'escalated') {
       this.loopState = 'running';
@@ -1583,7 +1595,7 @@ export class AutopilotService {
     return this.loopState;
   }
 
-  /** Stop the loop and wait for the current tick to land safely. */
+  /** 停止循环，并等当前 tick 安全落地。 */
   async stopLoop(): Promise<void> {
     if (this.abortController !== null) {
       this.abortController.abort();
@@ -1621,8 +1633,8 @@ export class AutopilotService {
           suggestion: 'inspect the autopilot state and recent git activity; resume with autopilot_resume',
         });
       }
-      // Idle backoff: after 5 quiet ticks poll at 4x the interval (max).
-      const factor = Math.min(1 + Math.floor(idleTicks / 5), 4);
+      // 空闲退避：连续 5 个安静的 tick 之后，把轮询间隔最多放大到 4 倍。
+      const factor = Math.min(1 + Math.floor(idleTicks / IDLE_BACKOFF_TICKS), MAX_IDLE_BACKOFF_FACTOR);
       await this.writeHeartbeat();
       await interruptibleSleep(this.sleepMs() * factor, signal);
     }
@@ -1635,8 +1647,8 @@ export class AutopilotService {
   }
 
   /**
-   * One pass of the unattended loop (spec §4.3). Public so tests can drive
-   * the loop deterministically without timing.
+   * 无人值守循环的一轮（规范 §4.3）。设为 public，测试可以脱离时序确定性地
+   * 驱动它。
    */
   async tickOnce(signal?: AbortSignal): Promise<TickReport> {
     this.tick += 1;
@@ -1649,7 +1661,7 @@ export class AutopilotService {
       deployed: null,
       completed: false,
     };
-    // 1. Recovery: tasks left in_progress by a crashed run become resumable.
+    // 1. 恢复：上一次崩溃时停留在 in_progress 的任务重新变为可派发。
     if (!this.recoveredOnce) {
       this.recoveredOnce = true;
       for (const team of this.teams.values()) {
@@ -1668,44 +1680,22 @@ export class AutopilotService {
       await this.checkReviewRounds(team, report);
       await this.checkStuck(team, report);
       await this.maybeDeploy(team, report);
-      this.checkCompletion(team, report);
+      await this.checkCompletion(team, report);
     }
     this.changed();
     return report;
   }
 
-  /** Pull task contracts from the repo onto the board; triage needs-human. */
+  /** 把仓库里的任务契约同步到看板；分诊 needs-human 的契约。 */
   private async syncContracts(team: TeamRecord, report: TickReport): Promise<void> {
     const contracts = await loadTaskContracts(team.repoPath).catch(() => [] as TaskContract[]);
     for (const contract of contracts) {
       const existing = team.tasks.find((task) => task.contractId === contract.id);
       if (existing === undefined) {
-        // A contract nobody assigned yet — keep it pending on the board with
-        // the leader as nominal owner until dispatch picks it up.
-        const leader = team.members.find((member) => member.role === 'leader');
-        if (leader === undefined) continue;
-        if (contract.status !== 'pending') continue;
-        team.tasks.push({
-          id: shortId('task'),
-          contractId: contract.id,
-          title: contract.title,
-          description: enrichDescriptionWithOwnership(contract.body.slice(0, 2000), contract.touches, this.options.profile.ownership),
-          assigneeId: leader.id,
-          status: 'pending',
-          branch: renderBranchName(this.options.profile.branchTemplate, contract.id, contract.title),
-          reviewRound: 0,
-          dependsOn: contract.dependsOn,
-          touches: contract.touches,
-          gates: null,
-          prUrl: null,
-          ciStatus: null,
-          lastActivityAt: Date.now(),
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        });
-        report.events.push(`contract:${contract.id}`);
+        this.adoptPendingContract(team, contract, report);
       } else if (existing.status === 'needs-human' && contract.status !== 'needs-human') {
-        // Human triaged the contract file directly → re-open the task.
+        // 人直接改了契约文件把状态从 needs-human 挪走 → 重开任务。
+        // 契约文件已经是权威来源，这里只改内存状态，不再回写一次。
         existing.status = 'pending';
         existing.reviewRound = 0;
         existing.updatedAt = Date.now();
@@ -1720,7 +1710,42 @@ export class AutopilotService {
     }
   }
 
-  /** Dispatch pending tasks (deps done, domain lock free) to idle developers. */
+  /**
+   * 还没有人认领的契约：以 leader 为名义 owner 挂在看板上保持 pending，
+   * 等 dispatch 真正派发时再落到具体开发者头上。
+   */
+  private adoptPendingContract(team: TeamRecord, contract: TaskContract, report: TickReport): void {
+    const leader = team.members.find((member) => member.role === 'leader');
+    if (leader === undefined) return;
+    if (contract.status !== 'pending') return;
+    const now = Date.now();
+    team.tasks.push({
+      id: shortId('task'),
+      contractId: contract.id,
+      contractPath: contract.path,
+      title: contract.title,
+      description: enrichDescriptionWithOwnership(
+        contract.body.slice(0, CONTRACT_BODY_LIMIT),
+        contract.touches,
+        this.options.profile.ownership,
+      ),
+      assigneeId: leader.id,
+      status: 'pending',
+      branch: renderBranchName(this.options.profile.branchTemplate, contract.id, contract.title),
+      reviewRound: 0,
+      dependsOn: contract.dependsOn,
+      touches: contract.touches,
+      gates: null,
+      prUrl: null,
+      ciStatus: null,
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    report.events.push(`contract:${contract.id}`);
+  }
+
+  /** 派发 pending 任务（依赖已完成、领域锁空闲）给空闲开发者。 */
   private async dispatch(team: TeamRecord, report: TickReport, signal?: AbortSignal): Promise<void> {
     const doneContracts = new Set(
       team.tasks.filter((task) => task.status === 'done').map((task) => task.contractId ?? task.id),
@@ -1731,37 +1756,19 @@ export class AutopilotService {
     for (const task of team.tasks) {
       if (signal?.aborted === true) return;
       if (task.status !== 'pending') continue;
-      const domainCount = distinctDomainCount(task.touches);
-      if (domainCount > this.options.profile.crossDomainThreshold) {
-        report.escalated.push(task.id);
-        report.events.push(`cross-domain:${task.id}`);
-        await this.escalateTask({
-          taskId: task.id,
-          reason: 'cross-domain',
-          message: `task "${task.title}" touches ${domainCount} distinct domains (limit ${this.options.profile.crossDomainThreshold})`,
-          suggestion: 'split it into per-domain tasks instead of one cross-domain change',
-        });
-        continue;
-      }
+      if (await this.escalateCrossDomain(task, report)) continue;
       if (!task.dependsOn.every((dep) => doneContracts.has(dep))) continue;
       if (task.touches.length > 0 && touchesOverlap(task.touches, lockedTouches)) continue;
       const developers = team.members.filter(
         (member) => member.role === 'developer' && member.status === 'idle' && member.currentTaskId === null,
       );
-      if (developers.length === 0) return; // no free developer: try again next tick
-      // Prefer a developer whose domain specialization matches the task's most
-      // specific ownership rule; fall back to any idle developer.
-      const ownerRole = ownerRoleForTouches(task.touches, this.options.profile.ownership);
-      const preferred = ownerRole === null ? undefined : developers.find((member) => member.specialization === ownerRole);
-      const developer = preferred ?? developers[0];
-      if (developer === undefined) return;
-      // (Re)assign: the placeholder task created by syncContracts gets a real
-      // assignee, branch and workspace checkout.
-      if (task.assigneeId !== developer.id) {
-        task.assigneeId = developer.id;
-      }
-      const branches = await listBranches(team.repoPath);
-      if (!branches.includes(task.branch)) {
+      const developer = this.pickDeveloper(developers, task.touches);
+      if (developer === undefined) return; // 没有空闲开发者，下个 tick 再试
+      // （重新）派发：syncContracts 建的占位任务在这里拿到真正的接手者、
+      // 分支与工作区检出。
+      task.assigneeId = developer.id;
+      await this.refreshBranches(team);
+      if (!team.branches.includes(task.branch)) {
         await createBranch(team.repoPath, task.branch, team.baseBranch);
       }
       await checkout(developer.workspacePath, task.branch);
@@ -1769,21 +1776,45 @@ export class AutopilotService {
       developer.status = 'working';
       developer.currentTaskId = task.id;
       task.status = 'in_progress';
-      task.lastActivityAt = Date.now();
-      task.updatedAt = Date.now();
-      if (task.contractId !== null) {
-        const contractPath = join(team.repoPath, '.tasks', `${task.contractId}.md`);
-        await patchTaskContract(contractPath, { status: 'in_progress', owner: developer.name }).catch(() => {});
-        await this.syncBoard(team);
-        await this.commitTasksDir(team, "tasks: board update");
-      }
+      this.touchTask(task);
+      await this.updateContractStatus(team, task, 'in_progress', developer.name);
       lockedTouches.push(...task.touches);
       report.dispatched.push(task.id);
       report.events.push(`dispatched:${task.id}`);
     }
   }
 
-  /** Escalate tasks that exhausted their review rounds. */
+  /**
+   * 跨域检查：触及的领域数超过阈值就升级并跳过派发。
+   * @returns 是否已升级（true 表示本轮不要再派发这个任务）
+   */
+  private async escalateCrossDomain(task: TaskRecord, report: TickReport): Promise<boolean> {
+    const domainCount = distinctDomainCount(task.touches);
+    const threshold = this.options.profile.crossDomainThreshold;
+    if (domainCount <= threshold) return false;
+    report.escalated.push(task.id);
+    report.events.push(`cross-domain:${task.id}`);
+    await this.escalateTask({
+      taskId: task.id,
+      reason: 'cross-domain',
+      message: `task "${task.title}" touches ${domainCount} distinct domains (limit ${threshold})`,
+      suggestion: 'split it into per-domain tasks instead of one cross-domain change',
+    });
+    return true;
+  }
+
+  /**
+   * 挑一个开发者：优先选专精方向与任务命中所有权规则一致的，
+   * 否则退回任意空闲开发者。
+   */
+  private pickDeveloper(developers: MemberRecord[], touches: readonly string[]): MemberRecord | undefined {
+    if (developers.length === 0) return undefined;
+    const ownerRole = ownerRoleForTouches(touches, this.options.profile.ownership);
+    if (ownerRole === null) return developers[0];
+    return developers.find((member) => member.specialization === ownerRole) ?? developers[0];
+  }
+
+  /** 升级耗尽返工轮次的任务。 */
   private async checkReviewRounds(team: TeamRecord, report: TickReport): Promise<void> {
     for (const task of team.tasks) {
       if (task.status === 'changes_requested' && task.reviewRound >= this.options.daemon.maxReviewRounds) {
@@ -1799,12 +1830,12 @@ export class AutopilotService {
     }
   }
 
-  /** Escalate in-progress tasks with no git activity for stuckMinutes. */
+  /** 升级 stuckMinutes 内没有任何 git 活动的进行中任务。 */
   private async checkStuck(team: TeamRecord, report: TickReport): Promise<void> {
     const stuckMs = this.options.daemon.stuckMinutes * 60_000;
     for (const task of team.tasks) {
       if (task.status !== 'in_progress') continue;
-      // Git activity refreshes lastActivityAt: new commits on the task branch.
+      // 任务分支上的新提交即视为活动，用它刷新 lastActivityAt。
       const lastCommit = await lastCommitAt(team.repoPath, task.branch).catch(() => null);
       if (lastCommit !== null && lastCommit > task.lastActivityAt) {
         task.lastActivityAt = lastCommit;
@@ -1822,14 +1853,14 @@ export class AutopilotService {
     }
   }
 
-  /** Deploy when base moved and gates/CI allow it. */
+  /** 基础分支有推进且门/CI 允许时部署。 */
   private async maybeDeploy(team: TeamRecord, report: TickReport): Promise<void> {
     const deploy = this.options.deploy;
     if (deploy?.enabled !== true || deploy.command === undefined || deploy.command === '') return;
     const baseSha = await resolveRef(team.repoPath, team.baseBranch).catch(() => null);
     if (baseSha === null || baseSha === this.lastDeployBaseSha) return;
     if (this.options.gates.requireCiGreen && this.hasRemote) {
-      const ci = await this.githubCiStatus(team, team.baseBranch).catch(() => 'unknown' as CiStatus);
+      const ci = await this.ciStatusFor(team, team.baseBranch).catch(() => 'unknown' as CiStatus);
       if (ci !== 'success') return;
     }
     const view = await this.deployRun(team.id);
@@ -1837,11 +1868,10 @@ export class AutopilotService {
     report.events.push(`deploy:${view.id}:${view.status}`);
   }
 
-  /** All tasks done → completion report + stop. */
-  private checkCompletion(team: TeamRecord, report: TickReport): void {
+  /** 全部任务完成 → 写完成报告并把循环置为 completed。 */
+  private async checkCompletion(team: TeamRecord, report: TickReport): Promise<void> {
     if (team.tasks.length === 0) return;
-    const allDone = team.tasks.every((task) => task.status === 'done');
-    if (!allDone) return;
+    if (!team.tasks.every((task) => task.status === 'done')) return;
     report.completed = true;
     report.events.push('completed');
     this.loopState = 'completed';
@@ -1860,13 +1890,13 @@ export class AutopilotService {
         : this.deploys.map((deploy) => `- ${deploy.id} ${deploy.status} at ${new Date(deploy.startedAt).toISOString()}`)),
       ``,
     ].join('\n');
-    void (async () => {
-      await writeFile(join(team.repoPath, '.tasks', '_completion.md'), summary, 'utf8').catch(() => {});
-      await this.commitTasksDir(team, 'tasks: completion report');
-    })();
+    await writeFile(join(team.repoPath, TASKS_DIR, COMPLETION_FILE), summary, 'utf8').catch(() => {});
+    await this.commitTasksDir(team, 'tasks: completion report');
   }
 
-  /** Git-activity probe for tools: new commits of a task branch vs base. */
+  // ── 状态查询 ──────────────────────────────────────────────────────────────
+
+  /** 任务的 git 活动探针：任务分支相对 base 的新提交数。 */
   async taskActivity(taskId: string): Promise<{ newCommits: number; lastCommitAt: number | null }> {
     const { team, task } = this.findTask(taskId);
     const baseSha = await resolveRef(team.repoPath, team.baseBranch);
@@ -1875,7 +1905,7 @@ export class AutopilotService {
     return { newCommits, lastCommitAt: lastCommit };
   }
 
-  /** autopilot_status: loop, board, workspace health, heartbeat, blockers. */
+  /** autopilot_status：循环、看板、工作区健康度、心跳与阻塞项。 */
   async status(): Promise<Record<string, unknown>> {
     const teams = [...this.teams.keys()].map((id) => this.teamView(id));
     const workspaces: Record<string, unknown>[] = [];
@@ -1911,6 +1941,23 @@ export class AutopilotService {
   }
 }
 
+// ── 模块级工具 ──────────────────────────────────────────────────────────────
+
+/** 新建一条通知记录时的初始状态（未送达、未答复）。 */
+function emptyNotification(): EscalationNotification {
+  return {
+    status: 'sent',
+    mailTo: '',
+    mailDelivered: false,
+    ticketUrl: null,
+    submitted: null,
+    submittedAt: null,
+    autoResumed: false,
+    error: null,
+  };
+}
+
+/** 找出任务所属的团队（用于变更通知定位到面板）。 */
 function foundTeamId(taskId: string | null, teams: Map<string, TeamRecord>): string | undefined {
   if (taskId === null) return undefined;
   for (const team of teams.values()) {
@@ -1931,6 +1978,7 @@ function requireMember(memberId: string | undefined): string {
   return memberId;
 }
 
+/** 可被 abort 打断的 sleep：守护循环的每一处等待都必须能取消。 */
 function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolvePromise) => {
     const timer = setTimeout(() => {

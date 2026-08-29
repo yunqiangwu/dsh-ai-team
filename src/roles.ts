@@ -1,8 +1,7 @@
 /**
- * System-instruction templates per role: leader / developer / reviewer /
- * operator. The operator role drives the deploy & ops loop; every role carries
- * the unattended rules (objective quality gates, escalation triggers, never
- * touch files outside your own workspace).
+ * 各角色的 system instruction 模板：leader / developer / reviewer / operator。
+ * operator 角色驱动部署与运维循环；每个角色都带有无人值守规则（客观质量门禁、
+ * 升级触发条件、绝不触碰自己 workspace 之外的文件）。
  */
 import type { Role } from './view.js';
 import { ROLES } from './view.js';
@@ -67,7 +66,7 @@ const ROLE_LABEL: Record<Role, string> = {
   operator: 'ops',
 };
 
-/** Default member name: leader-1, dev-2, reviewer-1, ops-1, ... (1-based per role). */
+/** 默认成员名：leader-1、dev-2、reviewer-1、ops-1 ……（每个角色从 1 开始编号）。 */
 export function defaultMemberName(role: Role, index: number): string {
   return `${ROLE_LABEL[role]}-${index}`;
 }

@@ -23,13 +23,13 @@
 ```
 src/
   index.ts        插件入口：四导出 name/inject/Config/apply，ctx.provide('autopilot')
-  service.ts      AutopilotService —— 全部业务与循环逻辑（约 1.8k 行，核心）
+  service.ts      AutopilotService —— 全部业务与循环逻辑（核心）
   tools.ts        模型可见工具（defineTool 注册），每次变更 publish 一次快照
   view.ts         浏览器安全的视图类型（host 与 client 共用，禁 node 内置模块）
   events.ts       session 事件与投影的类型声明合并（唯一词汇表）
   projection.ts   `autopilot` 投影单元的注册 + zod schema（stateVersion: 2）
   git.ts          git CLI 薄封装，含远端 clone/push 与 push 安全规则
-  team.ts         .tasks/*.md 契约解析 / 回写 / _board.md 生成
+  team.ts         .tasks/*.md 契约解析 / 回写 / _board.md 生成、touches 重叠判断
   gates.ts        质量门执行器 + 命令白名单（CommandNotAllowedError）
   bootstrap.ts    裸机引导：探测工具链 → rootless 安装 → setup → verify
   deploy.ts       部署 + 健康检查（指数退避）+ 自动回滚
@@ -38,7 +38,10 @@ src/
   secrets.ts      密钥唯一出口：env 引用解析 + SecretRedactor 脱敏
   roles.ts        四角色的 system prompt 模板
   preset.ts       `autopilot-team` agent 预设的落盘（ensureAutopilotTeamPreset，缺失才拷贝、绝不覆盖、失败静默）
-  client/         Web 端：面板、设置卡片、i18n 字典、样式（React 18，CJS 产物）
+  profile.ts      项目画像适配器：按不同协作约定（AgentDeploy 等）覆盖默认分支/PR 策略/合并方式/质量门
+  cache.ts        构建缓存共享：把 .nuxt/.output 等产物按分支符号链接复用（可选、尽力而为）
+  github.ts       GitHub REST 适配层：为任务分支 upsert PR、查询 commit 的 CI 状态
+  client/         Web 端：面板、设置卡片、i18n 字典、样式、宿主契约（React 18，CJS 产物）
 preset/
   autopilot-team/ 插件自带的 agent preset 模板（agent.cordis.yml + preset.yml），随包发布，运行时拷到用户级预设根
 tests/            helpers.ts（真 git fixture）+ 三个测试文件 + cordis 冒烟（含预设落盘断言）
@@ -76,7 +79,7 @@ tests/            helpers.ts（真 git fixture）+ 三个测试文件 + cordis �
 ## 代码风格
 
 - TypeScript strict + `noUncheckedIndexedAccess` + `verbatimModuleSyntax`：类型导入必须写 `import type`，相对导入必须带 `.js` 扩展名。
-- 源码注释与标识符用英文；用户可见文案走 client 的 zh/en 字典。
+- 标识符用英文；**源码注释尽量用中文**（读懂代码比省几个字符更重要）；用户可见文案走 client 的 zh/en 字典。
 - 加 i18n key 时 **zh 与 en 必须同时加**（`en: Record<keyof typeof zh, string>` 会强制你补齐）。
 - 提交信息用 Conventional Commits（`feat:` / `fix:` / `docs:` / `refactor:`，正文中文，见 `git log`）。
 - 先跑 `pnpm typecheck && pnpm lint && pnpm test` 再宣告完成；改动发布链路的还要 `pnpm build`。
@@ -96,6 +99,8 @@ tests/            helpers.ts（真 git fixture）+ 三个测试文件 + cordis �
 | 新增 role | `view.ts` 的 `ROLES` → `roles.ts` prompt → 字典 `role.*` |
 | 新增 `EscalationReason` | `view.ts` union → `projection.ts` zod enum → 字典 `reason.*` |
 | 新增 Config 字段 | `index.ts` 的 `Config` 接口与 schema → service `AutopilotOptions` → `apply()` 的映射 → README 配置块 → 需要时 `client/settings-card.tsx` |
+| 改 `profile.ts` 的约定 | 服务端默认值可能与 `ProjectProfile` 分叉，改前先核对 `README` 的 AgentDeploy 说明 |
+| 新增远端平台/PR 能力 | `github.ts` 适配层是否覆盖该平台 → `view.ts` 的 `CiStatus`/`platform` 枚举 |
 
 ## 已知坑
 
