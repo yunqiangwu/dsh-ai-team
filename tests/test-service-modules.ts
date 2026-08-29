@@ -305,7 +305,7 @@ describe('state helpers', () => {
 // ── daemon.ts：守护循环的纯判定层 ────────────────────────────────────────────
 
 describe('daemon: reviewRoundsExceeded / taskStuck / budgetExceeded', () => {
-  const base = {
+  const daemonTaskBase = {
     id: 'task_1',
     contractId: null,
     title: 't',
@@ -324,7 +324,7 @@ describe('daemon: reviewRoundsExceeded / taskStuck / budgetExceeded', () => {
   };
 
   it('reviewRoundsExceeded 只认 changes_requested 且达到上限', () => {
-    const task = { ...base, status: 'changes_requested', reviewRound: 3 } as TaskRecord;
+    const task = { ...daemonTaskBase, status: 'changes_requested', reviewRound: 3 } as TaskRecord;
     expect(reviewRoundsExceeded(task, 3)).toBe(true);
     expect(reviewRoundsExceeded({ ...task, reviewRound: 2 }, 3)).toBe(false);
     // in_review 不算返工打满（还没被再次打回）
@@ -332,13 +332,13 @@ describe('daemon: reviewRoundsExceeded / taskStuck / budgetExceeded', () => {
   });
 
   it('taskStuck 在恰好到达阈值时不算卡死', () => {
-    const task = { ...base, status: 'in_progress', lastActivityAt: 1_000 } as TaskRecord;
+    const task = { ...daemonTaskBase, status: 'in_progress', lastActivityAt: 1_000 } as TaskRecord;
     expect(taskStuck(task, 45, 1_000 + 45 * 60_000)).toBe(false);
     expect(taskStuck(task, 45, 1_000 + 45 * 60_000 + 1)).toBe(true);
   });
 
   it('budgetExceeded：0 = 关闭，且 dispatchedAt 缺失（老 state.json）不判', () => {
-    const task = { ...base, status: 'in_progress', dispatchedAt: 1_000 } as TaskRecord;
+    const task = { ...daemonTaskBase, status: 'in_progress', dispatchedAt: 1_000 } as TaskRecord;
     expect(budgetExceeded(task, 0, 10_000_000)).toBe(false);
     expect(budgetExceeded(task, 2, 1_000 + 2 * 3_600_000)).toBe(false);
     expect(budgetExceeded(task, 2, 1_000 + 2 * 3_600_000 + 1)).toBe(true);
@@ -361,7 +361,7 @@ describe('views: taskView / memberView', () => {
     status: 'working',
     currentTaskId: 'task_1',
   };
-  const team = {
+  const viewTeam = {
     id: 'team_1',
     name: 't',
     repoPath: '/repo',
@@ -392,14 +392,14 @@ describe('views: taskView / memberView', () => {
       createdAt: 0,
       updatedAt: 0,
     } as TaskRecord;
-    const view = taskViewOf(team, task);
+    const view = taskViewOf(viewTeam, task);
     expect(view.assigneeName).toBe('dev-1');
     expect(view.contractId).toBe('CORE-1');
   });
 
   it('taskView 对不存在的 assignee 抛错（视图不吞失配）', () => {
     const task = { ...({} as TaskRecord), assigneeId: 'm_missing' };
-    expect(() => taskViewOf(team, task)).toThrow(/has no member "m_missing"/);
+    expect(() => taskViewOf(viewTeam, task)).toThrow(/has no member "m_missing"/);
   });
 
   it('memberView 是字段的纯投影（不含 systemPrompt）', () => {
