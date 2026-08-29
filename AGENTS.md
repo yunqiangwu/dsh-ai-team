@@ -25,7 +25,7 @@ README.md           人类入口：功能、快速开始、Config 字段语义�
 AGENTS.md           本文件：AI 代理仓库指南（架构铁律、开发纪律、连带改动表、已知坑）
 PILOT.md            操作者 runbook：首次真实环境无人值守怎么跑、看什么、出事怎么办
 docs/               其余文档一律在此，见「文档规范」
-  design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（M0–M2 已实施，M3 提案）
+  design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（M0–M3 已实施）
 src/
   index.ts        插件入口：四导出 name/inject/Config/apply，ctx.provide('autopilot')
   service.ts      AutopilotService —— 状态机宿主与全部编排（纯逻辑请落到 service/，别塞这里）
