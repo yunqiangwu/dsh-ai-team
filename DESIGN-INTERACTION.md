@@ -269,6 +269,8 @@ approvedAt: null
 | **M2 卡片** | §7.1 三件事；面板渲染问卷卡片与 `awaiting-human` 态（顺带补现状**从未被渲染**的 `projection.blocked`） | `client/AutopilotPanel.tsx` `schema.ts` | `smoke-cordis.ts` 断言 client 产物无 zod / 无 `node:`（架构铁律 5） |
 | **M3 重规划** | `cancelled` + `priority` + `replan_*` 工具 + §6.2 分级表 + §6.3 三种处置 + 频率上限；`_board.md` 加列 | `vocab.ts` `team.ts` `service.ts` `tools.ts` | `test-unattended.ts` 重规划分支 |
 
+四个里程碑已落成任务契约：M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md`、M3 = `INT-4.md`，依赖链 `INT-1 → INT-2 → INT-3`，且 `INT-4` 只依赖 `INT-1`。所以 M3 在依赖图上与 M2 可并行——但两者 `touches` 都含 `src/`，域锁实际仍会把它俩串行化（§10.1）。
+
 `phase` 是新增投影字段 → **`stateVersion` 从 5 递增到 6**（`src/projection.ts:36`）。
 新增 Config 字段（`questionnaire.mode`、`replan.maxPerHour`、`docs.draftDir`）→ 按 AGENTS.md「改一处要连带改哪儿」表连带：`index.ts` 的 `Config` 与 schema → `service/options.ts` → `apply()` 映射 → README 配置块 → 需要时 `client/settings-card.tsx`。
 新增 `EscalationReason: blocked-dependency` → `vocab.ts` + 字典 `reason.*`，且**服务端必须真产出它**，否则只是给模型多一个错选项。
@@ -282,6 +284,19 @@ approvedAt: null
 这一发同时验证：问卷闭环可用、draft/升格机制不越权、`validate:docs` 能当客观门用、以及最关键的一条——**AI 会不会破坏既有约定**。
 
 配置注意：该仓库用 `profile.preset: agentdeploy`（本插件已内置），`platform: generic` 时 **`requireCiGreen` 必须显式置 false**，否则"从未验证视为未通过"会永久阻塞 approve（见 PILOT.md §1）。
+
+### 10.1 域阈值与本仓库布局冲突（自举时会撞上）
+
+`distinctDomains` 按前缀折叠计域（`src/profile.ts:373`），两条路径仅当互为前缀时算同一域。这对 ai-yunke 那种多顶层域布局（`server/db/`、`app/`、`packages/cli/`）是对的，但本仓库 `src/` 是**扁平**的：把 `touches` 写成逐个源文件时，任何 4 文件的改动都算 4 个域，而 `crossDomainThreshold` 默认 3 —— 于是 `escalateCrossDomain`（`src/service.ts:2023-2035`）会在**首拍**就把它自动升级成 `cross-domain`，根本走不到派发。
+
+两条出路：
+
+- 本仓库跑 M0–M3 时把 `profile.crossDomainThreshold` 调到 6~8，契约按文件粒度写（并行度好，但 `src/` 下四个文件以上即触阈）；
+- 或维持默认阈值，契约一律用目录粒度 `touches: [src/]`（本文的 `.tasks/INT-*.md` 取这条）。
+
+代价要说清：目录粒度下 `src/` 是一个域，域锁 `touchesOverlap` 会让**所有 M0–M3 契约互斥**，一次只有一张能在飞——这把本插件最强的并行派发能力关掉了。里程碑契约本来就是串行依赖链，可以接受；但真要并行开发，就必须走文件粒度 + 调高阈值。
+
+> 顺带：`escalateCrossDomain` 是每拍跑的，而 `assignTask` 里还有一份等价校验（`src/service.ts:967-974`）。同一判据两处实现，改一处必须同步另一处。
 
 ## 11. 未决问题
 
