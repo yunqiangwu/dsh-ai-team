@@ -31,6 +31,13 @@ export const TASKS_DIR = '.tasks';
 /** 「挂起等待」状态：needs-human 等人分诊，needs-clarification 等 leader 回答契约。 */
 export const HELD_STATUSES: readonly TaskStatus[] = ['needs-human', 'needs-clarification'];
 
+/**
+ * 人把契约文件直接标成 `cancelled` 时（M3 §6.1），看板上哪些任务状态可以跟着走。
+ * 在途（in_progress / in_review）不在其中：撤回在途工作必须走 task_replan(abort)
+ * 的人批问卷，不能因为一次文件编辑就抽掉正在干活的开发者的地基。
+ */
+export const CANCELLABLE_FROM_BOARD: readonly TaskStatus[] = ['pending', 'needs-human', 'needs-clarification'];
+
 /** 生成短 id（team_xxxxxxxx / task_xxxxxxxx / m_xxxxxxxx / rev_xxxxxxxx）。 */
 export const shortId = (prefix: string): string => `${prefix}_${randomUUID().slice(0, 8)}`;
 
@@ -113,6 +120,11 @@ export interface TaskRecord {
    * 建记录时从契约带过来。
    */
   forbidden?: string[] | undefined;
+  /**
+   * 派发排序权重（M3 §6.2）：越大越先派，只在依赖条件相同的任务间生效。
+   * 可选：老 state.json 里没这个字段，排序处一律 `?? 0`。
+   */
+  priority?: number | undefined;
   gates: GateSummary | null;
   prUrl: string | null;
   ciStatus: CiStatus | null;
@@ -145,6 +157,7 @@ export interface TaskRecordSeed {
     dependsOn: string[];
     touches: string[];
     forbidden: string[];
+    priority: number;
   } | null;
   /** 无契约时的任务标题（有契约时以契约为准）。 */
   title: string;
@@ -173,6 +186,7 @@ export function createTaskRecord(seed: TaskRecordSeed): TaskRecord {
     dependsOn: seed.contract?.dependsOn ?? [],
     touches: seed.contract?.touches ?? [],
     forbidden: seed.contract?.forbidden ?? [],
+    priority: seed.contract?.priority ?? 0,
     gates: null,
     prUrl: null,
     ciStatus: null,

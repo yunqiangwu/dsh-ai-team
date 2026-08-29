@@ -58,7 +58,7 @@ export async function seedRemote(
 
 export async function writeContract(
   path: string,
-  contract: { id: string; title: string; dependsOn?: string[]; touches?: string[]; forbidden?: string[] },
+  contract: { id: string; title: string; dependsOn?: string[]; touches?: string[]; forbidden?: string[]; priority?: number },
 ): Promise<void> {
   const depends = (contract.dependsOn ?? []).map((dep) => `  - ${dep}`).join('\n');
   const touches = (contract.touches ?? []).map((dir) => `  - ${dir}`).join('\n');
@@ -68,6 +68,7 @@ export async function writeContract(
     `id: ${contract.id}`,
     `title: ${contract.title}`,
     'status: pending',
+    ...(contract.priority === undefined ? [] : [`priority: ${contract.priority}`]),
     ...(depends === '' ? [] : ['depends_on:', depends]),
     ...(touches === '' ? [] : ['touches:', touches]),
     ...(forbidden === '' ? [] : ['forbidden:', forbidden]),
@@ -114,6 +115,8 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
     // 用例默认 async：interactive 的 ask_human 会真的等人答复，忘了作答就是挂满超时。
     // 交互等待路径由 test-questionnaire.ts 显式覆盖 mode 后单独验证。
     questionnaire: { mode: 'async', timeoutMinutes: 60 },
+    // 重规划护栏默认给一个宽裕值：个别用例（频率上限）自己 override 成小值。
+    replan: { maxPerHour: 10 },
     docs: { draftDir: 'docs/drafts', formalDir: 'docs' },
     deploy: { enabled: false, secretsEnv: [], skipTasksOnlyCommits: true },
     learnings: { ...DEFAULT_LEARNINGS },
@@ -148,6 +151,7 @@ export interface SeedContract {
   dependsOn?: string[];
   touches?: string[];
   forbidden?: string[];
+  priority?: number;
 }
 
 /**

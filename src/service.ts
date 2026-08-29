@@ -131,6 +131,7 @@ import type { AutopilotOptions } from './service/options.js';
 import {
   clip,
   createTaskRecord,
+  CANCELLABLE_FROM_BOARD,
   emptyTeamMetrics,
   HELD_STATUSES,
   memberBranch,
@@ -152,6 +153,7 @@ import {
   assertBindingWritable,
   docApprove as docApproveFlow,
   docWrite as docWriteFlow,
+  effectiveAnswers,
   promoteDrafts,
   questionnaireResult,
   resetDraftsToEditable,
@@ -250,6 +252,12 @@ export class AutopilotService {
    * （runLoop 里的 idleTicks）再也不会生效。
    */
   private readonly reportedRejectedContracts = new Set<string>();
+  /**
+   * 重规划调用的滚动窗口（teamId → 近一小时的调用时刻）。只在内存里：它是防
+   * 「无限重排」的短期护栏，不是审计记录 —— 重启清零可接受，与 questionnaireWaiters
+   * 同一条口径（docs/design-interaction.md §6.5）。
+   */
+  private readonly replanCalls = new Map<string, number[]>();
   private abortController: AbortController | null = null;
   private loopPromise: Promise<void> | null = null;
 
@@ -844,8 +852,17 @@ export class AutopilotService {
     return { ok: true, message, questionnaire: questionnaireViewOf(record), ...writeBack };
   }
 
-  /** 答卷收齐后的分流：需求问卷推进阶段，审批问卷真的升格或退回。 */
+  /** 答卷收齐后的分流：需求问卷推进阶段，审批问卷真的升格或退回，重规划问卷执行撤回。 */
   private async afterAnswered(team: TeamRecord, record: QuestionnaireRecord): Promise<void> {
+    if (record.kind === 'replan') {
+      // abort 的执行点（§6.3）：问卷只是提问，人批了这一刻才真的动任务与分支。
+      // 兜底答案是 reject —— 没人答的问卷不该变成一次自动放弃。
+      if (effectiveAnswers(record).abort === 'approve' && record.taskId !== null) {
+        const found = this.tryFindTask(record.taskId);
+        if (found !== null) await this.executeReplanAbort(found.team, found.task, record);
+      }
+      return;
+    }
     if (record.kind !== 'approval') {
       // §2.1：需求采集（intake）答完 → 进入「开工包等人批」。组长不能自己
       // setPhase 越过去（autopilot_phase 的说明里写了这条）。
@@ -860,6 +877,39 @@ export class AutopilotService {
     await resetDraftsToEditable(this.docflow, team);
     this.questionnaires.consumeApprovalCode(record.id);
     this.applyPhase(team, 'intake');
+  }
+
+  /**
+   * 执行已获人批准的 abort：任务废弃、在途分支删除、接手者释放回个人分支。
+   * 与 supersede / continue 不同，这里丢的是**在途工作** —— 所以它只被
+   * afterAnswered（人批过的 replan 问卷）调用，没有任何工具能直达。
+   */
+  private async executeReplanAbort(team: TeamRecord, task: TaskRecord, record: QuestionnaireRecord): Promise<void> {
+    const answer = record.answers['abort']?.value ?? '';
+    const assignee = team.members.find((member) => member.id === task.assigneeId);
+    if (assignee !== undefined && assignee.currentTaskId === task.id) {
+      // releaseMemberWorkspace 的第四个调用点（§6.3）：与澄清、合入、升级同一套退场机制。
+      await this.releaseMemberWorkspace(assignee);
+    }
+    // 丢分支：任务分支删掉，base 与成员个人分支不动（破坏性 git 的红线只护共享分支，
+    // 任务分支本就允许 prune —— 但这里删的是还没合入的工作，所以前置多了一道人批）。
+    await deleteBranch(team.repoPath, task.branch).catch(() => {});
+    await this.refreshBranches(team);
+    if (task.contractId !== null) {
+      await appendTaskNote(
+        this.contractPathFor(team, task),
+        [
+          '',
+          renderTaskNote('replan', Date.now(), 'human → abort'),
+          ...noteLines(this.redactor.redact(`abort approved: ${answer === '' ? '(no detail)' : answer}`)),
+          '',
+        ].join('\n'),
+      ).catch(() => {});
+    }
+    task.status = 'cancelled';
+    this.touchTask(task);
+    await this.updateContractStatus(team, task, 'cancelled');
+    this.changed(team.id);
   }
 
   /**
@@ -1620,20 +1670,26 @@ export class AutopilotService {
   }
 
   /**
-   * 手动推进任务状态。只允许在 pending / in_progress / in_review 之间切换：
-   * done 与 changes_requested 归评审流程所有，needs-human 归升级流程所有，
+   * 手动推进任务状态（可选），或调整派发优先级（M3 §6.2「调 priority」，组长自主）。
+   * status 只允许在 pending / in_progress / in_review 之间切换：done 与
+   * changes_requested 归评审流程所有，needs-human 归升级流程所有，
    * needs-clarification 由 task_clarify 进入、由 leader 在这里回答后退出。
    *
    * `note` 会作为留言写进任务契约 —— leader 的澄清答案就靠这条落地。
    */
   async updateTask(input: {
     taskId: string;
-    status: 'pending' | 'in_progress' | 'in_review';
+    status?: 'pending' | 'in_progress' | 'in_review';
+    /** 派发排序权重（越大越先派，只在依赖条件相同的任务间生效）。 */
+    priority?: number;
     note?: string;
     /** 操作者（成员 id）。从待澄清解回 pending 时校验必须是 leader。 */
     actorId?: string;
   }): Promise<TaskView> {
     const { team, task } = this.findTask(input.taskId);
+    if (input.status === undefined && input.priority === undefined && (input.note === undefined || input.note === '')) {
+      throw new Error('task_update needs something to change: pass status, priority or note');
+    }
     const heldForClarification = task.status === 'needs-clarification';
     if (heldForClarification) {
       // 澄清只能由提出方之外的角色回答：developer 自己把任务解回去，就等于
@@ -1657,9 +1713,18 @@ export class AutopilotService {
         ['', renderTaskNote(kind, Date.now(), author), ...noteLines(this.redactor.redact(input.note))].join('\n'),
       ).catch(() => {});
     }
-    task.status = input.status;
+    if (input.status !== undefined) task.status = input.status;
+    if (input.priority !== undefined) task.priority = input.priority;
     this.touchTask(task);
-    if (heldForClarification) {
+    // 优先级是契约 frontmatter 的一部分：改了要同步回契约文件，否则人工翻文件
+    // （或下次以契约为准的重建）看到的还是旧权重。status 的契约回写维持既有口径
+    // —— 只有从待澄清解回时才写（见下）。
+    if (input.priority !== undefined && task.contractId !== null) {
+      await patchTaskContract(this.contractPathFor(team, task), { priority: input.priority }).catch(() => {});
+      await this.syncBoard(team);
+      await this.commitTasksDir(team, 'tasks: board update');
+    }
+    if (heldForClarification && input.status !== undefined) {
       // 必须把契约一起回写：否则 syncContracts 看到「内存已解、契约还挂着」，
       // 会把它当人工放行再重开一遍。updateContractStatus 顺带刷看板并提交。
       await this.updateContractStatus(team, task, input.status, null);
@@ -1709,6 +1774,195 @@ export class AutopilotService {
     this.touchTask(task);
     this.changed(team.id);
     return this.taskView(team, task);
+  }
+
+  // ── 需求变更与重规划（M3，docs/design-interaction.md §6）──────────────────
+  //
+  // 分级表（§6.2）在这里落地为两条边界：
+  // - 新增 pending 契约（contract_create）、调 priority（task_update）、取消
+  //   未派发的 pending（task_cancel）→ 组长自主，不升级、不发通知；
+  // - 撤回在途工作（abort = 丢分支）→ 强制 kind:'replan' 问卷，人批之前不落盘。
+  // 另一条硬边界是"越级改验收数值的路径不存在"：契约正文没有任何工具能改，
+  // doc_write 只收 draft 区 —— 组长能做的是废弃 + 派生新契约，而不是偷改旧验收。
+
+  /**
+   * 重规划频率上限（§6.5）：单位时间 replan 调用超 `replan.maxPerHour` 即拒绝。
+   * 「无限重排」是模型自己察觉不到的失败模式 —— 它每一步看起来都合理，
+   * 只有外部的预算能拦住它。0 = 不设限。
+   */
+  private assertReplanBudget(teamId: string): void {
+    const max = this.options.replan.maxPerHour;
+    if (!(max > 0)) return;
+    const now = Date.now();
+    const window = (this.replanCalls.get(teamId) ?? []).filter((at) => now - at < 3_600_000);
+    if (window.length >= max) {
+      throw new Error(
+        `replan rate limit: ${window.length} replanning calls in the last hour (max ${max}); ` +
+          `stop re-sorting the plan and let it breathe — if this change really must land now, ask a human with ask_human instead`,
+      );
+    }
+    window.push(now);
+    this.replanCalls.set(teamId, window);
+  }
+
+  /**
+   * `task_cancel` 的后端：废弃一张**尚未派发**的 pending 任务（§6.1）。
+   * 契约文件保留不删（frontmatter 改 `cancelled`，随 git 历史可追溯）；
+   * 不产生升级、不发通知 —— 这是分级表里的自主档。在途任务的撤回走
+   * `task_replan(disposition:'abort')`，那条路要人批。
+   */
+  async taskCancel(input: { taskId: string; reason?: string }): Promise<TaskView> {
+    const { team, task } = this.findTask(input.taskId);
+    if (task.status !== 'pending') {
+      throw new Error(
+        `task "${task.title}" is ${task.status}; only an undispatched pending task can be cancelled — ` +
+          `withdraw an in-flight one with task_replan(disposition:"abort")`,
+      );
+    }
+    this.assertReplanBudget(team.id);
+    task.status = 'cancelled';
+    this.touchTask(task);
+    if (input.reason !== undefined && input.reason !== '' && task.contractId !== null) {
+      await appendTaskNote(
+        this.contractPathFor(team, task),
+        ['', renderTaskNote('replan', Date.now(), 'leader'), ...noteLines(this.redactor.redact(input.reason))].join('\n'),
+      ).catch(() => {});
+    }
+    await this.updateContractStatus(team, task, 'cancelled');
+    this.changed(team.id);
+    return this.taskView(team, task);
+  }
+
+  /** 重规划对在途任务的三种处置（§6.3）。 */
+  async replanTask(input: {
+    taskId: string;
+    disposition: 'supersede' | 'continue' | 'abort';
+    /** 这次需求变更改了什么：写进原契约留言，abort 时进问卷标题。 */
+    changeNote: string;
+    /** supersede / continue 派生的承接契约；缺省字段回落原任务。 */
+    followup?: {
+      title?: string;
+      body?: string;
+      owner?: string;
+      touches?: string[];
+      forbidden?: string[];
+      dependsOn?: string[];
+      priority?: number;
+    };
+  }): Promise<{ disposition: string; followup?: { id: string; path: string }; questionnaire?: QuestionnaireView }> {
+    const { team, task } = this.findTask(input.taskId);
+    if (task.status !== 'in_progress' && task.status !== 'in_review') {
+      throw new Error(
+        `task "${task.title}" is ${task.status}; the three replan dispositions apply to in-flight tasks — ` +
+          `cancel an undispatched one with task_cancel instead`,
+      );
+    }
+    this.assertReplanBudget(team.id);
+    if (input.disposition === 'abort') {
+      return { disposition: 'abort', questionnaire: await this.openAbortQuestionnaire(team, task, input.changeNote) };
+    }
+    const followup = input.followup;
+    if (followup === undefined) {
+      throw new Error(
+        `disposition "${input.disposition}" derives a follow-up contract; pass followup {title/body/...} — ` +
+          `supersede lets the original land as-is and routes the correction through a NEW contract, it never rewrites the old acceptance criteria`,
+      );
+    }
+    if (task.contractId === null) {
+      throw new Error(`task "${task.title}" has no contract to derive a follow-up from`);
+    }
+    const followupId = await this.deriveFollowupId(team, task.contractId);
+    const created = await this.contractCreate({
+      teamId: team.id,
+      contracts: [
+        {
+          id: followupId,
+          title: followup.title ?? `${task.title}（${input.disposition} 修正）`,
+          owner: followup.owner ?? 'leader',
+          // supersede 的修正在原任务合入之后才有意义；continue 的增量不阻塞在它后面。
+          dependsOn: followup.dependsOn ?? (input.disposition === 'supersede' ? [task.contractId] : []),
+          touches: followup.touches ?? task.touches,
+          forbidden: followup.forbidden ?? [],
+          ...(followup.priority !== undefined ? { priority: followup.priority } : {}),
+          body:
+            followup.body ??
+            `需求变更（原契约 ${task.contractId}）\n\n${input.changeNote}\n\n> 本契约由 task_replan(${input.disposition}) 自动派生；Gherkin 验收标准由组长补齐后再派发。`,
+        },
+      ],
+    });
+    // 契约先落（写前校验，失败即什么都不留），再补原任务的变更留言。
+    const note = [
+      '',
+      renderTaskNote('replan', Date.now(), `leader → ${input.disposition}`),
+      ...noteLines(this.redactor.redact(input.changeNote)),
+      '',
+    ].join('\n');
+    await appendTaskNote(this.contractPathFor(team, task), note).catch(() => {});
+    await this.commitTasksDir(team, `tasks: replan ${input.disposition} on ${task.contractId}`);
+    this.changed(team.id);
+    return { disposition: input.disposition, followup: created.created[0] };
+  }
+
+  /**
+   * supersede / continue 派生契约的 id：沿用原契约的域前缀取下一个空号。
+   * 磁盘是真相源 —— 只扫 `.tasks/` 里的现存契约，不内存里猜。
+   */
+  private async deriveFollowupId(team: TeamRecord, contractId: string): Promise<string> {
+    const domain = /^([A-Z][A-Z0-9]*)-\d+$/.exec(contractId)?.[1];
+    if (domain === undefined) {
+      throw new Error(`contract id "${contractId}" does not follow <DOMAIN>-<number>; cannot derive a follow-up id`);
+    }
+    return `${domain}-${await this.nextContractSeq(team, domain)}`;
+  }
+
+  private async nextContractSeq(team: TeamRecord, domain: string): Promise<number> {
+    const { contracts } = await loadTaskContracts(team.repoPath);
+    const prefix = `${domain}-`;
+    let max = 0;
+    for (const contract of contracts) {
+      if (!contract.id.startsWith(prefix)) continue;
+      const seq = Number(contract.id.slice(prefix.length));
+      if (Number.isInteger(seq) && seq > max) max = seq;
+    }
+    return max + 1;
+  }
+
+  /** abort 的问卷：人批之前不落盘（§6.3）——问题不答，任务与分支分毫不动。 */
+  private async openAbortQuestionnaire(team: TeamRecord, task: TaskRecord, changeNote: string): Promise<QuestionnaireView> {
+    const record = (
+      await this.askHuman({
+        teamId: team.id,
+        kind: 'replan',
+        title: `重规划确认：放弃「${task.title}」的在途工作`,
+        taskId: task.id,
+        binding: task.contractId === null ? null : { type: 'task', contractId: task.contractId },
+        questions: [
+          {
+            name: 'abort',
+            label: `是否放弃这个任务的在途工作并丢弃其分支？变更背景：${oneLine(changeNote)}`,
+            type: 'select',
+            options: [
+              {
+                value: 'approve',
+                label: '放弃：任务废弃、分支删除（丢分支 = 丢工作）',
+                impact: '在途未合入的提交随之作废；原契约以 cancelled 保留',
+                recommended: false,
+              },
+              {
+                value: 'reject',
+                label: '不放弃：任务照常继续',
+                impact: '任务与分支都保持原样，继续走正常的评审合入',
+                recommended: false,
+              },
+            ],
+            required: true,
+            // 超时兜底也是它：一张没人答的问卷不该变成一次自动放弃。
+            defaultValue: 'reject',
+          },
+        ],
+      })
+    ).questionnaire;
+    return record;
   }
 
   // ── 分支协作 ──────────────────────────────────────────────────────────────
@@ -2519,6 +2773,18 @@ export class AutopilotService {
       const existing = team.tasks.find((task) => task.contractId === contract.id);
       if (existing === undefined) {
         this.adoptPendingContract(team, contract, report);
+      } else if (contract.status === 'cancelled' && CANCELLABLE_FROM_BOARD.includes(existing.status)) {
+        // 人直接在契约文件里把任务标成废弃（§6.1：文件是真相源）。看板任务跟着走，
+        // 挂着的升级一并解除 —— 废弃是处置结果，不是需要分诊的故障。
+        existing.status = 'cancelled';
+        existing.updatedAt = Date.now();
+        for (const escalation of this.escalations.open) {
+          if (escalation.taskId === existing.id || escalation.taskId === existing.contractId) {
+            this.escalations.resolve(escalation.id);
+          }
+        }
+        if (this.loopState === 'escalated') this.loopState = 'running';
+        report.events.push(`cancelled:${existing.id}`);
       } else if (HELD_STATUSES.includes(existing.status) && !HELD_STATUSES.includes(contract.status)) {
         // 人直接改了契约文件把状态从挂起态挪走 → 重开任务。
         // 契约文件已经是权威来源，这里只改内存状态，不再回写一次。
@@ -2576,9 +2842,15 @@ export class AutopilotService {
     const lockedTouches = team.tasks
       .filter((task) => task.status === 'in_progress' || task.status === 'in_review')
       .flatMap((task) => task.touches);
-    for (const task of team.tasks) {
+    // 派发顺序（M3 §6.2「调 priority」）：候选按优先级降序做**稳定**排序 ——
+    // priority 相同保持既有插入顺序（toSorted 稳定，不引入随机序）。前置没满足的
+    // 任务在循环里照旧被跳过，所以「高优先级但依赖未满足」永远不会越过已就绪的
+    // 低优先级任务（场景四：先派 Y）。
+    const candidates = team.tasks
+      .filter((task) => task.status === 'pending')
+      .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+    for (const task of candidates) {
       if (signal?.aborted === true) return;
-      if (task.status !== 'pending') continue;
       if (await this.escalateCrossDomain(task, report)) continue;
       if (await this.escalateForbiddenTouches(task, report)) continue;
       if (!task.dependsOn.every((dep) => tasksByKey.get(dep)?.status === 'done')) {
@@ -2625,10 +2897,12 @@ export class AutopilotService {
   /**
    * 前置**永不可能**满足时升级，区别于"还没完成"。
    *
-   * 不可满足只有两种：看板上查无此 id（契约写错或前置被删），或前置停在
-   * `needs-human`（等人分诊，自己动不了）。`needs-clarification` 刻意不算 ——
-   * 那是 leader 答一句就解的中间态，按这条升级会把人叫来看一件机器能自己处理的事。
-   * 判定不出问题时安静返回，正常等待由后续 tick 继续。
+   * 不可满足有三种：看板上查无此 id（契约写错或前置被删）、前置停在
+   * `needs-human`（等人分诊，自己动不了）、或前置已 `cancelled`（M3 §6.1 ——
+   * 废弃态必须显式进这个判定，否则下游会退回到 §6.4 描述的静默阻塞）。
+   * `needs-clarification` 刻意不算 —— 那是 leader 答一句就解的中间态，按这条升级
+   * 会把人叫来看一件机器能自己处理的事。判定不出问题时安静返回，正常等待由后续
+   * tick 继续。
    */
   private async escalateBlockedDependency(
     task: TaskRecord,
@@ -2640,6 +2914,7 @@ export class AutopilotService {
       const depTask = tasksByKey.get(dep);
       if (depTask === undefined) blockers.push(`${dep}（看板上不存在该任务/契约）`);
       else if (depTask.status === 'needs-human') blockers.push(`${dep}（停在 needs-human）`);
+      else if (depTask.status === 'cancelled') blockers.push(`${dep}（已废弃 cancelled；修掉这条依赖或一并废弃本任务）`);
     }
     if (blockers.length === 0) return;
     report.escalated.push(task.id);
@@ -2799,10 +3074,10 @@ export class AutopilotService {
     report.events.push(`deploy:${view.id}:${view.status}`);
   }
 
-  /** 全部任务完成 → 写完成报告并把循环置为 completed。 */
+  /** 全部任务收尾 → 写完成报告并把循环置为 completed。废弃的任务不挡完成（§6.1：它已被重规划处置）。 */
   private async checkCompletion(team: TeamRecord, report: TickReport): Promise<void> {
     if (team.tasks.length === 0) return;
-    if (!team.tasks.every((task) => task.status === 'done')) return;
+    if (!team.tasks.every((task) => task.status === 'done' || task.status === 'cancelled')) return;
     report.completed = true;
     report.events.push('completed');
     this.loopState = 'completed';

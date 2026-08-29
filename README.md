@@ -158,6 +158,8 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
         questionnaire:                        # AI 向人提问（问卷 ≠ 升级，见「人工确认与问卷工单」）
           mode: interactive                   # interactive | async；async 答完要回会话说一句「继续」
           timeoutMinutes: 60                  # interactive 等待上限；超时按各题 defaultValue 兜底并标 expired
+        replan:                               # 重规划护栏（见「需求变更与重规划」一节）
+          maxPerHour: 10                      # task_cancel / task_replan 每小时调用上限，超限拒绝；0=不设限
         docs:                                 # 文档先行：AI 只能写 draft 区，正式区唯一出口是 doc_approve
           draftDir: docs/drafts
           formalDir: docs
@@ -195,14 +197,14 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 
 1. **恢复检查**：读 state.json + heartbeat 重建内存态。三件固定事：崩溃时仍 `in_progress` 的任务**状态与接手者都不动**（抢回会把同一任务分支二次派发），交由同拍卡死检测收敛；持久化为 `running` 的循环一律降为 `paused`，等 `autopilot_resume`；state.json 解析失败先改名留存为 `state.json.corrupt-<时间戳>` 再空启动，不覆盖唯一一份历史。
 2. **分诊挂起态**：`needs-human` 与 `needs-clarification` 都属"等人/等 leader 动一下"；人工把任务单状态改回 `pending`（或调用 `escalation_resolve`、leader 用 `task_update` 带 `note` 回答）→ 任务回到待派发，关联升级标记 resolved。
-3. **派发**：先看**团队阶段**——`intake`/`kickoff_pending_approval`/`scaffolding` 不派发（契约仍照采纳、门照跑，只是不把任务交出去），`developing`/`replanning` 才继续。然后 `depends_on` 全部 done 且 `status=pending` 的任务，先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
+3. **派发**：先看**团队阶段**——`intake`/`kickoff_pending_approval`/`scaffolding` 不派发（契约仍照采纳、门照跑，只是不把任务交出去），`developing`/`replanning` 才继续。然后 `depends_on` 全部 done 且 `status=pending` 的任务按 **`priority` 降序稳定排序**（依赖条件相同的任务之间大者先派，同权重保持插入顺序；前置没满足的任务永远排在后面）逐个检查：先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
 4. **审查闸门**：reviewer 调 `code_review` approve 前四道闸门必须全过——本地门绿、CI 绿且真验证过、改动体量门、禁区 diff（语义见「安全模型」3/4，配 `maxDiff*` 时超限升级 `change-too-large`）——都过了才按画像策略合入 base；合并冲突拒绝并保持 `in_review`。
 5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
 6. **卡死与预算**：任务 `stuckMinutes` 无 git 活动 → escalate（空闲失控）；派发后超过 `daemon.maxTaskHours`（默认关闭）仍未完成 → 升级 `budget-exceeded`（活跃空转）。插件看不见成员 agent 的 token 消耗，墙钟预算是唯一可靠的烧钱护栏。
 7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
-8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done → 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待升格清单**）并停机等待。
+8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done 或 **cancelled**（废弃是处置结果，不挡收尾）→ 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待升格清单**）并停机等待。
 
-**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 前置依赖永远等不到（`blocked-dependency`）/ 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
+**升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 前置依赖永远等不到（`blocked-dependency`：前置看板上不存在、已 needs-human 或已 cancelled）/ 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
 
 ## 任务契约（.tasks/*.md）
 
@@ -214,7 +216,9 @@ id: CORE-1
 title: set up core module
 status: pending        # pending → in_progress → in_review → done
                        # 分支态：changes_requested / needs-clarification（等 leader）/ needs-human（等人）
+                       # 终止态：cancelled（重规划废弃；文件保留不删，见「需求变更与重规划」）
 owner: dev-1
+priority: 2            # 可选，派发权重：依赖条件相同的任务间大者先派，缺省 0
 depends_on: [CORE-0]
 touches: [server/core/]
 forbidden: [server/core/legacy/]   # 本任务不得触碰的路径（按任务划分的禁区）
@@ -230,6 +234,27 @@ Given/When/Then 验收标准……
 - **评审与澄清都留痕在任务单里**：`request_changes` 的意见、`task_clarify` 的提问、leader 的 `clarify-answer` 都以带时间戳的留言追加进正文 —— 换人接手或换场会话，接得上上下文。
 - `<stateDir>/learnings.md` 同为生成物（程序全量重写），见下节。
 - developer 的 DoD：质量门全绿 + 每条验收标准的验证证据写入 PR 描述。
+
+## 需求变更与重规划
+
+开发过程中需求会变。组长重排计划时有**两条硬边界**（分级表）：该自主的别发邮件，该人批的别偷跑。
+
+| 变更 | 处置 | 惊动人吗 |
+| --- | --- | --- |
+| 新增 pending 任务（`contract_create`）、调 `priority`（`task_update`）、取消**未派发**的 pending（`task_cancel`） | 组长自主完成，不产生升级、不发通知 | 否 |
+| 撤回在途（`in_progress` / `in_review`）任务的分支（`task_replan` disposition `abort`） | 强制走 `kind:'replan'` 问卷，**人批之前不落盘** | 是 |
+| 触及已合并代码、改 PRD 验收数值、动禁区 | **不存在越级路径**：契约正文与正式文档没有任何工具能改（`doc_write` 只收 draft 区）；变更以新契约 / 新草稿 + 审批链落地 | 是 |
+
+- **废弃不是删除**：`task_cancel` 把任务状态置 `cancelled`，契约文件**保留在 `.tasks/` 且留在 git 历史里**（frontmatter 改 `cancelled`，看板出现「已废弃」分区）。人直接手改契约文件为 `cancelled` 同样生效（看板任务跟着走，挂着的升级一并解除）。已废弃的任务不挡完成报告，但会让下游任务响亮升级 `blocked-dependency`——修掉依赖或一并废弃，绝不静默阻塞。
+- **在途任务三种处置**（`task_replan`，只收 `in_progress` / `in_review`）：
+  1. **supersede** —— 原任务照原样走完评审合入（分支保留），自动派生一张修正契约（id 沿用原域取下一个空号，`depends_on` 原任务）；
+  2. **continue + followup** —— 原任务不受影响，增量落到派生的新契约（不阻塞在原任务后面）；
+  3. **abort** —— 丢分支 = 丢工作，必须人批准：工具只开一张 `kind:'replan'` 问卷（超时/未答按「不放弃」兜底），人批了才废弃任务、删分支、释放接手者。
+  三者都只加「入口」，不造新机制：退场复用 `releaseMemberWorkspace`，派生复用 `contract_create` 的写前校验。supersede / continue **不改旧验收标准**——变更以 `[replan]` 留言 + 新契约承接，可 diff、可追溯。
+- **频率上限**：`replan.maxPerHour`（默认 10，`0` 不设限）限制每小时 `task_cancel` / `task_replan` 调用总量，超限拒绝并说明原因——「无限重排」是模型自己察觉不到的失败模式。
+- **重规划不续命**：任何重规划操作都**不重置** `daemon.maxTaskHours` 的计时——墙钟预算是唯一可靠的烧钱护栏，重置等于开了无限续命的口子。
+- **优先级不越过依赖**：`priority` 只在依赖条件相同的任务之间生效（大者先派，同权重保持插入顺序）；前置没满足的任务无论多高优先级都排在后面。派发顺序因此是确定性的，不引入随机序。
+- **PRD 引用带版本**：正式文档重批时版本自动递增（`1.0 → 1.1`），审批 provenance 与 `[decision]` 决策行随文档进 git。任务单引用 PRD 章节时写清版本，例如 `PRD §2.3@v1.7`——让「需求变了」成为可 diff 的事实而不是口头共识。
 
 ## 知识回路（learnings）
 
@@ -282,7 +307,7 @@ Given/When/Then 验收标准……
 
 ## 工具一览
 
-**团队与协作**：`team_create` / `team_add_member` / `team_list` / `team_status` / `team_branch` / `task_assign` / `task_update` / `task_clarify` / `code_review`。
+**团队与协作**：`team_create` / `team_add_member` / `team_list` / `team_status` / `team_branch` / `task_assign` / `task_update`（推进状态与**调 priority**） / `task_cancel`（废弃未派发的任务） / `task_replan`（在途任务三种处置） / `task_clarify` / `code_review`。
 
 **无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_phase`（读/切团队阶段，见下）/ `autopilot_status` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run`。
 
@@ -308,7 +333,7 @@ Given/When/Then 验收标准……
 
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、七列看板（含 needs-human 与 needs-clarification，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、八列看板（含 needs-human、needs-clarification 与 cancelled，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
 
 > **面板内直接作答（M2）**：提交打到同源相对路径 `POST /autopilot/ticket/<id>/answer`，不需要外部浏览器、也不需要知道工单端口。漏必填项时**保留你已填的内容**并重述缺失项；成功后卡片等服务端推回来的新快照翻「已答复」，不做乐观更新。面板上**不再有跳外部的工单链接** —— 投影里的 `ticketUrl` 刻意不带凭据，从面板点过去必然 404，那是我们自己发布坏按钮；要在面板外作答请用邮件里的链接（带 token）或在会话里直接调 `answer_questionnaire`。
 

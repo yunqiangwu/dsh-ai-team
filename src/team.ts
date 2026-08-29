@@ -21,6 +21,11 @@ export interface TaskContract {
   touches: string[];
   /** 任务声明的受限路径（按任务划分的禁区）。 */
   forbidden: string[];
+  /**
+   * 派发排序权重（M3 §6.2「调 priority」）：数值越大越先派。缺省 0，
+   * 且只在「依赖条件相同」的任务之间生效 —— 前置没满足的任务永远排在后面。
+   */
+  priority: number;
   /** 契约文件的绝对路径。 */
   path: string;
   /** Markdown 正文（验收标准等），不含 frontmatter。 */
@@ -52,6 +57,7 @@ export function parseTaskContract(path: string, content: string): TaskContract {
     dependsOn: toStringArray(raw['depends_on']),
     touches: toStringArray(raw['touches']),
     forbidden: toStringArray(raw['forbidden']),
+    priority: typeof raw['priority'] === 'number' && Number.isFinite(raw['priority']) ? raw['priority'] : 0,
     path,
     body: match[2] ?? '',
   };
@@ -113,6 +119,8 @@ const errorMessageOf = (error: unknown): string => (error instanceof Error ? err
 interface FrontmatterPatch {
   status?: TaskStatus;
   owner?: string | null;
+  /** 重规划调优先级时同步契约 frontmatter（看板记录与契约文件保持一份事实）。 */
+  priority?: number;
 }
 
 /**
@@ -143,6 +151,7 @@ export async function patchTaskContract(path: string, patch: FrontmatterPatch): 
   if (patch.owner !== undefined) {
     frontmatter = setFrontmatterKey(frontmatter, 'owner', patch.owner === null ? null : patch.owner);
   }
+  if (patch.priority !== undefined) frontmatter = setFrontmatterKey(frontmatter, 'priority', String(patch.priority));
   const body = match[2] ?? '';
   await writeFile(path, `---\n${frontmatter}\n---\n${body}`, 'utf8');
 }
@@ -188,6 +197,15 @@ export async function regenerateBoard(repoPath: string, contracts: TaskContract[
     lines.push('- (none)');
   } else {
     for (const contract of blocked) lines.push(`- ${contract.id} ${contract.title} — needs-human`);
+  }
+  // M3 重规划的废弃分区（§6.1）：契约文件保留不删，看板上也要能一眼看到
+  // 哪些工作被放弃了 —— 否则「为什么这个 id 再也不会动」只能去 git log 里考古。
+  const cancelled = contracts.filter((contract) => contract.status === 'cancelled');
+  lines.push('', '## 已废弃', '');
+  if (cancelled.length === 0) {
+    lines.push('- (none)');
+  } else {
+    for (const contract of cancelled) lines.push(`- ${contract.id} ${contract.title} — cancelled`);
   }
   lines.push('');
   await writeFile(join(repoPath, '.tasks', '_board.md'), lines.join('\n'), 'utf8');

@@ -142,6 +142,13 @@ export interface Config {
     timeoutMinutes: number;
   };
   /**
+   * 重规划护栏（见 docs/design-interaction.md §6）：`task_cancel` / `task_replan`
+   * 每小时调用上限，超限拒绝并说明原因，防「无限重排」。0 = 不设限。
+   */
+  replan: {
+    maxPerHour: number;
+  };
+  /**
    * 文档先行的目录约定（见 docs/design-interaction.md §4）：AI 只能写 `draftDir`，
    * `formalDir` 的唯一落盘出口是 `doc_approve`（要一次性审批码）。
    */
@@ -214,6 +221,7 @@ const DEFAULT_SECURITY = {
   pushRequiresGates: true,
 };
 const DEFAULT_QUESTIONNAIRE = { mode: 'interactive' as const, timeoutMinutes: 60 };
+const DEFAULT_REPLAN = { maxPerHour: 10 };
 const DEFAULT_DOCS = { draftDir: 'docs/drafts', formalDir: 'docs' };
 const DEFAULT_PROFILE = {
   preset: '',
@@ -365,6 +373,13 @@ export const Config: z<Config> = z.object({
     })
     .default({ ...DEFAULT_QUESTIONNAIRE }),
 
+  replan: z
+    .object({
+      // 0 = 不设限：上限是对「无限重排」失败模式的护栏，不是对重规划本身的禁止。
+      maxPerHour: z.number().step(1).min(0).default(DEFAULT_REPLAN.maxPerHour),
+    })
+    .default({ ...DEFAULT_REPLAN }),
+
   docs: z
     .object({
       draftDir: z.string().default(DEFAULT_DOCS.draftDir),
@@ -479,6 +494,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       maxEntries: effective.learnings?.maxEntries ?? DEFAULT_LEARNINGS.maxEntries,
     },
     questionnaire: effective.questionnaire,
+    replan: effective.replan,
     docs: effective.docs,
     profile: resolveProjectProfile(effective.profile, effective.gates.commands),
     // 核心的告警出口：它不认识 cordis，所以这句"不致命但人该知道"要由插件层落地。

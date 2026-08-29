@@ -25,8 +25,9 @@ export type MemberStatus = (typeof MEMBER_STATUSES)[number];
  *   pending → in_progress → in_review → done
  *                 ↑  └→ changes_requested ─┘
  *                 ├→ needs-human (已升级，分诊后回到 pending)
- *                 └→ needs-clarification (契约含糊，退回 leader 澄清后回到 pending；
- *                    不计入返工轮次、不产生升级)
+ *                 ├→ needs-clarification (契约含糊，退回 leader 澄清后回到 pending；
+ *                 │  不计入返工轮次、不产生升级)
+ *                 └→ cancelled (重规划废弃：契约文件保留不删，可追溯 —— §6.1)
  */
 export const TASK_STATUSES = [
   'pending',
@@ -36,6 +37,7 @@ export const TASK_STATUSES = [
   'needs-clarification',
   'done',
   'needs-human',
+  'cancelled',
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 

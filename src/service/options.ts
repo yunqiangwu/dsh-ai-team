@@ -73,12 +73,20 @@ export interface AutopilotOptions {
   /**
    * 问卷（ask_human）的交付口径。`interactive` 让工具内部 await 答案、组长这一轮
    * 不结束；`async` 只落一条 open 问卷，答案回来后**由人开口**让组长继续 —— 插件
-   * 没有"向会话投一条消息"的写入口，这不是实现细节（docs/design-interaction.md §1.1）。
+   * 没有"向会话投递一条消息"的写入口，这不是实现细节（docs/design-interaction.md §1.1）。
    */
   questionnaire: {
     mode: QuestionnaireMode;
     /** interactive 等待的上限（分钟）：到点转 expired，绝不把一轮永久挂住。 */
     timeoutMinutes: number;
+  };
+  /**
+   * 重规划护栏（M3 §6.5）：单位时间 `task_cancel` / `task_replan` 调用上限，
+   * 超限即拒绝 —— 「无限重排」是模型自己察觉不到的真实失败模式。
+   * 0 = 不设限（测试与显式豁免用）。
+   */
+  replan: {
+    maxPerHour: number;
   };
   /**
    * 文档先行的两个区：AI 只能写 `draftDir`，人批过才搬进 `formalDir`（§4.1）。

@@ -26,6 +26,11 @@ export interface ContractDraft {
   dependsOn?: string[];
   touches?: string[];
   forbidden?: string[];
+  /**
+   * 派发排序权重（M3 §6.2）：越大越先派，只在依赖条件相同的任务间生效。
+   * 缺省 0；类型由工具参数约束，这里不重复校验数值形状。
+   */
+  priority?: number;
   /** Markdown 正文（Gherkin 验收标准）。 */
   body?: string;
 }
@@ -140,6 +145,8 @@ export function renderContractFile(draft: ContractDraft): string {
     `title: ${draft.title.trim()}`,
     'status: pending',
     `owner: ${(draft.owner ?? '').trim()}`,
+    // priority 只在显式给出时落行：缺省 0 由解析兜底，少一行就不怕手写契约对不齐。
+    ...(draft.priority === undefined ? [] : [`priority: ${draft.priority}`]),
     `depends_on: ${draft.dependsOn?.length ? `[${draft.dependsOn.join(', ')}]` : '[]'}`,
     `touches:${yamlList(draft.touches ?? [])}`,
     `forbidden:${yamlList(draft.forbidden ?? [])}`,

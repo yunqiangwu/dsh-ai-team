@@ -229,23 +229,28 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
   registerPublishingTool({
     name: 'task_update',
     description:
-      'Move a task along the board: pending → in_progress → in_review. The done and ' +
-      'changes_requested states are owned by the review flow (code_review); needs-human ' +
-      'is owned by the escalation flow (escalate). This is also how the LEADER answers a ' +
-      'clarification: for a task sitting in needs-clarification, only the leader (or a ' +
-      'human) may move it back to pending, and the answer must be passed as `note` so it ' +
+      'Move a task along the board: pending → in_progress → in_review, and/or adjust its dispatch ' +
+      'priority (higher dispatches first among tasks whose dependencies are equally satisfied — it never ' +
+      'jumps ahead of a task whose deps are ready while yours are not). Pass at least one of status / ' +
+      'priority / note. The done and changes_requested states are owned by the review flow (code_review); ' +
+      'needs-human is owned by the escalation flow (escalate); cancelling a task is task_cancel. This is ' +
+      'also how the LEADER answers a clarification: for a task sitting in needs-clarification, only the ' +
+      'leader (or a human) may move it back to pending, and the answer must be passed as `note` so it ' +
       'lands on the task contract — the developer reads it there, not from chat. ' +
       '`note` is written onto .tasks/<id>.md as a dated comment.',
     parameters: {
       taskId: { type: 'string', required: true },
         status: {
           type: 'string',
-          required: true,
           // 刻意只开 TASK_MOVEABLE_STATUSES 子集，不是 TASK_STATUSES 的全集：
           // done 与 changes_requested 归评审流程所有，needs-human 归升级流程，
-          // needs-clarification 由 task_clarify 进入。
+          // needs-clarification 由 task_clarify 进入；cancelled 归 task_cancel。
           enum: TASK_MOVEABLE_STATUSES,
         },
+      priority: {
+        type: 'number',
+        description: 'Dispatch weight (M3 replanning): higher first among dependency-equal tasks; default 0',
+      },
       note: { type: 'string', description: 'Progress note / clarification answer, written onto the task contract' },
       actorId: { type: 'string', description: 'Member id performing this move (required to answer a clarification)' },
     },
@@ -254,6 +259,65 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       return task;
     },
     presentCall: present('Update task status'),
+  });
+
+  registerPublishingTool({
+    name: 'task_cancel',
+    description:
+      'Cancel a task that has NOT been dispatched yet (status pending). The contract file stays in ' +
+      '.tasks/ with status cancelled — cancellation is traceable, never a deletion — and the board ' +
+      'gains it in the cancelled section. This is an autonomous replanning move: no escalation, no ' +
+      'notification. An in-flight task (in_progress / in_review) cannot be cancelled here — withdrawing ' +
+      'it means losing its branch, and that requires a human via task_replan(disposition:"abort"). ' +
+      'Downstream tasks that depend on this one will escalate as blocked-dependency until you fix or ' +
+      'drop their depends_on.',
+    parameters: {
+      taskId: { type: 'string', required: true },
+      reason: { type: 'string', description: 'Why this work is being dropped; written onto the task contract' },
+    },
+    async execute(args) {
+      const task = await service.taskCancel({ taskId: args.taskId as string, reason: args.reason as string | undefined });
+      return task;
+    },
+    presentCall: present('Cancel a pending task'),
+  });
+
+  registerPublishingTool({
+    name: 'task_replan',
+    description:
+      'Apply a requirement change to an IN-FLIGHT task (in_progress / in_review), choosing one of the ' +
+      'three dispositions: supersede (let the original land as-is via the normal review flow — branch ' +
+      'kept — and derive a follow-up contract for the correction; the follow-up depends_on the original), ' +
+      'continue (the original keeps going; a follow-up contract carries the increment), or abort (discard ' +
+      'the in-flight work and its branch — losing work needs a human, so this opens a replan ' +
+      'questionnaire and lands NOTHING until a person approves; a silent form defaults to "keep going"). ' +
+      'supersede/continue never rewrite the original acceptance criteria: the change lands as a NEW ' +
+      'derived contract (id continues the same domain sequence) plus a dated [replan] note on the ' +
+      'original. Rate-limited by replan.maxPerHour together with task_cancel.',
+    parameters: {
+      taskId: { type: 'string', required: true },
+      disposition: { type: 'string', required: true, enum: ['supersede', 'continue', 'abort'] },
+      changeNote: { type: 'string', required: true, description: 'What changed in the requirements and why' },
+      followup: {
+        type: 'object',
+        description: 'The derived contract for supersede/continue (required for those dispositions); fields default to the original task',
+        additionalProperties: false,
+        properties: {
+          title: { type: 'string' },
+          body: { type: 'string', description: 'Gherkin acceptance criteria; defaults to a stub derived from changeNote' },
+          owner: { type: 'string', description: 'Defaults to leader' },
+          touches: { type: 'array', items: { type: 'string' }, description: 'Defaults to the original touches' },
+          forbidden: { type: 'array', items: { type: 'string' } },
+          dependsOn: { type: 'array', items: { type: 'string' }, description: 'Defaults to [original] for supersede, [] for continue' },
+          priority: { type: 'number' },
+        },
+      },
+    },
+    async execute(args) {
+      const result = await service.replanTask(args);
+      return result;
+    },
+    presentCall: present('Replan an in-flight task'),
   });
 
   registerPublishingTool({
@@ -839,6 +903,10 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
               type: 'array',
               items: { type: 'string' },
               description: 'Paths this contract must not touch, on top of security.forbiddenPaths',
+            },
+            priority: {
+              type: 'number',
+              description: 'Dispatch weight: higher dispatches first among dependency-equal tasks; default 0',
             },
             body: { type: 'string', description: 'Markdown body: requirements + Gherkin acceptance criteria' },
           },
