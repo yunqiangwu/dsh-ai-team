@@ -191,6 +191,78 @@ describe('integration: full lifecycle', () => {
     }
   }, 60_000);
 
+  it('approve refuses to merge forbidden-path changes even with green gates', async () => {
+    const fixture = await makeFixture('approve-forbidden');
+    await seedRemote(fixture, [{ id: 'CORE-9', title: 'core work', touches: ['server/core/'] }]);
+    const service = await AutopilotService.create(
+      testOptions(fixture, {
+        remote: { url: fixture.remotePath, sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'generic' },
+      }),
+    );
+    try {
+      const team = await service.createTeam({ name: 'guard-team', cloneRemote: true });
+      const dev = await service.addMember({ teamId: team.id, role: 'developer' });
+      const reviewer = await service.addMember({ teamId: team.id, role: 'reviewer' });
+      const task = await service.assignTask({
+        teamId: team.id,
+        title: 'core work',
+        assigneeId: dev.id,
+        contractId: 'CORE-9',
+      });
+      // 开发者把改动写进了 human-only 区（AGENTS.md 在 security.forbiddenPaths 里）。
+      commitInWorktree(dev.workspacePath, 'server/core/index.ts', 'export const core = 1;\n', 'feat: core');
+      commitInWorktree(dev.workspacePath, 'AGENTS.md', '# rewritten by the agent\n', 'docs: rewrite agents');
+      await service.updateTask({ taskId: task.id, status: 'in_review' });
+      const gates = await service.runGatesForTask({ taskId: task.id });
+      expect(gates.allPassed).toBe(true);
+
+      // 门全绿也不能成为绕过禁区的理由：此前 assertBranchDiffAllowed 只挂在
+      // pr_sync 上，approve 直接 merge + push base，禁区改动就这么进了主干。
+      await expect(
+        service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' }),
+      ).rejects.toThrow(/forbidden/i);
+      // 触及禁区按设计要升级并挂起任务（不是留在 in_review 等着被重试）。
+      expect(service.teamView(team.id).tasks.find((t) => t.id === task.id)?.status).toBe('needs-human');
+      expect(service.escalations.all.some((record) => record.reason === 'forbidden-paths')).toBe(true);
+      // base 与远端都不能出现那份改写（用 ls-tree：文件不存在时 git show 会非零退出）。
+      expect(gitTest(['ls-tree', '-r', '--name-only', 'main'], team.repoPath)).not.toContain('AGENTS.md');
+      expect(gitTest(['ls-tree', '-r', '--name-only', 'main'], fixture.remotePath)).not.toContain('AGENTS.md');
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('a failing rollback is reported as rollback-failed, not rolled-back', async () => {
+    const fixture = await makeFixture('rollback-failed');
+    const service = await AutopilotService.create(
+      testOptions(fixture, {
+        deploy: {
+          enabled: true,
+          command: 'git --version',
+          healthCheckUrl: 'http://health.local/check',
+          // 健康检查失败后跑这条回滚命令，它以 7 退出。
+          rollbackCommand: 'sh -c "exit 7"',
+          secretsEnv: [],
+        },
+        // 健康探测恒 503 → 必定走到回滚分支。
+        fetchFn: (() => Promise.resolve(new Response('down', { status: 503 }))) as typeof fetch,
+      }),
+    );
+    try {
+      const team = await service.createTeam({ name: 'rollback-team' });
+      const view = await service.deployRun(team.id);
+      // 今天 rollback.exitCode 被读出来就丢掉，无条件置 rolled-back：
+      // 人看到"已回滚"就不会去救火，而线上其实是坏的。
+      expect(view.status).toBe('rollback-failed');
+      expect(view.logTail).toContain('[rollback]');
+      const escalated = service.escalations.all.filter((record) => record.reason === 'deploy-failed');
+      expect(escalated.length).toBeGreaterThan(0);
+      expect(escalated[escalated.length - 1]?.message).toMatch(/rollback/i);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
   it('task contracts on an empty remote drive the board end to end', async () => {
     const fixture = await makeFixture('empty-remote');
     // Empty bare remote: clone must still yield a working base branch.

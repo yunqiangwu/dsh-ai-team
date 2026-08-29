@@ -111,7 +111,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "lint": "oxlint .",
     "test": "vitest run",
-    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
+    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm build && pnpm test",
     "publish:dry": "pnpm pack --dry-run"
   },
   "devDependencies": {

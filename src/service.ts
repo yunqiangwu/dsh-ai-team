@@ -12,8 +12,7 @@
  * 状态落到 <stateDir>/state.json（防抖写入），每个循环 tick 再写一次心跳文件；
  * dispose() 做最终 flush。
  */
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   addWorktree,
@@ -35,6 +34,7 @@ import {
   pushBranch,
   resolveRef,
   sshEnvForKey,
+  assertSafeRef,
 } from './git.js';
 import { bootstrapEnvironment, type BootstrapReport } from './bootstrap.js';
 import { linkSharedCacheDirs } from './cache.js';
@@ -47,14 +47,12 @@ import {
   classifyForbiddenFiles,
   distinctDomainCount,
   effectiveForbiddenRules,
-  enrichDescriptionWithOwnership,
   forbiddenTouchesViolation,
   ownerRoleForTouches,
   renderBranchName,
   renderPrBody,
   renderPrTitle,
   selectGateCommands,
-  type ProjectProfile,
 } from './profile.js';
 import { resolveOptionalEnvRef, SecretRedactor } from './secrets.js';
 import {
@@ -70,12 +68,9 @@ import {
   applyLearning,
   DEFAULT_LEARNINGS,
   renderLearningsFile,
-  renderLearningsSection,
-  selectLearnings,
   viewOf,
   type LearningInput,
   type LearningOptions,
-  type LearningRecord,
 } from './learnings.js';
 import type {
   CiStatus,
@@ -88,7 +83,6 @@ import type {
   LearningKind,
   LearningView,
   LoopState,
-  MemberStatus,
   MemberView,
   ReviewVerdict,
   ReviewView,
@@ -97,283 +91,50 @@ import type {
   TaskView,
   TeamView,
 } from './view.js';
+import type { AutopilotOptions } from './service/options.js';
+import {
+  clip,
+  HELD_STATUSES,
+  memberBranch,
+  noteLines,
+  oneLine,
+  shortId,
+  TASKS_DIR,
+} from './service/state.js';
+import type {
+  MemberRecord,
+  PersistedState,
+  ReviewRecord,
+  TaskRecord,
+  TeamRecord,
+  TickReport,
+} from './service/state.js';
+import { buildDescription } from './service/description.js';
+import { renderCompletionReport } from './service/report.js';
 
-// ── 常量 ────────────────────────────────────────────────────────────────────
+// ── 常量（数据形状与文本预算已各自成模块，这里只留循环自用项） ──────────────
 
 /** 状态落盘的防抖窗口（毫秒）：一次 tick 内的多次变更合并成一次写。 */
 const PERSIST_DEBOUNCE_MS = 100;
 
-/** 契约正文写入任务描述时的最大长度，避免超长契约撑爆提示词。 */
-const CONTRACT_BODY_LIMIT = 2000;
-
-/** 仓库内任务契约目录。 */
-const TASKS_DIR = '.tasks';
-
-/** 全部任务完成后的完成报告文件名。 */
-const COMPLETION_FILE = '_completion.md';
+/** 全部任务完成后的完成报告（运行态产物，落在 stateDir）。 */
+const COMPLETION_ARTIFACT = 'completion.md';
 
 /**
- * 学习记录的全量生成物（与 `_board.md` 同族：程序重写、勿手改）。
- * 下划线前缀正是靠 `loadTaskContracts` 的跳过规则避免被当成任务契约收养。
+ * 学习记录的全量生成物（运行态产物，落在 stateDir）。
+ * 不再放 `.tasks/` 下：那是目标仓库、会被提交进用户的 git 历史，而 AGENTS.md 的
+ * 约定是运行态绝不入库。移出后也不再需要靠 `_` 前缀躲开 loadTaskContracts 的收养。
  */
-const LEARNINGS_FILE = '_learnings.md';
+const LEARNINGS_ARTIFACT = 'learnings.md';
 
 /** 单条学习记录原文（评审意见 / 升级消息 / 日志尾）的截断长度。 */
 const LEARNING_DETAIL_LIMIT = 400;
-
-/**
- * 任务描述的总长度上限：注入 learnings 与 ownership 小节之后仍需有界 ——
- * description 会随 autopilot/update 事件整体推给前端，并进每一次工具返回。
- */
-const DESCRIPTION_TOTAL_LIMIT = 6000;
-
-/**
- * 「挂起等待」状态：needs-human 等人分诊，needs-clarification 等 leader 回答契约。
- * 投影的 blocked 清单与 syncContracts 的人工分诊共用这一份，避免两处判断分叉。
- *
- * 注意：进入这些状态时**必须把契约文件一起回写**，否则 syncContracts 会看到
- * 「内存挂着、契约没挂」而把它当人工放行重开一遍。
- */
-const HELD_STATUSES: readonly TaskStatus[] = ['needs-human', 'needs-clarification'];
 
 /** 连续空闲多少个 tick 后开始放大轮询间隔。 */
 const IDLE_BACKOFF_TICKS = 5;
 
 /** 空闲退避的最大倍数：最多把轮询间隔放大到 4 倍。 */
 const MAX_IDLE_BACKOFF_FACTOR = 4;
-
-/** 生成短 id（team_xxxxxxxx / task_xxxxxxxx / m_xxxxxxxx / rev_xxxxxxxx）。 */
-const shortId = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;
-
-/** 截断到上限并留省略号：注入后的描述与记录原文都必须有硬边界。 */
-const clip = (text: string, limit: number): string => (text.length <= limit ? text : `${text.slice(0, limit - 1)}…`);
-
-/** 取第一行非空文本并折叠空白：把多行评审意见压成一行可注入的结论。 */
-const oneLine = (text: string): string =>
-  text
-    .split('\n')
-    .map((line) => line.trim().replace(/^[-*>#]+\s*/, ''))
-    .find((line) => line !== '') ?? '';
-
-/** 成员的个人分支名：任务之外成员默认停留在这里。 */
-const memberBranch = (memberId: string) => `member/${memberId}`;
-
-// ── 运行时选项（Config 校验之后） ───────────────────────────────────────────
-
-export interface AutopilotOptions {
-  rootDir: string;
-  stateDir?: string | undefined;
-  baseBranch: string;
-  maxMembers: number;
-  maxTasks: number;
-  remote: {
-    url: string;
-    sshKeyEnv: string;
-    platform: 'github' | 'cnb' | 'gitlab' | 'generic';
-    apiTokenEnv?: string | undefined;
-  };
-  bootstrap: {
-    enabled: boolean;
-    toolchain: string[];
-    setupCommand: string;
-    verifyCommand: string;
-    /** 原生模块编译所需的系统包（如 node-gyp 用的 python3/make/g++）。 */
-    systemPackages?: string[] | undefined;
-    /** 包管理器命令（受白名单约束），例如 `sudo apt-get install -y`。 */
-    packageManagerCommand?: string | undefined;
-    /** 要从提交在仓库里的示例文件生成的 `.env` 路径（缺关键项时报错）。 */
-    envFile?: string | undefined;
-    /** 仓库中已提交的 `.env.example` 路径。 */
-    envExample?: string | undefined;
-    /** 启动时必需的环境变量名；缺失即响亮失败。 */
-    requiredEnvKeys?: string[] | undefined;
-  };
-  gates: {
-    commands: string[];
-    e2eCommand?: string | undefined;
-    requireCiGreen: boolean;
-    timeoutMinutes: number;
-  };
-  daemon: {
-    heartbeatSeconds: number;
-    maxReviewRounds: number;
-    stuckMinutes: number;
-    pollIntervalSeconds: number;
-    /**
-     * 评审通过前的改动体量门：单个任务的 base..branch 累计增删行数 / 变更文件数
-     * 上限，超限不许 approve（只能升级让人决定是拆任务还是放行）。0 = 关闭。
-     */
-    maxDiffLines: number;
-    maxDiffFiles: number;
-  };
-  escalation: {
-    webhookUrlEnv?: string | undefined;
-    label: string;
-    pauseOnEscalation: 'task' | 'team';
-  };
-  notification?: {
-    enabled: boolean;
-    /** SMTP 传输配置。 */
-    smtp: {
-      host: string;
-      port: number;
-      secure: boolean;
-      userEnv: string;
-      passEnv: string;
-      fromEnv?: string | undefined;
-      startTls?: boolean | undefined;
-    };
-    /** 人工通知邮件的收件人（逗号/空格分隔多个）。 */
-    mailTo: string;
-    /** 本地工单端点监听地址。 */
-    ticket: {
-      host: string;
-      port: number;
-      /** 邮件里展示给人的访问基址（例如 http://server:8080）。 */
-      publicBaseUrl: string;
-    };
-    /**
-     * 自动恢复：工单被答复后直接回写答案并清除升级（任务回到 pending），
-     * 无需再等一次 escalation_resolve。
-     */
-    autoResume: boolean;
-    /** "From" 头的环境变量名；缺省回落到 smtp.fromEnv。 */
-    fromEnv?: string | undefined;
-  } | undefined;
-  deploy?: {
-    enabled: boolean;
-    command?: string | undefined;
-    healthCheckUrl?: string | undefined;
-    rollbackCommand?: string | undefined;
-    secretsEnv: string[];
-    /**
-     * base 自上次部署以来只前进了 `.tasks/` 提交（任务单状态回写、看板重生成）时
-     * 跳过部署。这些提交不含任何代码变更，跑一次部署既无意义又可能因健康检查抖动
-     * 触发回滚与 deploy-failed 升级。缺省即开（消费侧用 `!== false` 判定）。
-     */
-    skipTasksOnlyCommits?: boolean | undefined;
-  } | undefined;
-  security: {
-    forbiddenPaths: string[];
-    commandAllowlist: string[];
-    pushRequiresGates: boolean;
-  };
-  /**
-   * 项目画像适配器：目标仓库的协作约定（分支/PR 命名、合并策略、条件质量门、
-   * 禁区策略、所有权路由）。默认画像完全复刻插件的历史行为，项目预设
-   * （如 AgentDeploy）只需覆盖有差异的字段。
-   */
-  profile: ProjectProfile;
-  /**
-   * 可选的构建缓存共享：把被 gitignore 的构建/测试缓存目录软链到按分支共享的
-   * 位置，让相邻任务复用上一次产物而不是从头构建。尽力而为，默认关闭。
-   */
-  buildCache?: { enabled: boolean; dirs: string[] } | undefined;
-  /**
-   * 知识回路：把评审意见、升级与部署失败沉淀成跨任务可复用的教训，并在派发时
-   * 注入新任务描述。默认关闭 —— 开启会改变 agent 看到的提示词，属于行为变更。
-   */
-  learnings?: LearningOptions | undefined;
-  /** 测试钩子：缩短循环中的 sleep/退避时长。 */
-  tickSleepMs?: number | undefined;
-  /** 测试钩子：注入 fetch，用于 webhook / CI / 健康检查调用。 */
-  fetchFn?: typeof fetch | undefined;
-}
-
-// ── 内部记录 ────────────────────────────────────────────────────────────────
-
-interface MemberRecord {
-  id: string;
-  name: string;
-  role: Role;
-  systemPrompt: string;
-  workspacePath: string;
-  branch: string;
-  status: MemberStatus;
-  currentTaskId: string | null;
-  /** 可选的领域专精（与所有权规则的 role 匹配）。 */
-  specialization?: string | undefined;
-}
-
-interface TaskRecord {
-  id: string;
-  contractId: string | null;
-  /**
-   * 契约文件的真实路径。老版本持久化数据里没有这个字段，读取时回退到
-   * `.tasks/<contractId>.md`（见 contractPathFor）。
-   */
-  contractPath?: string | undefined;
-  title: string;
-  description: string;
-  assigneeId: string;
-  status: TaskStatus;
-  branch: string;
-  reviewRound: number;
-  dependsOn: string[];
-  touches: string[];
-  /**
-   * 契约自己声明的禁区（派发前自洽校验用）。可选：老 state.json 里没这个字段，
-   * 读取处一律 `?? []`。dispatch 只拿得到任务记录、拿不到磁盘契约，所以必须在
-   * 建记录时从契约带过来。
-   */
-  forbidden?: string[] | undefined;
-  gates: GateSummary | null;
-  prUrl: string | null;
-  ciStatus: CiStatus | null;
-  lastActivityAt: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-interface ReviewRecord {
-  id: string;
-  taskId: string;
-  reviewerId: string;
-  verdict: ReviewVerdict;
-  comments: string;
-  createdAt: number;
-}
-
-/** 一个团队的内存记录：成员、任务、评审与学习记录都随它整体落盘。 */
-interface TeamRecord {
-  id: string;
-  name: string;
-  repoPath: string;
-  workspaceRoot: string;
-  baseBranch: string;
-  branches: string[];
-  members: MemberRecord[];
-  tasks: TaskRecord[];
-  reviews: ReviewRecord[];
-  /**
-   * 跨任务教训。可选：老 state.json 里没有这个字段，读取处一律 `?? []` 兜底
-   * （同 TaskRecord.contractPath）。`.tasks/_learnings.md` 是它的全量生成物。
-   */
-  learnings?: LearningRecord[] | undefined;
-  createdAt: number;
-}
-
-interface PersistedState {
-  version: 1;
-  teams: TeamRecord[];
-  activeTeamId: string | null;
-  escalations: EscalationView[];
-  deploys: DeployView[];
-  loopState: LoopState;
-  tick: number;
-  bootstrapped: boolean;
-  lastDeployBaseSha: string | null;
-}
-
-export interface TickReport {
-  tick: number;
-  events: string[];
-  recovered: string[];
-  dispatched: string[];
-  escalated: string[];
-  deployed: string | null;
-  completed: boolean;
-}
 
 // ── 服务主体 ────────────────────────────────────────────────────────────────
 
@@ -669,7 +430,15 @@ export class AutopilotService {
         team.branches = await listBranches(team.repoPath).catch(() => team.branches);
       }
     } catch {
-      // 状态文件损坏：宁可空着启动，也不能把宿主进程带崩。
+      // 状态文件损坏：宁可空着启动，也不能把宿主进程带崩。但必须先把它留在磁盘上 ——
+      // 否则解析失败 + 随后的正常 persist 会用空状态覆盖掉唯一一份历史，等价于
+      // 静默删掉全部团队、任务与升级记录。
+      this.teams.clear();
+      this.activeTeamId = null;
+      this.escalations.restore([]);
+      this.deploys = [];
+      this.lastDeployBaseSha = null;
+      await rename(this.stateFile, `${this.stateFile}.corrupt-${Date.now()}`).catch(() => {});
     }
   }
 
@@ -1284,7 +1053,7 @@ export class AutopilotService {
       const kind = heldForClarification ? 'clarify-answer' : 'note';
       await appendTaskNote(
         this.contractPathFor(team, task),
-        ['', `> [${kind}] ${new Date().toISOString()} ${author}`, ...this.lines(this.redactor.redact(input.note))].join('\n'),
+        ['', `> [${kind}] ${new Date().toISOString()} ${author}`, ...noteLines(this.redactor.redact(input.note))].join('\n'),
       ).catch(() => {});
     }
     task.status = input.status;
@@ -1327,7 +1096,7 @@ export class AutopilotService {
     const note = [
       '',
       `> [needs-clarification] ${new Date().toISOString()} ${member.name} → ${leader.name}`,
-      ...this.lines(this.redactor.redact(input.question)),
+      ...noteLines(this.redactor.redact(input.question)),
       ...(input.ambiguousPoints ?? []).map((point) => `> - ambiguous: ${this.redactor.redact(point)}`),
       ...(input.proposedResolutions ?? []).map((option) => `> - proposed: ${this.redactor.redact(option)}`),
       '',
@@ -1341,14 +1110,6 @@ export class AutopilotService {
     this.touchTask(task);
     this.changed(team.id);
     return this.taskView(team, task);
-  }
-
-  /** 把一段自由文本压成 markdown 留言行（带 `> ` 前缀，逐行脱敏在调用方做）。 */
-  private lines(text: string, max = 20): string[] {
-    return text
-      .split('\n')
-      .slice(0, max)
-      .map((line) => `> ${line}`);
   }
 
   // ── 分支协作 ──────────────────────────────────────────────────────────────
@@ -1390,6 +1151,8 @@ export class AutopilotService {
       case 'merge': {
         const branch = requireBranch(input.branch);
         const target = input.target ?? team.baseBranch;
+        // 手工合并同样要过禁区闸门，否则这是一条绕过 pr_sync 检查的旁路。
+        await this.assertNoForbiddenChanges(team, branch, target, null);
         await mergeBranch(team.repoPath, branch, target, team.baseBranch, `merge: ${branch} into ${target} (dsh-ai-team)`);
         await this.refreshBranches(team);
         this.changed(team.id);
@@ -1487,6 +1250,8 @@ export class AutopilotService {
     if (input.verdict === 'approve') {
       this.assertMergeAllowed(task);
       await this.assertDiffSizeAllowed(team, task);
+      // 合并进 base 之前必须查禁区：质量门全绿不代表可以改写 human-only 区。
+      await this.assertNoForbiddenChanges(team, task.branch, team.baseBranch, task.id);
       await mergeBranch(
         team.repoPath,
         task.branch,
@@ -1538,20 +1303,40 @@ export class AutopilotService {
     return { review: this.reviewView(team, review), task: this.taskView(team, task), merged };
   }
 
-  /** approve 前的硬校验：质量门与远端 CI 必须先绿。 */
+  /** approve 前的硬校验：质量门与远端 CI 各自是一道独立的门，互不短路。 */
   private assertMergeAllowed(task: TaskRecord): void {
-    if (!this.options.security.pushRequiresGates) return;
-    const gates = task.gates;
-    if (gates === null || !gates.allPassed) {
-      throw new Error(
-        `cannot approve: quality gates are not green for task "${task.title}" — run gates_run first and make every gate pass`,
-      );
+    if (this.options.security.pushRequiresGates) {
+      const gates = task.gates;
+      if (gates === null || !gates.allPassed) {
+        throw new Error(
+          `cannot approve: quality gates are not green for task "${task.title}" — run gates_run first and make every gate pass`,
+        );
+      }
     }
-    if (this.options.gates.requireCiGreen && this.hasRemote && task.ciStatus !== null && task.ciStatus !== 'success') {
-      throw new Error(
-        `cannot approve: remote CI status is "${task.ciStatus ?? 'unknown'}" — wait for CI to go green (pr_sync polls it)`,
-      );
-    }
+    this.assertCiGreen(task);
+  }
+
+  /**
+   * `requireCiGreen` 独立于 `pushRequiresGates` 生效。
+   *
+   * 此前它嵌在 `if (!pushRequiresGates) return` 之后，被另一个开关整体短路；
+   * 并且 `ciStatus !== null` 的前置让「从未 pr_sync」= 「从未验证过 CI」直接放行，
+   * 与 tools.ts 给模型的承诺相反。
+   *
+   * 只在 CI 真能查到的平台上门禁：`checkRunStatus` 只有 github 适配，其它平台
+   * `pr_sync` 恒置 `'unknown'`，把它当未绿会让默认配置永远无法 approve。
+   * 无法验证不等于验证通过，所以 README 里明确要求：非 github 平台请自行关掉
+   * `requireCiGreen`。
+   */
+  private assertCiGreen(task: TaskRecord): void {
+    if (!this.options.gates.requireCiGreen || !this.hasRemote) return;
+    if (this.options.remote.platform !== 'github') return;
+    if (task.ciStatus === 'success') return;
+    throw new Error(
+      task.ciStatus === null
+        ? `cannot approve: requireCiGreen is on but CI was never checked for "${task.title}" — run pr_sync to push the branch and poll CI`
+        : `cannot approve: remote CI status is "${task.ciStatus}" — wait for CI to go green (pr_sync polls it)`,
+    );
   }
 
   /**
@@ -1625,36 +1410,34 @@ export class AutopilotService {
   }
 
   /**
-   * 全量重写 `.tasks/_learnings.md` 并以插件身份提交（生成物，与 `_board.md` 同族，
-   * 勿手改 —— 所以刻意不给任何工具「编辑这个文件」的能力）。
+   * 全量重写 `<stateDir>/learnings.md`（生成物，勿手改 —— 所以刻意不给任何工具
+   * 「编辑这个文件」的能力）。
    *
-   * 目标仓库没有 `.tasks/` 时写入自然失败并被忽略：文件只是给人看的便利视图，
-   * 真相源始终在 state.json，注入走内存记录，不依赖这个文件存在。
+   * 落在 stateDir 而不是目标仓库的 `.tasks/`：这是插件的运行态输出，而 AGENTS.md
+   * 的约定是运行态绝不入库 —— 以前它会作为提交进入**用户项目**的 git 历史。
+   * 文件只是给人看的便利视图，真相源始终在 state.json、注入走内存记录，
+   * 所以写盘失败可以忽略（catch 掉），但状态变更本身必须照常落盘。
    */
   private async syncLearningsFile(team: TeamRecord): Promise<void> {
     const markdown = renderLearningsFile(team.learnings ?? []);
-    await writeFile(join(team.repoPath, TASKS_DIR, LEARNINGS_FILE), markdown, 'utf8').catch(() => {});
-    await this.commitTasksDir(team, 'tasks: learnings');
+    await writeFile(join(this.options.stateDir, LEARNINGS_ARTIFACT), markdown, 'utf8').catch(() => {});
   }
 
   /**
-   * 组装任务描述：截断 → 注入已知教训 → 注入域硬规则。
+   * 组装任务描述。委托给 `service/description.ts` 的纯函数（注入顺序与预算
+   * 优先级见该模块的说明）。
    *
-   * 顺序是刻意的：所有权规则留在最末尾，agent 读到的最后一段必须是不可协商的。
    * 这是 task.description 的唯一生产者（assignTask 与 adoptPendingContract 共用），
    * 所以注入只需这一处即可覆盖工具驱动与循环驱动两条派发路径。
    */
   private buildDescription(team: TeamRecord, raw: string, touches: readonly string[]): string {
-    const base = clip(raw, CONTRACT_BODY_LIMIT);
-    const options = this.learningOptions();
-    const withLearnings =
-      options === undefined || options.enabled !== true
-        ? base
-        : (() => {
-            const { items, dropped } = selectLearnings(team.learnings ?? [], touches, options);
-            return renderLearningsSection(items, dropped, base);
-          })();
-    return clip(enrichDescriptionWithOwnership(withLearnings, touches, this.options.profile.ownership), DESCRIPTION_TOTAL_LIMIT);
+    return buildDescription({
+      raw,
+      touches,
+      learnings: team.learnings ?? [],
+      profile: this.options.profile,
+      learningOptions: this.learningOptions(),
+    });
   }
 
   /** 定位学习记录归属的团队：任务 > 显式 teamId > 第一个团队。 */
@@ -1752,7 +1535,7 @@ export class AutopilotService {
     const { env, cleanup } = await this.remoteEnv();
     try {
       await fetchRemote(team.repoPath, env);
-      await this.assertBranchDiffAllowed(team, task);
+      await this.assertNoForbiddenChanges(team, task.branch, `origin/${team.baseBranch}`, task.id);
       await pushBranch(team.repoPath, task.branch, { env });
     } finally {
       await cleanup();
@@ -1770,36 +1553,57 @@ export class AutopilotService {
   }
 
   /**
-   * 推送前的禁区检查（规范 §4.5.3）。策略由画像决定且区分模式：
-   *  - `block`（human-only）→ 硬阻断推送并升级；
-   *  - `needs-approval` / `high-conflict` → 先压住推送，等人或 owner 决策
+   * 任何改动落地（推送 / 合并进 base）前的禁区检查（规范 §4.5.3）。
+   * 三处调用共用这一份：`pr_sync`（比 `origin/base`）、reviewer 的 approve
+   * （比本地 base —— 合并基线可能还没推）、以及 `team_branch` 的 merge。
+   * 此前它只挂在 pr_sync 上，approve 直接 merge + push base，禁区改动就这么
+   * 进了主干 —— 那正是这道规则要防的那件事。
+   *
+   * 策略由画像决定且区分模式：
+   *  - `block`（human-only）→ 硬阻断并升级；
+   *  - `needs-approval` / `high-conflict` → 先压住，等人或 owner 决策
    *    （走独立 PR），升级但不推。
    */
-  private async assertBranchDiffAllowed(team: TeamRecord, task: TaskRecord): Promise<void> {
-    const baseSha = await resolveRef(team.repoPath, `origin/${team.baseBranch}`);
-    const branchSha = await resolveRef(team.repoPath, task.branch);
-    if (baseSha === null || branchSha === null) return;
+  private async assertNoForbiddenChanges(
+    team: TeamRecord,
+    source: string,
+    baseRef: string,
+    taskId: string | null,
+  ): Promise<void> {
+    const baseSha = await resolveRef(team.repoPath, baseRef);
+    const branchSha = await resolveRef(team.repoPath, source);
+    if (baseSha === null || branchSha === null) {
+      // 解析不出来就无法证明干净 —— 门禁不能建立在"查不动就放过"上。
+      const missing = baseSha === null ? baseRef : source;
+      await this.escalateTask({
+        taskId,
+        reason: 'forbidden-paths',
+        message: `cannot verify forbidden paths for "${source}": ref "${missing}" does not resolve in ${team.repoPath}`,
+        suggestion: 'fetch the remote / recreate the branch so the diff can be checked, then retry',
+      });
+      throw new Error(`forbidden-path check failed: ref "${missing}" does not resolve`);
+    }
     const rules = effectiveForbiddenRules(this.options.profile, this.options.security.forbiddenPaths);
     const files = await changedFiles(team.repoPath, baseSha, branchSha);
     const { blocks, approvals } = classifyForbiddenFiles(files, rules);
     if (blocks.length > 0) {
       await this.escalateTask({
-        taskId: task.id,
+        taskId,
         reason: 'forbidden-paths',
-        message: `branch ${task.branch} touches human-only/blocked paths: ${blocks.join(', ')}`,
-        suggestion: 'remove the forbidden changes from the task branch, rebase onto base, then pr_sync again',
+        message: `branch ${source} touches human-only/blocked paths: ${blocks.join(', ')}`,
+        suggestion: `remove the forbidden changes from ${source}, rebase onto base, then retry`,
       });
-      throw new Error(`push blocked: forbidden paths modified: ${blocks.join(', ')}`);
+      throw new Error(`forbidden paths modified: ${blocks.join(', ')}`);
     }
     if (approvals.length > 0) {
       await this.escalateTask({
-        taskId: task.id,
+        taskId,
         reason: 'manual',
-        message: `branch ${task.branch} touches paths needing owner/human approval or a dedicated PR: ${approvals.join(', ')}`,
+        message: `branch ${source} touches paths needing owner/human approval or a dedicated PR: ${approvals.join(', ')}`,
         suggestion:
           'confirm the change may land only as a separate PR after owner/human approval, or split it out of this task',
       });
-      throw new Error(`push held for approval: ${approvals.join(', ')}`);
+      throw new Error(`change held for approval: ${approvals.join(', ')}`);
     }
   }
 
@@ -2050,7 +1854,9 @@ export class AutopilotService {
       deployed: null,
       completed: false,
     };
-    // 1. 恢复：上一次崩溃时停留在 in_progress 的任务重新变为可派发。
+    // 1. 恢复：报告上次崩溃时仍停在 in_progress 的任务。**刻意不改状态** ——
+    //    抢回 pending 会把同一个任务分支二次派给另一个开发者。真正的收敛由
+    //    同拍的 checkStuck 完成：无新 git 活动即升级成 needs-human 交人分诊。
     if (!this.recoveredOnce) {
       this.recoveredOnce = true;
       for (const team of this.teams.values()) {
@@ -2307,46 +2113,14 @@ export class AutopilotService {
     report.completed = true;
     report.events.push('completed');
     this.loopState = 'completed';
-    const options = this.learningOptions();
-    const learnings = team.learnings ?? [];
-    const pendingPromotion =
-      options === undefined
-        ? []
-        : learnings.filter((learning) => !learning.promoted && learning.hits >= options.promoteAfterHits);
-    const summary = [
-      `# Autopilot completion report`,
-      ``,
-      `team: ${team.name} (${team.id})`,
-      `finished at: ${new Date().toISOString()}`,
-      ``,
-      `## tasks`,
-      ...team.tasks.map((task) => `- ${task.contractId ?? task.id} ${task.title} — ${task.status}`),
-      ``,
-      `## deploys`,
-      ...(this.deploys.length === 0
-        ? ['- (none)']
-        : this.deploys.map((deploy) => `- ${deploy.id} ${deploy.status} at ${new Date(deploy.startedAt).toISOString()}`)),
-      ``,
-      `## learnings`,
-      ...(learnings.length === 0
-        ? ['- (none captured)']
-        : learnings.map(
-            (learning) =>
-              `- ${learning.summary} (${learning.hits}x, ${learning.bucket}${learning.promoted ? ', promoted' : ''})`,
-          )),
-      ``,
-      // 反复被印证的坑值得长期化，但写进项目文档是人的决定：报告只列候选。
-      ...(pendingPromotion.length === 0
-        ? []
-        : [
-            `## pending promotion to project docs (learning_promote)`,
-            ``,
-            ...pendingPromotion.map((learning) => `- ${learning.summary} — id ${learning.id} (${learning.hits}x)`),
-            ``,
-          ]),
-    ].join('\n');
-    await writeFile(join(team.repoPath, TASKS_DIR, COMPLETION_FILE), summary, 'utf8').catch(() => {});
-    await this.commitTasksDir(team, 'tasks: completion report');
+    // 渲染是纯函数（见 service/report.ts）；这里只保留有副作用的部分。
+    const summary = renderCompletionReport({
+      team,
+      deploys: this.deploys,
+      promoteAfterHits: this.learningOptions()?.promoteAfterHits,
+      finishedAt: Date.now(),
+    });
+    await writeFile(join(this.options.stateDir, COMPLETION_ARTIFACT), summary, 'utf8').catch(() => {});
   }
 
   // ── 状态查询 ──────────────────────────────────────────────────────────────
@@ -2423,7 +2197,7 @@ function foundTeamId(taskId: string | null, teams: Map<string, TeamRecord>): str
 
 function requireBranch(branch: string | undefined): string {
   if (branch === undefined || branch === '') throw new Error('the "branch" parameter is required for this action');
-  return branch;
+  return assertSafeRef(branch);
 }
 
 function requireMember(memberId: string | undefined): string {

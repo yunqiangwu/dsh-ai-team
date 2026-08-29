@@ -32,6 +32,27 @@ export interface GitOptions {
   env?: Record<string, string>;
 }
 
+/**
+ * git ref / 分支名的安全边界。
+ *
+ * `team_branch` 工具的 `branch` / `target` 由模型自由填写，会被直接拼进
+ * `git branch <name> <start>` 与 `git merge … <name>` 的 argv：一个以 `-` 开头的
+ * 值会被 git 当成选项 —— `git branch -D <victim>` 就能静默删掉同事那条未检出的
+ * 任务分支。所以除了 git 自身的 ref 命名规则，这里额外禁止前导 `-`。
+ * 全部可变操作都过这道函数，不依赖调用方自觉。
+ */
+const SAFE_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/@+-]*$/;
+
+export function assertSafeRef(name: string, label = 'branch'): string {
+  if (!SAFE_REF_RE.test(name) || name.includes('..') || name.includes('@{')) {
+    throw new Error(
+      `invalid ${label} name "${name}": must start with an alphanumeric character and contain only ` +
+        `letters, digits, '.', '_', '-', '+', '/' or '@' (no spaces, no leading '-', no '..' or '@{')`,
+    );
+  }
+  return name;
+}
+
 /** Run git in `cwd`, returning trimmed stdout. Throws GitError on failure. */
 export async function git(args: string[], cwd: string, options?: GitOptions): Promise<string> {
   try {
@@ -134,12 +155,12 @@ export async function currentBranch(worktreePath: string): Promise<string> {
 
 /** 从 `startPoint` 创建分支 `branch`，且不检出到任何地方。 */
 export async function createBranch(repoPath: string, branch: string, startPoint: string): Promise<void> {
-  await git(['branch', branch, startPoint], repoPath);
+  await git(['branch', assertSafeRef(branch), assertSafeRef(startPoint, 'start point')], repoPath);
 }
 
 /** 在成员的 worktree 内检出已存在的分支。 */
 export async function checkout(worktreePath: string, branch: string): Promise<void> {
-  await git(['checkout', branch], worktreePath);
+  await git(['checkout', assertSafeRef(branch)], worktreePath);
 }
 
 /**
@@ -160,24 +181,36 @@ export async function mergeBranch(
   message?: string,
   strategy: MergeStrategy = 'no-ff',
 ): Promise<void> {
-  const restore = target !== baseBranch;
-  if (restore) await git(['checkout', target], repoPath);
+  const safeSource = assertSafeRef(source, 'source branch');
+  const safeTarget = assertSafeRef(target, 'target branch');
+  const restore = safeTarget !== baseBranch;
+  if (restore) await git(['checkout', safeTarget], repoPath);
   try {
     if (strategy === 'squash') {
       // --squash 暂存整个差异但不创建合并提交；随后我们用插件身份提交它，
       // 这样基础分支保持线性。
-      await git(['merge', '--squash', source], repoPath);
+      await git(['merge', '--squash', safeSource], repoPath);
       await git(
-        [...COMMITTER, 'commit', '-m', message ?? `merge: ${source} into ${target}`],
+        [...COMMITTER, 'commit', '-m', message ?? `merge: ${safeSource} into ${safeTarget}`],
         repoPath,
       ).catch(() => {
         // 没有暂存的变更（已合并 / 空差异）—— 无需提交。
       });
     } else if (strategy === 'merge') {
-      await git([...COMMITTER, 'merge', '-m', message ?? `merge: ${source} into ${target}`, source], repoPath);
+      await git(
+        [...COMMITTER, 'merge', '-m', message ?? `merge: ${safeSource} into ${safeTarget}`, safeSource],
+        repoPath,
+      );
     } else {
       await git(
-        [...COMMITTER, 'merge', '--no-ff', '-m', message ?? `merge: ${source} into ${target}`, source],
+        [
+          ...COMMITTER,
+          'merge',
+          '--no-ff',
+          '-m',
+          message ?? `merge: ${safeSource} into ${safeTarget}`,
+          safeSource,
+        ],
         repoPath,
       );
     }
@@ -188,7 +221,7 @@ export async function mergeBranch(
 
 /** 硬删除一个本地分支（用于清理已结束的任务分支）。 */
 export async function deleteBranch(repoPath: string, branch: string): Promise<void> {
-  await git(['branch', '-D', branch], repoPath);
+  await git(['branch', '-D', assertSafeRef(branch)], repoPath);
 }
 
 /**
@@ -273,17 +306,18 @@ export async function pushBranch(
   branch: string,
   options?: { env?: Record<string, string>; forceWithLease?: boolean },
 ): Promise<void> {
+  const safeBranch = assertSafeRef(branch);
   const args = ['push', 'origin'];
   if (options?.forceWithLease === true) {
-    if (!branch.startsWith('task/') && !branch.startsWith('member/') && !branch.startsWith('agent/')) {
+    if (!safeBranch.startsWith('task/') && !safeBranch.startsWith('member/') && !safeBranch.startsWith('agent/')) {
       throw new GitError(
-        `refusing to force-push shared branch "${branch}"; only task/member/agent branches may use --force-with-lease`,
+        `refusing to force-push shared branch "${safeBranch}"; only task/member/agent branches may use --force-with-lease`,
         '',
       );
     }
-    args.push(`--force-with-lease=refs/heads/${branch}`);
+    args.push(`--force-with-lease=refs/heads/${safeBranch}`);
   }
-  args.push(`refs/heads/${branch}:refs/heads/${branch}`);
+  args.push(`refs/heads/${safeBranch}:refs/heads/${safeBranch}`);
   await git(args, repoPath, { env: options?.env });
 }
 

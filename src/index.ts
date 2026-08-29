@@ -47,12 +47,10 @@ export interface Config {
   };
   gates: {
     commands: string[];
-    e2eCommand: string;
     requireCiGreen: boolean;
     timeoutMinutes: number;
   };
   daemon: {
-    heartbeatSeconds: number;
     maxReviewRounds: number;
     stuckMinutes: number;
     pollIntervalSeconds: number;
@@ -109,7 +107,7 @@ export interface Config {
   };
   /**
    * 知识回路：把评审意见、升级与部署失败沉淀成跨任务教训，并在派发时注入新任务
-   * 描述。默认关闭 —— 开启会改变成员看到的提示词。`.tasks/_learnings.md` 是它的
+   * 描述。默认关闭 —— 开启会改变成员看到的提示词。`<stateDir>/learnings.md` 是它的
    * 全量生成物；升格进项目文档始终由人做。
    */
   learnings?: LearningOptions | undefined;
@@ -168,20 +166,17 @@ export const Config: z<Config> = z.object({
       commands: z
         .array(z.string())
         .default(['pnpm run typecheck', 'pnpm run lint', 'pnpm run test', 'pnpm run build']),
-      e2eCommand: z.string().default('pnpm run e2e:local'),
       requireCiGreen: z.boolean().default(true),
       timeoutMinutes: z.number().step(1).min(1).default(30),
     })
     .default({
       commands: ['pnpm run typecheck', 'pnpm run lint', 'pnpm run test', 'pnpm run build'],
-      e2eCommand: 'pnpm run e2e:local',
       requireCiGreen: true,
       timeoutMinutes: 30,
     }),
 
   daemon: z
     .object({
-      heartbeatSeconds: z.number().step(1).min(1).default(60),
       maxReviewRounds: z.number().step(1).min(1).default(3),
       stuckMinutes: z.number().step(1).min(1).default(45),
       pollIntervalSeconds: z.number().step(1).min(1).default(30),
@@ -190,7 +185,6 @@ export const Config: z<Config> = z.object({
       maxDiffFiles: z.number().step(1).min(0).default(0),
     })
     .default({
-      heartbeatSeconds: 60,
       maxReviewRounds: 3,
       stuckMinutes: 45,
       pollIntervalSeconds: 30,
@@ -357,7 +351,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     bootstrap: effective.bootstrap,
     gates: {
       commands: effective.gates.commands,
-      e2eCommand: effective.gates.e2eCommand === '' ? undefined : effective.gates.e2eCommand,
       requireCiGreen: effective.gates.requireCiGreen,
       timeoutMinutes: effective.gates.timeoutMinutes,
     },

@@ -112,4 +112,18 @@ describe('smoke: cordis Loader contract', () => {
     // Best-effort: an unwritable root must not throw; it resolves undefined.
     expect(await plugin.ensureAutopilotTeamPreset('/proc/not/writable')).toBeUndefined();
   }, 30_000);
+
+  it('keeps the client bundle browser-safe (架构铁律 5)', async () => {
+    // view.ts 现在是「值来自 vocab.ts、类型来自 schema.ts」的门面，对 schema.ts
+    // 必须是纯类型 re-export。有人把它写成值导入时不会有任何编译错误，
+    // zod 会被安静地内联进前端产物 —— 所以这条只能靠产物本身来守。
+    const bundle = await readFile(join(import.meta.dirname!, '..', 'lib', 'client.js'), 'utf8');
+    expect(bundle).not.toMatch(/\bZodError\b/);
+    expect(bundle).not.toMatch(/require\(\s*["']zod["']\s*\)/);
+    expect(bundle).not.toMatch(/from\s+["']zod["']/);
+    expect(bundle).not.toMatch(/require\(\s*["']node:/);
+    // 词表是运行时需要，必须确实在产物里（否则面板的枚举渲染会静默空掉）
+    expect(bundle).toContain('needs-clarification');
+    expect(bundle).toContain('rollback-failed');
+  });
 });

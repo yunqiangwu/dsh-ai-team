@@ -132,8 +132,9 @@ export async function regenerateBoard(repoPath: string, contracts: TaskContract[
   const lines: string[] = [
     '# 任务看板（自动生成，勿手改）',
     '',
-    `> regenerated at ${new Date().toISOString()}`,
-    '',
+    // 刻意不写「regenerated at <时间戳>」：本文件每次状态变更都会重生成并提交，
+    // 内嵌时间戳会让内容每次都变，于是纯粹的重新生成也能把 worktree 弄脏、
+    // 产出一堆零内容的空提交。变更时间由 git log 记录。
     '| id | title | status | owner | depends_on | touches |',
     '| --- | --- | --- | --- | --- | --- |',
   ];

@@ -10,7 +10,7 @@
  *  仍然留在 human-only 区。
  *
  * 本模块不认识 cordis、也不做任何 IO：真相源是 AutopilotService 内存里的
- * `LearningRecord[]`（随 state.json 落盘），`.tasks/_learnings.md` 只是它的
+ * `LearningRecord[]`（随 state.json 落盘），`<stateDir>/learnings.md` 只是它的
  * 全量生成物。这样去重与注入策略能脱离 git 工作区单测。
  */
 import { distinctDomains } from './profile.js';
@@ -236,7 +236,7 @@ export function renderLearningsSection(items: readonly LearningView[], dropped: 
   return `${description}${lines.join('\n')}`;
 }
 
-/** 生成 `.tasks/_learnings.md` 的全量内容（自动生成，勿手改）。 */
+/** 生成 `<stateDir>/learnings.md` 的全量内容（自动生成，勿手改）。 */
 export function renderLearningsFile(records: readonly LearningRecord[]): string {
   const lines: string[] = [
     '# 已知教训（自动生成，勿手改）',

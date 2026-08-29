@@ -3,10 +3,9 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { JsonValue } from '@deepseek-ai/dsh-session';
 import type { AutopilotService } from './service.js';
 import './events.js';
-import { ROLES } from './roles.js';
-// 工具层的枚举一律引用 view.ts 的唯一清单：手抄一份漏掉新值，表现为模型报不出
+// 工具层的枚举一律引用唯一词表（经 view.ts 门面）：手抄一份漏掉新值，表现为模型报不出
 // 那个原因 / 分类，而编译器和测试都不会响。
-import { ESCALATION_REASONS, LEARNING_BUCKETS, LEARNING_KINDS } from './view.js';
+import { ESCALATION_REASONS, LEARNING_BUCKETS, LEARNING_KINDS, REVIEW_VERDICTS, ROLES } from './view.js';
 
 /**
  * View 对象在构造上就是纯 JSON，但缺少索引签名，
@@ -186,6 +185,8 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
         status: {
           type: 'string',
           required: true,
+          // 刻意只开三态，不是 TASK_STATUSES 的全集：done 与 changes_requested 归
+          // 评审流程所有，needs-human 归升级流程，needs-clarification 由 task_clarify 进入。
           enum: ['pending', 'in_progress', 'in_review'],
         },
         note: { type: 'string', description: 'Progress note / clarification answer, written onto the task contract' },
@@ -207,13 +208,18 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       description:
         "Git branch collaboration inside a team's shared repository. Actions: list (all " +
         'branches), create (branch from target/base), switch (check out a branch in a ' +
-        "member's workspace, needs memberId), merge (merge branch into target/base). " +
+        "member's workspace, needs memberId), merge (merge branch into target/base; like " +
+        'approve, the diff vs the target is refused when it touches forbidden paths). ' +
         'Approved reviews merge automatically; use this for everything else.',
       parameters: {
         teamId: { type: 'string', required: true },
         action: { type: 'string', required: true, enum: ['list', 'create', 'switch', 'merge'] },
         memberId: { type: 'string', description: 'Required for switch' },
-        branch: { type: 'string', description: 'Required for create / switch / merge' },
+        branch: {
+          type: 'string',
+          description:
+            'Required for create / switch / merge. Must start with a letter or digit and use only . _ - + / @ (no leading "-", no spaces, no "..")',
+        },
         target: { type: 'string', description: 'Start point (create) or merge destination; defaults to the base branch' },
       },
       output: jsonOutput,
@@ -232,7 +238,10 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       description:
         'Reviewer verdict on a task that is in_review. approve REQUIRES green quality gates ' +
         '(call gates_run first; with a remote, CI must be green too — see pr_sync), then ' +
-        'merges the task branch into the base branch with the profile merge strategy. When ' +
+        'merges the task branch into the base branch with the profile merge strategy. Before ' +
+        'merging, the branch diff vs base is checked against the forbidden paths ' +
+        '(security.forbiddenPaths / the profile human-only rules): a hit refuses the merge and ' +
+        'escalates the task to needs-human — green gates do not license a human-only file. When ' +
         'daemon.maxDiffLines/maxDiffFiles are set, an oversized diff is refused and escalated ' +
         'as change-too-large instead. request_changes writes your comments onto the task ' +
         'contract (.tasks/<id>.md) and captures them as a lesson for later tasks; after ' +
@@ -241,7 +250,7 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       parameters: {
         taskId: { type: 'string', required: true },
         reviewerId: { type: 'string', required: true, description: 'Member id of the reviewer (or leader)' },
-        verdict: { type: 'string', required: true, enum: ['approve', 'request_changes'] },
+        verdict: { type: 'string', required: true, enum: REVIEW_VERDICTS },
         comments: { type: 'string', description: 'Review comments; expected when requesting changes' },
         contractAmbiguity: {
           type: 'boolean',

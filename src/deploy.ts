@@ -7,7 +7,7 @@
  * 只有白名单内的命令才会执行；部署命令需要的密钥来自 secretsEnv 里列出的
  * 环境变量名 —— 值会登记进脱敏器，因此绝不泄漏到日志。
  */
-import { execFile } from 'node:child_process';
+import { runShell, tailLog } from './exec.js';
 import type { DeployView } from './view.js';
 import { isAllowed } from './gates.js';
 import { resolveOptionalEnvRef, SecretRedactor } from './secrets.js';
@@ -32,35 +32,22 @@ export interface DeployOptions {
 
 let deploySeq = 0;
 
-async function runShell(
+/**
+ * 跑部署 / 回滚命令。与合并前一致：**不设超时**（部署链路自己控制时长），
+ * 返回的日志尾就地不脱敏 —— 调用方统一过 SecretRedactor。
+ */
+async function runDeployShell(
   command: string,
   cwd: string,
   env: Record<string, string>,
   signal?: AbortSignal,
 ): Promise<{ exitCode: number; logTail: string }> {
-  return new Promise((resolvePromise, reject) => {
-    const child = execFile(
-      '/bin/sh',
-      ['-c', command],
-      { cwd, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, ...env } },
-      (error, stdout, stderr) => {
-        cleanup();
-        const exitCode =
-          error === null ? 0 : typeof (error as { code?: unknown }).code === 'number' ? ((error as { code: number }).code) : 1;
-        resolvePromise({ exitCode, logTail: `${stdout}${stderr}`.slice(-4000) });
-      },
-    );
-    const onAbort = () => {
-      child.kill('SIGKILL');
-      cleanup();
-      reject(new Error(`deploy command aborted: ${command}`));
-    };
-    const cleanup = () => signal?.removeEventListener('abort', onAbort);
-    if (signal?.aborted === true) {
-      onAbort();
-      return;
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
+  return runShell({
+    command,
+    cwd,
+    extraEnv: env,
+    label: 'deploy',
+    ...(signal !== undefined ? { signal } : {}),
   });
 }
 
@@ -125,7 +112,7 @@ export async function runDeploy(options: DeployOptions): Promise<DeployView> {
     finishedAt: null,
   };
 
-  const deploy = await runShell(options.command, options.cwd, secretEnv, options.signal);
+  const deploy = await runDeployShell(options.command, options.cwd, secretEnv, options.signal);
   view.logTail = options.redactor.redact(deploy.logTail);
   if (deploy.exitCode !== 0) {
     view.status = 'failed';
@@ -152,9 +139,13 @@ export async function runDeploy(options: DeployOptions): Promise<DeployView> {
             `rollback command "${options.rollbackCommand}" is not on the command allowlist [${options.allowlist.join(', ')}]`,
           );
         }
-        const rollback = await runShell(options.rollbackCommand, options.cwd, secretEnv, options.signal);
-        view.logTail = `${view.logTail}\n[rollback]\n${options.redactor.redact(rollback.logTail)}`.slice(-4000);
-        view.status = 'rolled-back';
+        const rollback = await runDeployShell(options.rollbackCommand, options.cwd, secretEnv, options.signal);
+        view.logTail = tailLog(
+          `${view.logTail}\n[rollback] exit=${rollback.exitCode}\n${options.redactor.redact(rollback.logTail)}`,
+        );
+        // 回滚自己失败必须区别于回滚成功：人都看到"已回滚"了，就不会再去救一个
+        // 既没升上去也没退回来的线上环境。
+        view.status = rollback.exitCode === 0 ? 'rolled-back' : 'rollback-failed';
       } else {
         view.status = 'failed';
       }

@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AutopilotOptions } from '../src/service.js';
+import type { AutopilotOptions } from '../src/service/options.js';
 import { defaultProfile } from '../src/profile.js';
 import { DEFAULT_LEARNINGS } from '../src/learnings.js';
 
@@ -99,7 +99,6 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
       timeoutMinutes: 1,
     },
     daemon: {
-      heartbeatSeconds: 1,
       maxReviewRounds: 3,
       stuckMinutes: 45,
       pollIntervalSeconds: 1,

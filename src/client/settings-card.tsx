@@ -23,7 +23,6 @@ export const AUTOPILOT_KEY_FIELDS: KeyField[] = [
   { path: 'baseBranch', label: 'config.baseBranch', kind: 'text' },
   { path: 'bootstrap.enabled', label: 'config.bootstrapEnabled', kind: 'boolean' },
   { path: 'gates.commands', label: 'config.gatesCommands', hint: 'gatesCommandsHint', kind: 'list' },
-  { path: 'daemon.heartbeatSeconds', label: 'config.heartbeatSeconds', kind: 'number' },
   { path: 'daemon.maxReviewRounds', label: 'config.maxReviewRounds', kind: 'number' },
   { path: 'daemon.stuckMinutes', label: 'config.stuckMinutes', kind: 'number' },
   { path: 'daemon.maxDiffLines', label: 'config.maxDiffLines', hint: 'maxDiffLinesHint', kind: 'number' },

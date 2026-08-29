@@ -5,20 +5,22 @@
  * redaction, command allowlist).
  */
 import { describe, expect, it } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AutopilotService } from '../src/service.js';
-import { autopilotProjectionSchema } from '../src/projection.js';
+import { autopilotProjectionSchema } from '../src/schema.js';
 import { CommandNotAllowedError, runGateCommand } from '../src/gates.js';
 import { SecretRedactor } from '../src/secrets.js';
 import { DEFAULT_LEARNINGS } from '../src/learnings.js';
+import { defaultProfile } from '../src/profile.js';
 import { gitTest, makeFixture, testOptions, writeContract, commitInWorktree } from './helpers.js';
+import type { Fixture } from './helpers.js';
 
 async function serviceWithContracts(
   prefix: string,
   contracts: { id: string; title: string; dependsOn?: string[]; touches?: string[]; forbidden?: string[] }[],
   overrides: Parameters<typeof testOptions>[1] = {},
-): Promise<{ service: AutopilotService; teamId: string; cleanup: () => Promise<void> }> {
+): Promise<{ service: AutopilotService; teamId: string; fixture: Fixture; cleanup: () => Promise<void> }> {
   const fixture = await makeFixture(prefix);
   const service = await AutopilotService.create(testOptions(fixture, overrides));
   const team = await service.createTeam({ name: `${prefix}-team` });
@@ -33,10 +35,36 @@ async function serviceWithContracts(
   return {
     service,
     teamId: team.id,
+    fixture,
     cleanup: async () => {
       await service.dispose();
     },
   };
+}
+
+/**
+ * 与 serviceWithContracts 同构，但复用调用方的 service：调用方建 service 时已把
+ * remote.url 指向自己 fixture 那个本地 bare 仓库，这里只补团队、契约与成员。
+ */
+async function seedTeamWithContract(
+  service: AutopilotService,
+  prefix: string,
+  contracts: { id: string; title: string; dependsOn?: string[]; touches?: string[]; forbidden?: string[] }[] = [
+    { id: 'CORE-1', title: 'core', touches: ['server/core/'] },
+  ],
+): Promise<{ teamId: string; repoPath: string }> {
+  // cloneRemote：让 repo 真的带上 origin，否则 hasRemote 为真却推不动，
+  // approve 会在最后一步 push 失败，测不到真正想验证的那道门。
+  const team = await service.createTeam({ name: `${prefix}-team`, cloneRemote: true });
+  for (const contract of contracts) {
+    await writeContract(join(team.repoPath, '.tasks', `${contract.id}.md`), contract);
+  }
+  gitTest(['add', '-A'], team.repoPath);
+  gitTest(['commit', '-m', 'tasks: seed contracts'], team.repoPath);
+  await service.addMember({ teamId: team.id, role: 'developer' });
+  await service.addMember({ teamId: team.id, role: 'developer' });
+  await service.addMember({ teamId: team.id, role: 'reviewer' });
+  return { teamId: team.id, repoPath: team.repoPath };
 }
 
 /**
@@ -54,6 +82,15 @@ async function taskInReview(service: AutopilotService, teamId: string, contractI
   await service.updateTask({ taskId: task.id, status: 'in_review' });
   await service.runGatesForTask({ taskId: task.id });
   return { task, dev, reviewer, leader };
+}
+
+/**
+ * approve 被挡住的可观测结果：任务没动，base 上也没长出合并提交。
+ * 断言落在结果而非错误文案上 —— 临时目录名里就带着 "ci"，匹配 message 会假通过。
+ */
+function assertNotMerged(service: AutopilotService, teamId: string, repoPath: string, taskId: string): void {
+  expect(service.teamView(teamId).tasks.find((task) => task.id === taskId)?.status).toBe('in_review');
+  expect(gitTest(['log', '--format=%s', 'main'], repoPath)).not.toMatch(/^merge: task\//);
 }
 
 describe('unattended: daemon loop', () => {
@@ -115,7 +152,7 @@ describe('unattended: daemon loop', () => {
     const { service, cleanup } = await serviceWithContracts(
       'stuck',
       [{ id: 'S-1', title: 'will stall' }],
-      { daemon: { heartbeatSeconds: 1, maxReviewRounds: 3, stuckMinutes: 0, pollIntervalSeconds: 1 } },
+      { daemon: { maxReviewRounds: 3, stuckMinutes: 0, pollIntervalSeconds: 1 } },
     );
     try {
       const tick1 = await service.tickOnce(); // dispatch S-1
@@ -140,7 +177,7 @@ describe('unattended: daemon loop', () => {
     const { service, teamId, cleanup } = await serviceWithContracts(
       'rounds',
       [{ id: 'R-1', title: 'rework-prone' }],
-      { daemon: { heartbeatSeconds: 1, maxReviewRounds: 2, stuckMinutes: 45, pollIntervalSeconds: 1 } },
+      { daemon: { maxReviewRounds: 2, stuckMinutes: 45, pollIntervalSeconds: 1 } },
     );
     try {
       await service.tickOnce(); // dispatch
@@ -198,6 +235,120 @@ describe('unattended: daemon loop', () => {
     }
   }, 60_000);
 
+  it('crash recovery keeps the task bound to its assignee, then converges via stuck', async () => {
+    const fixture = await makeFixture('recoverbound');
+    const options = testOptions(fixture);
+    const first = await AutopilotService.create(options);
+    const team = await first.createTeam({ name: 'recoverbound-team' });
+    await writeContract(join(team.repoPath, '.tasks', 'K-1.md'), { id: 'K-1', title: 'crash mid work' });
+    gitTest(['add', '-A'], team.repoPath);
+    gitTest(['commit', '-m', 'tasks: K-1'], team.repoPath);
+    const dev = await first.addMember({ teamId: team.id, role: 'developer' });
+    await first.tickOnce(); // dispatch K-1
+    const taskId = first.teamView(team.id).tasks[0]!.id;
+    // 落盘是 100ms 防抖的；这里刻意不调 dispose —— 要模拟的就是没有干净关闭的崩溃。
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+
+    // 重载一份状态：崩溃恢复刻意**不**把任务抢回 pending —— 那样会把同一个任务
+    // 分支二次派给别的开发者。它该由 stuck 检测收敛。
+    const second = await AutopilotService.create(
+      testOptions(fixture, { daemon: { ...options.daemon, stuckMinutes: 0 } }),
+    );
+    try {
+      expect(second.getLoopState()).toBe('stopped');
+      const stillBound = second.teamView(team.id);
+      expect(stillBound.tasks[0]?.status).toBe('in_progress');
+      expect(stillBound.tasks[0]?.assigneeId).toBe(dev.id);
+      expect(stillBound.members.find((m) => m.id === dev.id)?.currentTaskId).toBe(taskId);
+
+      const tick = await second.tickOnce();
+      expect(tick.escalated).toContain(taskId);
+      expect(second.teamView(team.id).tasks[0]?.status).toBe('needs-human');
+      expect(second.escalations.all.some((record) => record.reason === 'task-stuck')).toBe(true);
+    } finally {
+      await second.dispose();
+      await first.dispose();
+    }
+  }, 60_000);
+
+  it('a corrupt state.json is preserved on disk instead of silently dropping every team', async () => {
+    const fixture = await makeFixture('corruptstate');
+    const garbage = '{"version": 1, "teams": [  // truncated by a power loss\n';
+    await writeFile(join(fixture.stateDir, 'state.json'), garbage, 'utf8');
+    const service = await AutopilotService.create(testOptions(fixture));
+    try {
+      // 插件仍可启动（不能把宿主带崩），但坏文件必须留在磁盘上可查可恢复。
+      const leftovers = (await readdir(fixture.stateDir)).filter((name) => name.startsWith('state.json.corrupt-'));
+      expect(leftovers.length).toBe(1);
+      expect(await readFile(join(fixture.stateDir, leftovers[0]!), 'utf8')).toBe(garbage);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('description truncation never drops the ownership hard rules', async () => {
+    const longOwnership = 'x'.repeat(4200);
+    const { service, teamId, cleanup } = await serviceWithContracts('desctrunc', [
+      { id: 'BIG-1', title: 'huge contract', touches: ['server/'] },
+    ], {
+      profile: {
+        ...defaultProfile(),
+        ownership: [{ glob: 'server/', role: 'backend', rules: [longOwnership] }],
+      },
+      learnings: { ...DEFAULT_LEARNINGS, enabled: true, injectMaxCount: 5, injectCharBudget: 1200 },
+    });
+    try {
+      // 先攒几条教训，让三段（正文 / 教训 / 所有权）同时很长。
+      for (let index = 0; index < 5; index += 1) {
+        await service.learningRecord({
+          teamId,
+          kind: 'manual',
+          summary: `lesson number ${index} with a deliberately long tail to eat budget ${'y'.repeat(200)}`,
+          touches: ['server/'],
+        });
+      }
+      const contractPath = join(service.teamView(teamId).repoPath, '.tasks', 'BIG-1.md');
+      const contract = await readFile(contractPath, 'utf8');
+      await writeFile(contractPath, `${contract}${'body text that is quite long. '.repeat(300)}`, 'utf8');
+      gitTest(['add', '-A'], service.teamView(teamId).repoPath);
+      gitTest(['commit', '-m', 'tasks: fatten BIG-1'], service.teamView(teamId).repoPath);
+
+      const dev = service.teamView(teamId).members.find((m) => m.role === 'developer')!;
+      const task = await service.assignTask({
+        teamId,
+        title: 'huge contract',
+        assigneeId: dev.id,
+        contractId: 'BIG-1',
+      });
+      // 注释承诺"所有权规则留在最末尾，agent 读到的最后一段必须是不可协商的"，
+      // 而旧的尾部 clip 恰好把这段最先裁掉。
+      expect(task.description.length).toBeLessThanOrEqual(6000);
+      expect(task.description).toContain('域所有权');
+      expect(task.description.trimEnd().endsWith(longOwnership)).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
+  it('projection schema accepts a pre-learnings (v2) payload by filling defaults', () => {
+    const v2 = {
+      loopState: 'running',
+      teams: [
+        {
+          id: 'team_x', name: 't', repoPath: '/tmp/r', baseBranch: 'main', branches: ['main'],
+          members: [], tasks: [], reviews: [], createdAt: 1,
+        },
+      ],
+      activeTeamId: 'team_x',
+      escalations: [], deploys: [],
+      heartbeat: { at: 1, loopState: 'running', tick: 1 },
+      blocked: [],
+    };
+    // v3 把 learnings 加成必填数组，旧 session 的事件负载里没有这个键。
+    const parsed = autopilotProjectionSchema.parse(v2);
+    expect(parsed.teams[0]?.learnings).toEqual([]);
+  });
+
   it('needs-human triage: editing the contract back to pending re-opens the task', async () => {
     const { service, teamId, cleanup } = await serviceWithContracts('triage', [{ id: 'T-1', title: 'triage me' }]);
     try {
@@ -231,7 +382,9 @@ describe('unattended: daemon loop', () => {
   }, 60_000);
 
   it('completion: all tasks done → completed report + loop stops', async () => {
-    const { service, teamId, cleanup } = await serviceWithContracts('complete', [{ id: 'D-1', title: 'last one' }]);
+    const { service, teamId, fixture, cleanup } = await serviceWithContracts('complete', [
+      { id: 'D-1', title: 'last one' },
+    ]);
     try {
       await service.tickOnce();
       const team = service.teamView(teamId);
@@ -245,7 +398,7 @@ describe('unattended: daemon loop', () => {
       const tick = await service.tickOnce();
       expect(tick.completed).toBe(true);
       expect(service.getLoopState()).toBe('completed');
-      const report = await readFile(join(team.repoPath, '.tasks', '_completion.md'), 'utf8');
+      const report = await readFile(join(fixture.stateDir, 'completion.md'), 'utf8');
       expect(report).toContain('D-1');
     } finally {
       await cleanup();
@@ -275,7 +428,7 @@ describe('unattended: knowledge loop, clarification and pre-dispatch gates', () 
   const withLearnings = { learnings: { ...DEFAULT_LEARNINGS, enabled: true } };
 
   it('request_changes writes the review comments onto the task contract and captures a lesson', async () => {
-    const { service, teamId, cleanup } = await serviceWithContracts(
+    const { service, teamId, fixture, cleanup } = await serviceWithContracts(
       'reviewnote',
       [{ id: 'R-1', title: 'needs review', touches: ['app/'] }],
       withLearnings,
@@ -300,8 +453,8 @@ describe('unattended: knowledge loop, clarification and pre-dispatch gates', () 
       expect(learnings[0]?.kind).toBe('review-change-request');
       expect(learnings[0]?.domain).toBe('app/');
       expect(learnings[0]?.hits).toBe(1);
-      // 生成物落盘并随 .tasks/ 一起提交（集成检出保持干净）。
-      const ledger = await readFile(join(repoPath, '.tasks', '_learnings.md'), 'utf8');
+      // 台账落在 stateDir，不进目标仓库；下一句断言运行态没有污染用户仓库。
+      const ledger = await readFile(join(fixture.stateDir, 'learnings.md'), 'utf8');
       expect(ledger).toContain('自动生成，勿手改');
       expect(ledger).toContain('drop the claim');
       expect(gitTest(['status', '--porcelain'], repoPath)).toBe('');
@@ -444,7 +597,7 @@ describe('unattended: knowledge loop, clarification and pre-dispatch gates', () 
   it('refuses to approve an oversized change only when the diff gate is configured', async () => {
     const body = `${'export const row = 1;\n'.repeat(40)}`;
     const strict = await serviceWithContracts('diffgate', [{ id: 'G-1', title: 'big', touches: ['app/'] }], {
-      daemon: { heartbeatSeconds: 1, maxReviewRounds: 3, stuckMinutes: 45, pollIntervalSeconds: 1, maxDiffLines: 10 },
+      daemon: { maxReviewRounds: 3, stuckMinutes: 45, pollIntervalSeconds: 1, maxDiffLines: 10 },
     });
     try {
       const { task, dev, reviewer } = await taskInReview(strict.service, strict.teamId, 'G-1');
@@ -647,4 +800,178 @@ describe('unattended: security hard rules', () => {
       pushBranch(fixture.remotePath, 'main', { forceWithLease: true }),
     ).rejects.toThrow(/force-push/);
   });
+
+  it('option-like branch names are refused instead of reaching git argv', async () => {
+    const { service, teamId, cleanup } = await serviceWithContracts('refinject', [
+      { id: 'CORE-1', title: 'core', touches: ['server/core/'] },
+    ]);
+    try {
+      // 先建一条正常分支作为受害者：它没有被任何 worktree 检出，
+      // 因此 `git branch -D <victim>` 在今天会真的执行成功。
+      await service.branch({ teamId, action: 'create', branch: 'task/victim' });
+      expect(service.teamView(teamId).branches).toContain('task/victim');
+
+      // team_branch 的 branch 参数由模型自由填写：`-D` 会被拼成
+      // `git branch -D task/victim`，把别人的任务分支静默删掉。
+      await expect(
+        service.branch({ teamId, action: 'create', branch: '-D', target: 'task/victim' }),
+      ).rejects.toThrow(/invalid branch name/i);
+      expect(service.teamView(teamId).branches).toContain('task/victim');
+
+      // 其它选项注入与非法字符同样要挡住。
+      await expect(
+        service.branch({ teamId, action: 'merge', branch: '--abort', target: 'main' }),
+      ).rejects.toThrow(/invalid branch name/i);
+      await expect(
+        service.branch({ teamId, action: 'create', branch: 'task/; rm -rf .' }),
+      ).rejects.toThrow(/invalid branch name/i);
+
+      // 合法名字仍然要放行（含 profile 模板渲染出的 task/<id>）。
+      await service.branch({ teamId, action: 'create', branch: 'task/CORE-1_rework-2' });
+      expect(service.teamView(teamId).branches).toContain('task/CORE-1_rework-2');
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
+  it('requireCiGreen blocks approve when CI status was never verified', async () => {
+    const fixture = await makeFixture('cinever');
+    const service = await AutopilotService.create(
+      testOptions(fixture, {
+        remote: { url: fixture.remotePath, sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'github' },
+        gates: { commands: ['git --version'], requireCiGreen: true, timeoutMinutes: 1 },
+      }),
+    );
+    try {
+      const { teamId, repoPath } = await seedTeamWithContract(service, 'cinever');
+      const { task, reviewer } = await taskInReview(service, teamId, 'CORE-1');
+      // 门全绿、契约齐备，但从未 pr_sync 过 → ciStatus 仍是 null。
+      // 今天这个 null 让整条 CI 判定消失，等于 requireCiGreen 形同关闭。
+      expect(service.teamView(teamId).tasks.find((t) => t.id === task.id)?.ciStatus).toBeNull();
+      await expect(
+        service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' }),
+      ).rejects.toThrow();
+      assertNotMerged(service, teamId, repoPath, task.id);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('requireCiGreen still applies when pushRequiresGates is off', async () => {
+    const fixture = await makeFixture('ciindep');
+    const service = await AutopilotService.create(
+      testOptions(fixture, {
+        remote: { url: fixture.remotePath, sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'github' },
+        gates: { commands: ['git --version'], requireCiGreen: true, timeoutMinutes: 1 },
+        security: {
+          forbiddenPaths: ['.github/', 'AGENTS.md', 'LICENSE'],
+          commandAllowlist: ['git', 'pnpm', 'sh', 'echo'],
+          pushRequiresGates: false,
+        },
+      }),
+    );
+    try {
+      const { teamId, repoPath } = await seedTeamWithContract(service, 'ciindep');
+      const { task, reviewer } = await taskInReview(service, teamId, 'CORE-1');
+      // 门全绿（pushRequiresGates 关闭时不看门），但 CI 从未验证过。
+      // CI 门属于远端侧约束，不该被 pushRequiresGates 这个本地开关整体短路。
+      await expect(
+        service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' }),
+      ).rejects.toThrow();
+      assertNotMerged(service, teamId, repoPath, task.id);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('requireCiGreen does not block platforms that cannot report CI status', async () => {
+    const fixture = await makeFixture('cigeneric');
+    const service = await AutopilotService.create(
+      testOptions(fixture, {
+        remote: { url: fixture.remotePath, sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'generic' },
+        gates: { commands: ['git --version'], requireCiGreen: true, timeoutMinutes: 1 },
+      }),
+    );
+    try {
+      const { teamId } = await seedTeamWithContract(service, 'cigeneric');
+      const { task, reviewer } = await taskInReview(service, teamId, 'CORE-1');
+      // 特征测试：prSync 在非 github 平台恒置 ciStatus='unknown'，若把它当
+      // 「未绿」，默认配置（platform generic + requireCiGreen true）将永远无法 approve。
+      const verdict = await service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' });
+      expect(verdict.merged).toBe(true);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+});
+
+describe('unattended: 运行态产物不入库', () => {
+  it('learnings land under stateDir, never committed into the target repo', async () => {
+    const { service, teamId, fixture, cleanup } = await serviceWithContracts(
+      'learn-artifact',
+      [{ id: 'L-1', title: 'lesson source', touches: ['server/'] }],
+      { learnings: { ...DEFAULT_LEARNINGS, enabled: true } },
+    );
+    try {
+      await service.learningRecord({ teamId, kind: 'manual', summary: 'a reusable pitfall', touches: ['server/'] });
+      const repoPath = service.teamView(teamId).repoPath;
+      // 目标仓库里既不该出现这个文件，也不该出现为它而做的提交。
+      await expect(readFile(join(repoPath, '.tasks', '_learnings.md'), 'utf8')).rejects.toThrow(/ENOENT/);
+      expect(gitTest(['log', '--format=%s', 'main'], repoPath)).not.toContain('learnings');
+      expect(gitTest(['status', '--porcelain'], repoPath)).toBe('');
+      // 真相源在 state.json，给人看的便利视图就落在同一个目录。
+      const ledger = await readFile(join(fixture.stateDir, 'learnings.md'), 'utf8');
+      expect(ledger).toContain('a reusable pitfall');
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
+  it('the completion report is written to stateDir, not into the repo', async () => {
+    const { service, teamId, fixture, cleanup } = await serviceWithContracts('completion-artifact', [
+      { id: 'D-1', title: 'the only task' },
+    ]);
+    const repoPath = service.teamView(teamId).repoPath;
+    try {
+      await service.tickOnce();
+      const team = service.teamView(teamId);
+      const task = team.tasks.find((candidate) => candidate.contractId === 'D-1')!;
+      const dev = team.members.find((member) => member.id === task.assigneeId)!;
+      const reviewer = team.members.find((member) => member.role === 'reviewer')!;
+      commitInWorktree(dev.workspacePath, 'work.ts', 'export const a = 1;\n', 'feat: work');
+      await service.updateTask({ taskId: task.id, status: 'in_review' });
+      await service.runGatesForTask({ taskId: task.id });
+      await service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' });
+      const tick = await service.tickOnce();
+      expect(tick.completed).toBe(true);
+
+      await expect(readFile(join(repoPath, '.tasks', '_completion.md'), 'utf8')).rejects.toThrow(/ENOENT/);
+      expect(gitTest(['log', '--format=%s', 'main'], repoPath)).not.toContain('completion report');
+      const report = await readFile(join(fixture.stateDir, 'completion.md'), 'utf8');
+      expect(report).toContain('# Autopilot completion report');
+      expect(report).toContain('D-1');
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
+  it('_board.md is byte-stable so regenerating it does not dirty the worktree', async () => {
+    const { service, teamId, cleanup } = await serviceWithContracts('board-stable', [
+      { id: 'B-1', title: 'a contract', touches: ['app/'] },
+    ]);
+    const repoPath = service.teamView(teamId).repoPath;
+    try {
+      await service.tickOnce();
+      const first = await readFile(join(repoPath, '.tasks', '_board.md'), 'utf8');
+      // 再来一拍：状态没有任何变化，看板必须逐字节不变。
+      await service.tickOnce();
+      const second = await readFile(join(repoPath, '.tasks', '_board.md'), 'utf8');
+      expect(second).toBe(first);
+      expect(first).not.toMatch(/regenerated at/);
+      // 看板仍然如实反映契约
+      expect(first).toContain('B-1');
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
 });

@@ -32,11 +32,9 @@
             - pnpm run lint
             - pnpm run test
             - pnpm run build
-          e2eCommand: pnpm run e2e:local
           requireCiGreen: true
           timeoutMinutes: 30
         daemon:
-          heartbeatSeconds: 60
           maxReviewRounds: 3
           stuckMinutes: 45
           pollIntervalSeconds: 30
@@ -54,10 +52,16 @@
             fromEnv: AUTOPILOT_SMTP_FROM      # optional; defaults to user
           mailTo: ops@example.com
           ticket:
-            host: 0.0.0.0              # bind host for the local ticket endpoint
+            # 工单端点没有任何鉴权：谁能访问它，谁就能替你做「人工确认」这个决定。
+            # 默认只监听回环，需要从别处打开时走 SSH 隧道（ssh -L 8080:127.0.0.1:8080 …），
+            # 确认已在反向代理后面加了鉴权，才改成 0.0.0.0。
+            host: 127.0.0.1            # bind host for the local ticket endpoint
             port: 8080                 # 0 = ephemeral port
             publicBaseUrl: http://server.example.com   # used to build the ticket URL in email
-          autoResume: true             # answer → write back + auto-clear escalation
+          # 开启后，工单被答复即清除升级并把任务退回 pending、恢复无人值守循环。
+          # 与可被外部访问的 ticket 端点组合起来 = 任何人都能放行升级。
+          # 只有在端点确认受保护之后才建议打开。
+          autoResume: false            # answer → write back + auto-clear escalation
         deploy:
           enabled: false
         security:
