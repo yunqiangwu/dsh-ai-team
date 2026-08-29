@@ -365,3 +365,49 @@ pnpm pack --dry-run   # 查看将打进 npm 包的文件清单
 架构约定：核心服务 `AutopilotService` 与 cordis 完全解耦（不 import ctx），可独立实例化跑测试；插件层只做四导出（`name` / `inject` / `Config` / `apply`，只命名导出）、服务暴露（`ctx.provide('autopilot')`）、工具注册与 `ctx.effect` 清理。
 
 > **贡献与发布**：遵循 MIT 协议。`npm publish` 前会自动执行 `prepublishOnly` 校验（typecheck + lint + test + build），全部通过才会发包。仓库与 issue 见 [github.com/yunqiangwu/dsh-ai-team](https://github.com/yunqiangwu/dsh-ai-team)。
+
+## 故障排查
+
+按「症状 → 原因 → 处置」组织；运维视角的巡检与分诊表见 [PILOT.md](PILOT.md)，这里只收最常撞上的几类。
+
+### `autopilot_init` 失败，升级原因 `bootstrap-failed`
+
+- **症状**：引导直接升级并抛错，升级记录的 logTail 里是脚本报错。
+- **原因**：`bootstrap.setupCommand` / `verifyCommand` 指向目标仓库里不存在的脚本，或工具链/系统包缺失——命令跑不起来时引导宁可贵也不装作成功。
+- **处置**：修 bootstrap 配置（或先把脚本补进仓库），缺的系统包配 `bootstrap.systemPackages` + `packageManagerCommand`，然后重新 `autopilot_init`（幂等）。启动前先手动预演一遍这两条命令。
+
+### 非 github 平台 approve 永远被拒：`requireCiGreen is on but CI was never checked`
+
+- **症状**：`code_review` approve 总是被拒，提示 CI 从未验证。
+- **原因**：CI 状态查询只有 github 适配；其它平台 `pr_sync` 恒置 `unknown`，而「从未验证视为未通过」会让这道门永远过不去。
+- **处置**：非 github 平台显式把 `gates.requireCiGreen` 设为 `false`，并知情接受「本地门是唯一自动门」；github 平台则先 `pr_sync` 让 CI 真跑一遍。
+
+### 设置卡片改了配置不生效
+
+- **症状**：设置 → 插件 → 插件配置里保存成功，行为没变。
+- **原因**：`autopilot` 设置命名空间在插件加载时注册，运行中的服务端读的还是装载时的那份。
+- **处置**：保存后带 `--patch` 重启服务端（本地调试同理：`pnpm dsh web --patch ./cordis.patch.yml`）。
+
+### 任务被升级为 `task-stuck` 或 `budget-exceeded`
+
+- **症状**：任务变 `needs-human`，升级原因二者之一。
+- **原因**：`task-stuck` = `stuckMinutes` 内无任何 git 活动（**空闲**失控）；`budget-exceeded` = 派发后超过 `daemon.maxTaskHours` 仍未完成（**活跃空转**）——插件看不见成员 agent 的 token 消耗，墙钟是唯一可靠的失控信号。
+- **处置**：看该成员 worktree 的 git log：有产出 → 任务太大，拆单再放行；没产出 → 契约含糊，改契约。分诊手段（面板内联表单 / 邮件工单 / `escalation_resolve`）见 [PILOT.md](PILOT.md) 升级分诊表。
+
+### 工单端点起不来或邮件里的工单链接打不开
+
+- **症状**：`notification.ticket.host` 配成非回环地址时**服务端直接拒绝启动**（不是告警）；或邮件链接在远程机器上打不开。
+- **原因**：工单端点收的答案等于替 AI 团队做决策，只在回环上提供（`127.0.0.1`）；端点监听失败（端口被占）则退化为「没有工单端点」，面板同源路由与 `answer_questionnaire` 仍可用。
+- **处置**：保持 `127.0.0.1` 绑定，远程访问走 SSH 隧道；端口冲突换 `ticket.port`。反向代理若把面板挂在子路径下，面板内作答会 404——挂域名根或改用邮件链接，见「工单鉴权」。
+
+### 状态文件损坏后团队「消失」
+
+- **症状**：重启后看板全空，stateDir 里出现 `state.json.corrupt-<时间戳>`。
+- **原因**：`state.json` 解析失败（多半是进程被硬杀写坏了文件）。插件宁可空着启动，也不会用空状态覆盖唯一一份历史——坏文件被改名留存。
+- **处置**：先救 `corrupt-` 文件（手工修复末尾截断的 JSON 后改回 `state.json`），再重启；别让新状态先落盘。
+
+### 看板上有契约却告警 `contract-rejected`
+
+- **症状**：日志/事件里出现 `contract-rejected:<路径>`，其余契约照常收养。
+- **原因**：某个 `.tasks/*.md` 的 frontmatter 写坏了（缺 `---`、缺 `id`、YAML 语法错）。**一个坏文件只弄坏它自己**，不会清空整块看板。
+- **处置**：修好那个文件即可；同一文件只上报一次，反复出现说明文件又被改坏了。
