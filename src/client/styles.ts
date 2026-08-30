@@ -119,6 +119,10 @@ const CSS = `
 .dsh-ai-team__actions { display: flex; flex-direction: column; gap: 12px; }
 .dsh-ai-team__actions-section { display: flex; flex-direction: column; gap: 6px; }
 .dsh-ai-team__actions-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; font-weight: 600; }
+/* ── 升级注意力信号（P1-2）：右上角铃铛，授权后新升级弹系统通知 ── */
+.dsh-ai-team__alert { position: absolute; top: 10px; right: 44px; z-index: 30; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 1px solid rgba(127,127,127,.35); border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
+.dsh-ai-team__alert:hover { background: rgba(127,127,127,.15); }
+.dsh-ai-team__alert--on { color: #eab308; border-color: #eab308; }
 `;
 
 let injected = false;

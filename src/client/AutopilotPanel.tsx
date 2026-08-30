@@ -8,7 +8,7 @@
  * 表单，提交走同源相对路径 `<TICKET_ROUTE_PREFIX>/<id>/answer`，凭据是宿主那套
  * 同源围栏 —— 所以投影里那条 `ticketUrl` 不需要（也不允许）带访问凭据。
  */
-import { useState, useRef, type ReactNode } from 'react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
 import type { SlotProps, Translator } from './contract.js';
 import type { AutopilotProjection, CycleView, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
 import { DISPATCHABLE_PHASES, TASK_STATUSES, TICKET_ROUTE_PREFIX } from '../view.js';
@@ -20,6 +20,68 @@ function LoopLamp({ state, t }: { state: AutopilotProjection['loopState']; t: Tr
       <span className="dsh-ai-team__lamp-dot" />
       <span>{t(`loop.${state}`)}</span>
     </span>
+  );
+}
+
+/**
+ * 升级注意力信号（P1-2）：头部琥珀计数已含未解决升级（见 AutopilotPanel 的
+ * actionCount），这里补「可选浏览器提醒」——点铃铛授权后，新出现的未解决升级
+ * 弹系统通知。授权必须由用户手势触发，所以铃铛是 header 按钮的兄弟节点
+ * （不能嵌进 header 那个 button 里，嵌套交互元素既非法又不可键盘达）。
+ */
+function EscalationAlerts({ escalations, t }: { escalations: EscalationView[]; t: Translator }) {
+  const [enabled, setEnabled] = useState(false);
+  const seen = useRef<Set<string>>(new Set());
+  const unresolved = escalations.filter((escalation) => escalation.resolvedAt === null);
+  // 依赖 id 串而非 unresolved 数组：投影每拍都是新数组，按引用依赖会每拍重跑。
+  const unresolvedIds = unresolved.map((escalation) => escalation.id).join(',');
+
+  useEffect(() => {
+    if (!enabled) return;
+    for (const escalation of unresolved) {
+      if (seen.current.has(escalation.id)) continue;
+      seen.current.add(escalation.id);
+      try {
+        const notification = new Notification(t('notify.escalationTitle'), { body: escalation.message });
+        notification.addEventListener('click', () => window.focus());
+      } catch {
+        // 某些宿主/浏览器环境不支持构造 Notification，静默降级为只靠头部计数。
+      }
+    }
+  }, [unresolvedIds, enabled, t]);
+
+  const permission = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+  const active = enabled && permission === 'granted';
+
+  const toggle = async () => {
+    if (permission === 'default') {
+      const result = await Notification.requestPermission();
+      if (result === 'granted') {
+        // 刚开启时把已有升级全部标记为「已见」，避免一开就轰炸一串通知。
+        unresolved.forEach((escalation) => seen.current.add(escalation.id));
+        setEnabled(true);
+      }
+      return;
+    }
+    if (permission === 'granted') {
+      if (!enabled) unresolved.forEach((escalation) => seen.current.add(escalation.id));
+      setEnabled((value) => !value);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={`dsh-ai-team__alert${active ? ' dsh-ai-team__alert--on' : ''}`}
+      title={active ? t('notify.on') : permission === 'denied' ? t('notify.denied') : t('notify.off')}
+      onClick={() => void toggle()}
+      aria-pressed={active}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+      </svg>
+    </button>
   );
 }
 
@@ -838,6 +900,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
         </span>
         <span className="dsh-ai-team__chevron">›</span>
       </button>
+      <EscalationAlerts escalations={escalations} t={t} />
       <WaitingDecisions items={questionnaires.filter((item) => item.status === 'open')} t={t} />
       {open ? (
         <div className="dsh-ai-team__body">
