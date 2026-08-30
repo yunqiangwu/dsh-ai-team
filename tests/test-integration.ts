@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AutopilotService } from '../src/service.js';
+import { sshEnvForKey } from '../src/git.js';
 import { autopilotProjectionSchema } from '../src/schema.js';
 import { gitTest, makeFixture, seedRemote, testOptions, writeContract, commitInWorktree } from './helpers.js';
 
@@ -340,6 +341,21 @@ describe('integration: full lifecycle', () => {
       await service.dispose();
     }
   }, 60_000);
+
+  it('sshEnvForKey appends the trailing newline SSH keys require', async () => {
+    // "$(cat key)" 会吃掉尾换行；无尾换行的私钥文件 ssh 报 invalid format。
+    const { env, cleanup } = await sshEnvForKey(
+      '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----',
+    );
+    try {
+      const keyPath = /-i (\S+)/.exec(env.GIT_SSH_COMMAND ?? '')?.[1];
+      expect(keyPath).toBeDefined();
+      const body = await readFile(keyPath as string, 'utf8');
+      expect(body.endsWith('\n')).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
 
   it('writes contracts through the full assign → done cycle (no remote)', async () => {
     const fixture = await makeFixture('local-only');

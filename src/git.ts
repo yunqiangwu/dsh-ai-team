@@ -257,7 +257,9 @@ export async function commitAll(repoPath: string, pathspecs: readonly string[], 
 export async function sshEnvForKey(keyValue: string): Promise<{ env: Record<string, string>; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-ai-team-key-'));
   const keyPath = join(dir, 'id_key');
-  await writeFile(keyPath, keyValue, { mode: 0o600 });
+  // PEM/OpenSSH 私钥都要求以换行结尾；环境变量经 "$(cat key)" 传递会吃掉
+  // 尾换行，ssh 对无尾换行的文件报 invalid format（dogfood 试点实测）。
+  await writeFile(keyPath, keyValue.endsWith('\n') ? keyValue : `${keyValue}\n`, { mode: 0o600 });
   return {
     env: {
       GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`,
