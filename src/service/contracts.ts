@@ -33,6 +33,11 @@ export interface ContractDraft {
   priority?: number;
   /** Markdown 正文（Gherkin 验收标准）。 */
   body?: string;
+  /**
+   * 所属周期（如 "M1"）。`cycle_plan` 批量建契约时注入；`contract_create` 直接调
+   * 的契约通常不带它（归入「未排期」），由 cycle_plan 统一规划。
+   */
+  cycle?: string | null;
 }
 
 export interface ContractValidationContext {
@@ -147,6 +152,8 @@ export function renderContractFile(draft: ContractDraft): string {
     `owner: ${(draft.owner ?? '').trim()}`,
     // priority 只在显式给出时落行：缺省 0 由解析兜底，少一行就不怕手写契约对不齐。
     ...(draft.priority === undefined ? [] : [`priority: ${draft.priority}`]),
+    // cycle 只在显式给出时落行：缺省 = 未排期（parseTaskContract 读不到就回 null）。
+    ...(draft.cycle === undefined || draft.cycle === null ? [] : [`cycle: ${draft.cycle}`]),
     `depends_on: ${draft.dependsOn?.length ? `[${draft.dependsOn.join(', ')}]` : '[]'}`,
     `touches:${yamlList(draft.touches ?? [])}`,
     `forbidden:${yamlList(draft.forbidden ?? [])}`,

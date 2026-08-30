@@ -66,6 +66,11 @@ export interface RuntimeConfig {
     promoteAfterHits?: number;
     maxEntries?: number;
   };
+  cycles?: {
+    roadmapPath?: string;
+    requireApproval?: boolean;
+    autoAdvance?: boolean;
+  };
 }
 
 /** 运行时覆盖叠加在基线上（一层深合并：对象组并键、数组整体替换、标量取新值）。 */
@@ -143,6 +148,11 @@ export function runtimeConfigViewOf(options: AutopilotOptions): RuntimeConfig {
           maxEntries: options.learnings.maxEntries,
         }
       : undefined,
+    cycles: {
+      roadmapPath: options.cycles.roadmapPath,
+      requireApproval: options.cycles.requireApproval,
+      autoAdvance: options.cycles.autoAdvance,
+    },
   };
 }
 
@@ -306,6 +316,18 @@ export interface AutopilotOptions {
    * 注入新任务描述。默认关闭 —— 开启会改变 agent 看到的提示词，属于行为变更。
    */
   learnings?: LearningOptions | undefined;
+  /**
+   * 多周期开发的配置（docs/design-cycles.md §8）。
+   * `roadmapPath` 走既有 draft→accept 审批链（doc_write / doc_approve），正式区才有
+   * 资格被周期规划引用；`requireApproval` 决定周期从 planned → in_progress 是否要人
+   * 点头（false = 无人值守自动开工）；`autoAdvance` 决定周期验收后是否自动推进到
+   * 下一期（归 CYC-3 使用）。
+   */
+  cycles: {
+    roadmapPath: string;
+    requireApproval: boolean;
+    autoAdvance: boolean;
+  };
   /** 测试钩子：缩短循环中的 sleep/退避时长。 */
   tickSleepMs?: number | undefined;
   /** 测试钩子：注入 fetch，用于 webhook / CI / 健康检查调用。 */

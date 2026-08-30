@@ -123,6 +123,7 @@ import type {
   TaskView,
   TeamPhase,
   TeamView,
+  CycleStatus,
 } from './view.js';
 // 阶段枚举经 view.ts 门面取自唯一词表（与 tools.ts 同一惯例）：手抄一份漏掉新值，
 // 编译器和测试都不响。
@@ -132,6 +133,7 @@ import type { AutopilotOptions, RuntimeConfig } from './service/options.js';
 import {
   clip,
   createTaskRecord,
+  cycleByName,
   CANCELLABLE_FROM_BOARD,
   emptyTeamMetrics,
   HELD_STATUSES,
@@ -170,6 +172,7 @@ import {
   type WriteBack,
 } from './service/docflow.js';
 import type {
+  CycleRecord,
   MemberRecord,
   PersistedState,
   ReviewRecord,
@@ -817,8 +820,13 @@ export class AutopilotService {
       }
     }
     // §8-10：审批不能由模型自己伪造。工单 POST 本身就是人的动作；经会话转述的
-    // 批准必须带上只出现在工单页 / 邮件里的一次性码。
-    if (before.kind === 'approval' && source === 'tool' && !this.questionnaires.verifyApprovalCode(before.id, input.code ?? '')) {
+    // 批准必须带上只出现在工单页 / 邮件里的一次性码。approval（文档升格）与
+    // cycle（周期开工）同此门：requireApproval 的周期开工也是「人拍板」的决策。
+    if (
+      (before.kind === 'approval' || before.kind === 'cycle') &&
+      source === 'tool' &&
+      !this.questionnaires.verifyApprovalCode(before.id, input.code ?? '')
+    ) {
       return {
         ok: false,
         message:
@@ -873,6 +881,21 @@ export class AutopilotService {
       if (effectiveAnswers(record).abort === 'approve' && record.taskId !== null) {
         const found = this.tryFindTask(record.taskId);
         if (found !== null) await this.executeReplanAbort(found.team, found.task, record);
+      }
+      return;
+    }
+    if (record.kind === 'cycle') {
+      // 周期开工审批（docs/design-cycles.md §5.2）：批准 → planned → in_progress。
+      // cycle_approve 只落问卷、批之前不落盘，所以这里才是唯一的迁移点；拒绝
+      // （或无人应答走 defaultValue=reject）则周期保持 planned，契约继续不被派发。
+      this.questionnaires.consumeApprovalCode(record.id);
+      const cycleName = record.cycleName ?? null;
+      if (record.answers[APPROVAL_QUESTION]?.value === 'approve' && cycleName !== null) {
+        const cycle = cycleByName(team, cycleName);
+        if (cycle !== undefined && cycle.status === 'planned') {
+          cycle.status = 'in_progress';
+          cycle.startedAt = Date.now();
+        }
       }
       return;
     }
@@ -960,12 +983,23 @@ export class AutopilotService {
   async contractCreate(input: { teamId: string; contracts: ContractDraft[] }): Promise<{ created: { id: string; path: string }[] }> {
     const team = this.teamOf(input.teamId);
     if (input.contracts.length === 0) throw new Error('contract_create needs at least one contract');
+    const created = await this.writeContracts(team, input.contracts);
+    this.changed(team.id);
+    return { created };
+  }
+
+  /**
+   * `contract_create` 与 `cycle_plan` 共用的写契约流水线：写前校验 → 落盘 → 看板 →
+   * 提交。校验判据与两条派发路径共用（id / 悬空依赖 / 成环 / 禁区 / 域数），
+   * `cycle_plan` 复用它是 CYC-2 验收写死的不变量，不是在造第二份校验。
+   */
+  private async writeContracts(team: TeamRecord, drafts: ContractDraft[]): Promise<{ id: string; path: string }[]> {
     const { contracts: existing } = await loadTaskContracts(team.repoPath);
     const knownIds = existing.map((contract) => contract.id);
-    const batchIds = input.contracts.map((draft) => draft.id.trim());
+    const batchIds = drafts.map((draft) => draft.id.trim());
     const threshold = this.options.profile.crossDomainThreshold;
     const errors: string[] = [];
-    for (const draft of input.contracts) {
+    for (const draft of drafts) {
       const per = validateContractDraft(draft, {
         knownIds,
         batchIds,
@@ -979,12 +1013,12 @@ export class AutopilotService {
       }
       if (per.length > 0) errors.push(`${draft.id.trim() || '(missing id)'}: ${per.join('; ')}`);
     }
-    errors.push(...validateContractBatch(input.contracts, existing));
+    errors.push(...validateContractBatch(drafts, existing));
     if (errors.length > 0) {
       throw new Error(`contract_create refused, nothing was written:\n- ${errors.join('\n- ')}`);
     }
     const created: { id: string; path: string }[] = [];
-    for (const draft of input.contracts) {
+    for (const draft of drafts) {
       const id = draft.id.trim();
       // id 已经过 CONTRACT_ID_RE，这里只是把路径收口统一交给 repoFile 再验一遍。
       const relative = join(TASKS_DIR, `${id}.md`);
@@ -995,8 +1029,97 @@ export class AutopilotService {
     }
     await this.syncBoard(team);
     await this.commitTasksDir(team, `tasks: create ${created.map((item) => item.id).join(', ')}`);
+    return created;
+  }
+
+  /**
+   * `cycle_plan` 的后端（docs/design-cycles.md §5.1）：增量规划 —— **只拆下一期**。
+   * 生成一张 `planned` 的周期记录 + 该周期内的一组 pending 契约（带 `cycle:` 字段），
+   * 绝不顺带生成更远期周期的契约 —— 增量规划的核心不变量。写前校验复用
+   * `writeContracts`（即 `contract_create` 那套判据：id / 悬空依赖 / 成环 / 禁区 / 域数）。
+   */
+  async cyclePlan(input: {
+    teamId: string;
+    cycleName: string;
+    goal: string;
+    scope: string[];
+    contracts: ContractDraft[];
+  }): Promise<{ cycle: CycleRecord; created: { id: string; path: string }[] }> {
+    const team = this.teamOf(input.teamId);
+    const name = input.cycleName.trim();
+    if (name === '') throw new Error('cycle_plan needs a non-empty cycle name (e.g. "M2")');
+    if (input.contracts.length === 0) throw new Error('cycle_plan needs at least one contract for the cycle');
+    if (cycleByName(team, name) !== undefined) {
+      throw new Error(`cycle "${name}" is already planned; planning it again would duplicate its tasks`);
+    }
+    const drafts = input.contracts.map((draft) => ({ ...draft, cycle: name }));
+    const created = await this.writeContracts(team, drafts);
+    const cycle: CycleRecord = {
+      id: shortId('cycle'),
+      name,
+      status: 'planned',
+      goal: input.goal,
+      scope: input.scope,
+      taskIds: created.map((item) => item.id),
+      createdAt: Date.now(),
+    };
+    team.cycles = [...(team.cycles ?? []), cycle];
     this.changed(team.id);
-    return { created };
+    return { cycle, created };
+  }
+
+  /**
+   * `cycle_approve` 的后端（docs/design-cycles.md §5.2）：周期开工。
+   * `cycles.requireApproval: false`（默认，无人值守）→ 机械地把 `planned → in_progress`，
+   * 不惊动人；`true` → 落一张 `kind: 'cycle'` 问卷（复用 approval 的批/不批题与一次性
+   * 码门），人批之前**不落盘** —— 状态迁移发生在 `afterAnswered` 里，没有任何工具能直达
+   * 「自己批自己开工」。
+   */
+  async cycleApprove(input: {
+    teamId: string;
+    cycleName: string;
+    mode?: QuestionnaireMode;
+    timeoutMinutes?: number;
+  }): Promise<{ cycle: CycleRecord; status: CycleStatus; questionnaire?: QuestionnaireView }> {
+    const team = this.teamOf(input.teamId);
+    const name = input.cycleName.trim();
+    const cycle = cycleByName(team, name);
+    if (cycle === undefined) throw new Error(`no planned cycle named "${name}"; run cycle_plan first`);
+    if (cycle.status !== 'planned') return { cycle, status: cycle.status };
+    if (!this.options.cycles.requireApproval) {
+      cycle.status = 'in_progress';
+      cycle.startedAt = Date.now();
+      this.changed(team.id);
+      return { cycle, status: 'in_progress' };
+    }
+    // 需要人批：先落问卷。批之前周期保持 planned，其契约因此不被 dispatch（§5.3）。
+    const record = this.questionnaires.create({
+      teamId: team.id,
+      kind: 'cycle',
+      title: `批准开工周期 ${name}？`,
+      mode: input.mode ?? this.options.questionnaire.mode,
+      questions: withApprovalQuestion([
+        {
+          name: 'cycle_context',
+          label: `周期 ${name} 目标：${cycle.goal}；范围：${cycle.scope.join(', ')}`,
+          type: 'text',
+          required: false,
+          options: [],
+          defaultValue: '',
+        },
+      ]),
+      cycleName: name,
+      taskId: null,
+      timeoutMs: 0,
+      approvalCode: newApprovalCode(),
+    });
+    const delivery = await this.notifyQuestionnaire(record);
+    this.questionnaires.markDelivery(record.id, delivery);
+    this.changed(team.id);
+    // 「正在等人」这一帧必须现在就出去（与 ask_human 相同的理由：interactive 的
+    // publish 要等 await 结束才跑得动）。
+    this.snapshotPublisher?.();
+    return { cycle, status: 'planned', questionnaire: questionnaireViewOf(record) };
   }
 
   /** 内部阶段推进（不经过 `autopilot_phase` 那个裸开关）。 */
@@ -2943,6 +3066,13 @@ export class AutopilotService {
       .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
     for (const task of candidates) {
       if (signal?.aborted === true) return;
+      const contract = task.contractId === null ? undefined : contracts.find((c) => c.id === task.contractId);
+      // §5.3 派发收窄：明确属于某张「已规划但未开工」（planned）周期的契约保持 pending
+      // 静默等待 —— 不派发、也不产生事件刷屏（域锁的 deferred-domain-lock 事件不适用于
+      // 它，那是周期外的正常等待）。这是「完成一期再规划下一期」的机械边界：未来周期
+      // 只有在被 cycle_plan 排成 planned 的那一刻才进入推迟集合；属于当前活跃周期
+      // （in_progress）、或无对应周期记录的契约照常参与派发。
+      if (contract?.cycle != null && cycleByName(team, contract.cycle)?.status === 'planned') continue;
       if (await this.escalateCrossDomain(team, task, report)) continue;
       if (await this.escalateForbiddenTouches(team, task, report)) continue;
       if (!task.dependsOn.every((dep) => tasksByKey.get(dep)?.status === 'done')) {
@@ -2970,7 +3100,6 @@ export class AutopilotService {
       // 描述在派发这一刻重建：任务是在契约刚被收养时就建好的，而教训常常是
       // 之后别的任务被打回 / 升级才产生的 —— 只有"晚于教训、早于动工"的注入
       // 时机才真能避免重复踩坑。无对应契约（leader 手工建的任务）保持原样。
-      const contract = task.contractId === null ? undefined : contracts.find((c) => c.id === task.contractId);
       if (contract !== undefined) {
         task.description = this.buildDescription(team, contract.body, contract.touches);
       }

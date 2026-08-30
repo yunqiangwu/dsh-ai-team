@@ -79,6 +79,8 @@ describe('smoke: cordis Loader contract', () => {
         'autopilot_status',
         'code_review',
         'contract_create',
+        'cycle_approve',
+        'cycle_plan',
         'deploy_run',
         'doc_approve',
         'doc_write',

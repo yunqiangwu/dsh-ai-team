@@ -47,6 +47,36 @@ const jsonOutput = {
 type SessionHandle = NonNullable<NonNullable<ToolRunContext['agent']>['session']>;
 
 /**
+ * `contract_create` 与 `cycle_plan` 共用的契约条目参数形状（模型侧同一份题面，
+ * 手抄两份迟早漂移成「同一个字段两种说法」）。
+ */
+const contractItemSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true, description: 'Contract id as <DOMAIN>-<number>, e.g. AUTH-12' },
+    title: { type: 'string', required: true },
+    owner: { type: 'string', description: 'Owning role or agent id' },
+    dependsOn: { type: 'array', items: { type: 'string' }, description: 'Contract ids that must be done first' },
+    touches: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Directories this change may touch — the domain lock and overlap checks read this',
+    },
+    forbidden: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Paths this contract must not touch, on top of security.forbiddenPaths',
+    },
+    priority: {
+      type: 'number',
+      description: 'Dispatch weight: higher dispatches first among dependency-equal tasks; default 0',
+    },
+    body: { type: 'string', description: 'Markdown body: requirements + Gherkin acceptance criteria' },
+  },
+} as const;
+
+/**
  * 最近一次调用过本插件工具的 session，按服务实例索引。
  * 工单答卷由 TicketServer 的 HTTP 回调处理，那条路径上没有 `exec` —— 想找回到
  * 底该推给谁，只能靠这里记下的句柄。用 WeakMap 而不是模块级单例：一次进程里可能
@@ -999,31 +1029,7 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
         type: 'array',
         required: true,
         description: 'The batch of contracts to create',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            id: { type: 'string', required: true, description: 'Contract id as <DOMAIN>-<number>, e.g. AUTH-12' },
-            title: { type: 'string', required: true },
-            owner: { type: 'string', description: 'Owning role or agent id' },
-            dependsOn: { type: 'array', items: { type: 'string' }, description: 'Contract ids that must be done first' },
-            touches: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Directories this change may touch — the domain lock and overlap checks read this',
-            },
-            forbidden: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Paths this contract must not touch, on top of security.forbiddenPaths',
-            },
-            priority: {
-              type: 'number',
-              description: 'Dispatch weight: higher dispatches first among dependency-equal tasks; default 0',
-            },
-            body: { type: 'string', description: 'Markdown body: requirements + Gherkin acceptance criteria' },
-          },
-        },
+        items: contractItemSchema,
       },
     },
     async execute(args) {
@@ -1032,5 +1038,63 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       return result;
     },
     presentCall: present('Create task contracts'),
+  });
+
+  registerPublishingTool({
+    name: 'cycle_plan',
+    description:
+      'Plan the NEXT cycle ONLY (docs/design-cycles.md §5.1): given the roadmap section ' +
+      'name (e.g. "M2"), create one planned CycleRecord plus that cycle\'s task contracts, ' +
+      'each tagged `cycle: M2` in frontmatter. Incremental-planning invariant: it NEVER ' +
+      'plans farther-future cycles in the same call — run it again when the current cycle is ' +
+      'done. Contract validation reuses contract_create\'s pre-write checks (id / dangling ' +
+      'depends_on / cycle / forbidden / domain count); one invalid contract refuses the whole ' +
+      'batch. The cycle stays `planned` until cycle_approve starts it, so its tasks are NOT ' +
+      'dispatched yet (§5.3).',
+    parameters: {
+      teamId: { type: 'string', required: true },
+      cycleName: { type: 'string', required: true, description: 'Roadmap section of the next cycle, e.g. "M2"' },
+      goal: { type: 'string', required: true, description: 'One-line goal of this cycle (from the roadmap)' },
+      scope: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Path-level scope of this cycle (from the roadmap)',
+      },
+      contracts: {
+        type: 'array',
+        required: true,
+        description: 'The task contracts of this cycle (same shape as contract_create)',
+        items: contractItemSchema,
+      },
+    },
+    async execute(args) {
+      const input = args as { teamId: string; cycleName: string; goal: string; scope: string[]; contracts: ContractDraft[] };
+      const result = await service.cyclePlan(input);
+      return result;
+    },
+    presentCall: present('Plan next cycle'),
+  });
+
+  registerPublishingTool({
+    name: 'cycle_approve',
+    description:
+      'Start a planned cycle (docs/design-cycles.md §5.2): moves it from `planned` to ' +
+      '`in_progress`, which is what makes its contracts dispatchable. With ' +
+      'cycles.requireApproval false (default, unattended) it starts immediately. With ' +
+      'requireApproval true it opens an approval questionnaire (kind "cycle", same one-time ' +
+      'code gate as document approval) and does NOT start until a human approves — a model ' +
+      'cannot approve its own cycle start, so an in-session relay must carry the code from ' +
+      'the ticket/email.',
+    parameters: {
+      teamId: { type: 'string', required: true },
+      cycleName: { type: 'string', required: true, description: 'The planned cycle to start, e.g. "M2"' },
+      mode: { type: 'string', enum: QUESTIONNAIRE_MODES, description: 'Overrides questionnaire.mode for the approval ticket' },
+    },
+    async execute(args) {
+      const input = args as { teamId: string; cycleName: string; mode?: (typeof QUESTIONNAIRE_MODES)[number] };
+      const result = await service.cycleApprove(input);
+      return result;
+    },
+    presentCall: present('Approve cycle start'),
   });
 }

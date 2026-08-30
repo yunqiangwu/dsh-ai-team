@@ -1,7 +1,7 @@
 ---
 id: CYC-2
 title: 增量规划：roadmap / cycle_plan / cycle_approve 与派发收窄
-status: pending
+status: done
 priority: 8
 depends_on: [CYC-0, CYC-1]
 touches:

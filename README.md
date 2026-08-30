@@ -160,6 +160,10 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           timeoutMinutes: 60                  # interactive 等待上限；超时按各题 defaultValue 兜底并标 expired
         replan:                               # 重规划护栏（见「需求变更与重规划」一节）
           maxPerHour: 10                      # task_cancel / task_replan 每小时调用上限，超限拒绝；0=不设限
+        cycles:                               # 多周期开发（见「多周期开发与无人值守闭环」一节）
+          roadmapPath: docs/ROADMAP.md        # roadmap 文档路径（增量规划的参考来源）
+          requireApproval: false              # 周期开工是否要人审批（cycle_approve 落问卷等人批）
+          autoAdvance: true                   # 周期验收通过后是否自动推进到下一期
         docs:                                 # 文档先行：AI 只能写 draft 区，正式区唯一出口是 doc_approve
           draftDir: docs/drafts
           formalDir: docs

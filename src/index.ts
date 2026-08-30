@@ -133,6 +133,17 @@ export interface Config {
    */
   learnings?: LearningOptions | undefined;
   /**
+   * 多周期开发（docs/design-cycles.md §8）：`roadmapPath` 是长期路线图文档路径
+   * （draft→accept 审批链，正式区才有资格被周期规划引用）；`requireApproval` 决定
+   * 周期开工是否要人点头（false = 无人值守自动开工）；`autoAdvance` 决定周期验收后
+   * 是否自动推进到下一期。
+   */
+  cycles: {
+    roadmapPath: string;
+    requireApproval: boolean;
+    autoAdvance: boolean;
+  };
+  /**
    * 提问通道（见 docs/design-interaction.md §3）：`interactive` 让 `ask_human`
    * 真等到人答复再返回（组长的一轮 agent 因此不断线）；`async` 登记问卷后立即
    * 返回，人答完由组长继续。问卷是独立实体，不置 needs-human、不进升级直方图。
@@ -209,6 +220,7 @@ function runtimeConfigFromConfig(cfg: Config): RuntimeConfig {
           maxEntries: cfg.learnings.maxEntries,
         }
       : undefined,
+    cycles: cfg.cycles,
   };
 }
 
@@ -276,6 +288,7 @@ const DEFAULT_SECURITY = {
 const DEFAULT_QUESTIONNAIRE = { mode: 'interactive' as const, timeoutMinutes: 60 };
 const DEFAULT_REPLAN = { maxPerHour: 10 };
 const DEFAULT_DOCS = { draftDir: 'docs/drafts', formalDir: 'docs' };
+const DEFAULT_CYCLES = { roadmapPath: 'docs/ROADMAP.md', requireApproval: false, autoAdvance: true };
 const DEFAULT_PROFILE = {
   preset: '',
   branchTemplate: '',
@@ -440,6 +453,16 @@ export const Config: z<Config> = z.object({
     })
     .default({ ...DEFAULT_DOCS }),
 
+  cycles: z
+    .object({
+      roadmapPath: z.string().default(DEFAULT_CYCLES.roadmapPath),
+      // requireApproval / autoAdvance 默认值即无人值守直通；行为变更（需要人点头 /
+      // 周期边界等人确认）必须显式开启。
+      requireApproval: z.boolean().default(DEFAULT_CYCLES.requireApproval),
+      autoAdvance: z.boolean().default(DEFAULT_CYCLES.autoAdvance),
+    })
+    .default({ ...DEFAULT_CYCLES }),
+
   profile: z
     .object({
       preset: z.string().default(DEFAULT_PROFILE.preset),
@@ -553,6 +576,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     questionnaire: effective.questionnaire,
     replan: effective.replan,
     docs: effective.docs,
+    cycles: effective.cycles,
     profile: resolveProjectProfile(effective.profile, effective.gates.commands),
     // 核心的告警出口：它不认识 cordis，所以这句"不致命但人该知道"要由插件层落地。
     warn: (message, error) => ctx.logger.warn(message, error),

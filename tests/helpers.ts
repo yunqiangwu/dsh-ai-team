@@ -118,6 +118,8 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
     // 重规划护栏默认给一个宽裕值：个别用例（频率上限）自己 override 成小值。
     replan: { maxPerHour: 10 },
     docs: { draftDir: 'docs/drafts', formalDir: 'docs' },
+    // 多周期开发默认无人值守：不要求开工审批、周期验收后自动推进。
+    cycles: { roadmapPath: 'docs/ROADMAP.md', requireApproval: false, autoAdvance: true },
     deploy: { enabled: false, secretsEnv: [], skipTasksOnlyCommits: true },
     learnings: { ...DEFAULT_LEARNINGS },
     security: {

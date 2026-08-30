@@ -234,6 +234,10 @@ export function emptyTeamMetrics(): TeamMetrics {
  */
 export const teamPhase = (team: Pick<TeamRecord, 'phase'>): TeamPhase => team.phase ?? 'developing';
 
+/** 按名取周期记录（"M1" → CycleRecord）；没有该周期返回 undefined。 */
+export const cycleByName = (team: Pick<TeamRecord, 'cycles'>, name: string | null): CycleRecord | undefined =>
+  (team.cycles ?? []).find((cycle) => cycle.name === name);
+
 /**
  * 周期实体（docs/design-cycles.md §2.1）：一个里程碑批次（目标 + 范围 + 一组任务）。
  * 挂在 `TeamRecord.cycles` 下整体落盘。老 state.json 没有该数组，读取处一律 `?? []`

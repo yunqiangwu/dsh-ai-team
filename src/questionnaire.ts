@@ -37,16 +37,23 @@ export interface QuestionnaireRecord extends QuestionnaireView {
    * 没有审批事项的问卷为 null。
    */
   approvalCode: string | null;
+  /**
+   * `kind: 'cycle'` 的开工审批问卷所指向的周期名（如 "M1"）。同样是内部字段：
+   * 它只服务于 `afterAnswered` 把「人批了」落到对应的 `CycleRecord` 上，没有给
+   * 视图消费的理由，所以和 `approvalCode` 一样在视图里剥掉（docs/design-cycles.md §5.2）。
+   */
+  cycleName?: string | null | undefined;
 }
 
 /**
- * 记录 → 对外视图。唯一被剥掉的是审批码（见上面的注释与 schema.ts 的说明）。
+ * 记录 → 对外视图。被剥掉的是审批码与内部周期引用（见上面的注释与 schema.ts 的说明）。
  * 用「复制 + delete」而不是逐字段重列：字段清单已经由 schema.ts 管着，
  * 这里再抄一份迟早和它漂移。
  */
 export function questionnaireViewOf(record: QuestionnaireRecord): QuestionnaireView {
   const view = { ...record } as Partial<QuestionnaireRecord>;
   delete view.approvalCode;
+  delete view.cycleName;
   return view as QuestionnaireView;
 }
 
@@ -64,6 +71,8 @@ export interface QuestionnaireInput {
   timeoutMs?: number | null;
   /** 需要人批文档时由 service 铸造（见 newApprovalCode）。 */
   approvalCode?: string | null;
+  /** `kind: 'cycle'` 问卷指向的周期名；内部字段，不进视图。 */
+  cycleName?: string | null;
 }
 
 export interface AnswerResult {
@@ -214,6 +223,7 @@ export class QuestionnaireManager {
       // 只有 interactive 会到期：async 的问卷本来就该一直挂着等人答。
       expiresAt: input.mode === 'interactive' && timeoutMs > 0 ? now + timeoutMs : null,
       approvalCode: input.approvalCode ?? null,
+      cycleName: input.cycleName ?? null,
     };
     this.records.push(record);
     // 有界：无人值守跑久了，答完的问卷会一直堆进每一份全量快照里。
