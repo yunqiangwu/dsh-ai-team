@@ -1,7 +1,7 @@
 ---
 id: CYC-0
 title: 多周期开发与无人值守闭环：设计文档
-status: pending
+status: done
 priority: 10
 depends_on: []
 touches:
