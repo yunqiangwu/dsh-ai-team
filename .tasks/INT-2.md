@@ -1,7 +1,7 @@
 ---
 id: INT-2
 title: M1 能问能写：问卷实体与五个新工具
-status: pending
+status: done
 depends_on: [INT-1]
 touches:
   - src/

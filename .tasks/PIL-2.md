@@ -1,7 +1,7 @@
 ---
 id: PIL-2
 title: 生成 CHANGELOG.md
-status: pending
+status: done
 touches:
   - CHANGELOG.md
 ---

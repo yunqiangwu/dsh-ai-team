@@ -1,7 +1,7 @@
 ---
 id: INT-4
 title: M3 重规划：cancelled / 优先级 / 分级变更与在途任务处置
-status: pending
+status: done
 depends_on: [INT-1]
 touches:
   - src/

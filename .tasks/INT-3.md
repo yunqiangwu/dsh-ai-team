@@ -1,7 +1,7 @@
 ---
 id: INT-3
 title: M2 卡片：面板内作答与安全加固
-status: pending
+status: done
 depends_on: [INT-2]
 touches:
   - src/

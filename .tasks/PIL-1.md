@@ -1,7 +1,7 @@
 ---
 id: PIL-1
 title: README 补「故障排查」章节
-status: pending
+status: done
 touches:
   - README.md
 ---

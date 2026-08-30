@@ -1,7 +1,7 @@
 ---
 id: INT-1
 title: M0 先修：phase 维度与三个既有缺陷
-status: pending
+status: done
 touches:
   - src/
   - tests/
