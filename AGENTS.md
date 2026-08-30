@@ -166,7 +166,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 
 ## 已知坑
 
-1. **本地起 dsh 会引导失败**：`cordis.patch.yml` 默认 `bootstrap.setupCommand: pnpm run setup`、`verifyCommand: pnpm run e2e:local`，但本仓库 scripts 里没有这两个。本地调试时把 `bootstrap.enabled` 设为 `false`，或指向真实存在的脚本，否则 `autopilot_init` 会 escalate + throw。
+1. **bootstrap 默认不跑任何 setup/verify 命令**（2026-08-30 变更，原「本地起 dsh 引导失败」已修）：`DEFAULT_BOOTSTRAP` 的 `setupCommand` / `verifyCommand` 默认空串 = 跳过，引导只做工具链探测 + rootless 安装。原因：空 `remote.url` 时团队仓库是空仓库，任何 pnpm 脚本必失败；真实用户仓库也没有普适脚本名。要跑初始化/自检的人**自己**在配置里指认目标仓库真实存在的命令（README「配置」、PILOT.md dogfood 模板有示例；`tests/smoke-cordis.ts` 钉住默认值，改回具体命令会红）。
 2. **tsdown 的 `clean: false` 是故意的**：`lib/types`（tsc 产物）与 `lib`（打包产物）同目录，打开 clean 会把 d.ts 一起抹掉。
 3. **client 产物的 banner/footer 不能动**：`tsdown.config.ts` 用 `window.__ModuleLoader__.load(...)` 包裹 CJS 输出，改了 Loader 就加载不了插件。
 4. **测试用真实 git，不 mock**：`tests/helpers.ts` 用本地 bare 仓库扮演 remote。vitest 配了 `fileParallelism: false` + `pool: 'forks'`，别图快改成并行，会互相踩 worktree。
