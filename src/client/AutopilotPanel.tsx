@@ -8,7 +8,7 @@
  * 表单，提交走同源相对路径 `<TICKET_ROUTE_PREFIX>/<id>/answer`，凭据是宿主那套
  * 同源围栏 —— 所以投影里那条 `ticketUrl` 不需要（也不允许）带访问凭据。
  */
-import { useState, useRef } from 'react';
+import { useState, useRef, type ReactNode } from 'react';
 import type { SlotProps, Translator } from './contract.js';
 import type { AutopilotProjection, CycleView, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
 import { DISPATCHABLE_PHASES, TASK_STATUSES, TICKET_ROUTE_PREFIX } from '../view.js';
@@ -482,6 +482,70 @@ function BlockedList({ ids, team, t }: { ids: string[]; team: TeamView; t: Trans
 }
 
 /**
+ * 「待办中心」：把四类需要人的行动项（待答问卷 / 未解决升级 / 卡住任务 /
+ * needs-human 任务）聚合到一个入口。问卷与升级内联作答，卡住与待人工只读。
+ * 与头部琥珀计数共用同一套口径，避免「头部说 3 件、点开只有 1 件」的错位。
+ */
+function ActionCenter({
+  questionnaires,
+  escalations,
+  blocked,
+  team,
+  t,
+}: {
+  questionnaires: QuestionnaireView[];
+  escalations: EscalationView[];
+  blocked: string[];
+  team: TeamView;
+  t: Translator;
+}) {
+  const openQ = questionnaires.filter((item) => item.status === 'open');
+  const openEsc = escalations.filter((item) => item.resolvedAt === null);
+  const needsHuman = team.tasks.filter((task) => task.status === 'needs-human');
+  const sections: { key: string; title: string; count: number; node: ReactNode }[] = [];
+  if (openQ.length > 0) {
+    sections.push({ key: 'q', title: t('actions.questionnaires'), count: openQ.length, node: <AwaitingList items={openQ} t={t} /> });
+  }
+  if (openEsc.length > 0) {
+    sections.push({ key: 'esc', title: t('actions.escalations'), count: openEsc.length, node: <EscalationFeed escalations={openEsc} t={t} /> });
+  }
+  if (blocked.length > 0) {
+    sections.push({ key: 'blocked', title: t('actions.blocked'), count: blocked.length, node: <BlockedList ids={blocked} team={team} t={t} /> });
+  }
+  if (needsHuman.length > 0) {
+    sections.push({
+      key: 'human',
+      title: t('actions.needsHuman'),
+      count: needsHuman.length,
+      node: (
+        <div className="dsh-ai-team__members">
+          {needsHuman.map((task) => (
+            <span key={task.id} className="dsh-ai-team__member" title={task.description}>
+              <span>{task.title}</span>
+              <span className="dsh-ai-team__role">{t(`status.${task.status}`)}</span>
+            </span>
+          ))}
+        </div>
+      ),
+    });
+  }
+  if (sections.length === 0) return <span className="dsh-ai-team__empty">{t('actions.empty')}</span>;
+  return (
+    <div className="dsh-ai-team__actions">
+      {sections.map((section) => (
+        <section key={section.key} className="dsh-ai-team__actions-section">
+          <h5 className="dsh-ai-team__actions-title">
+            <span>{section.title}</span>
+            <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">{section.count}</span>
+          </h5>
+          {section.node}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/**
  * Grafana 风格统计卡：短标签 + 数字。作为按钮，点击时在父组件打开对应详情浮窗。
  */
 function StatTile({ label, value, hint, onClick }: { label: string; value: string; hint?: string; onClick: () => void }) {
@@ -493,7 +557,7 @@ function StatTile({ label, value, hint, onClick }: { label: string; value: strin
   );
 }
 
-type DetailKind = 'metrics' | 'blocked' | 'questionnaires' | 'learnings' | 'escalations' | 'deploys';
+type DetailKind = 'actions' | 'metrics' | 'blocked' | 'questionnaires' | 'learnings' | 'escalations' | 'deploys';
 
 /**
  * 状态栏：一排统计卡按钮。点击某张卡，弹出浮窗展示该类的详细面板（卡住/问卷/教训/升级/部署）。
@@ -518,9 +582,13 @@ function StatsStrip({
   const metrics = team.metrics;
   const openEsc = escalations.filter((escalation) => escalation.resolvedAt === null).length;
   const openQ = questionnaires.filter((item) => item.status === 'open').length;
+  const needsHuman = team.tasks.filter((task) => task.status === 'needs-human').length;
+  // 头部琥珀计数与这里共用同一份口径：问卷 + 升级 + 卡住 + 待人工。
+  const actionCount = openQ + openEsc + blocked.length + needsHuman;
 
   const content = (() => {
     switch (open) {
+      case 'actions': return <ActionCenter questionnaires={questionnaires} escalations={escalations} blocked={blocked} team={team} t={t} />;
       case 'blocked': return <BlockedList ids={blocked} team={team} t={t} />;
       case 'questionnaires': return <QuestionnaireFeed items={questionnaires} t={t} />;
       case 'learnings': return <LearningList learnings={team.learnings} t={t} />;
@@ -541,6 +609,7 @@ function StatsStrip({
   return (
     <>
       <div className="dsh-ai-team__stats">
+        <StatTile label={t('actions.title')} value={String(actionCount)} hint={t('actions.hint')} onClick={() => setOpen('actions')} />
         <StatTile label={t('section.metrics')} value={`${metrics.completed}/${metrics.dispatched}`} hint={t('section.metrics.hint')} onClick={() => setOpen('metrics')} />
         <StatTile label={t('section.blocked')} value={String(blocked.length)} hint={t('section.blocked.hint')} onClick={() => setOpen('blocked')} />
         <StatTile label={t('section.questionnaires')} value={`${openQ}/${questionnaires.length}`} hint={t('section.questionnaires.hint')} onClick={() => setOpen('questionnaires')} />
@@ -726,12 +795,16 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
   const inProgress = team.tasks.filter((task) => task.status === 'in_progress').length;
   const dispatchable = DISPATCHABLE_PHASES.includes(team.phase);
   const questionnaires = projection.questionnaires.filter((item) => item.teamId === team.id);
-  const awaiting = questionnaires.filter((item) => item.status === 'open').length;
   // 单团队视图只看当前团队的升级与部署（TECH-4）；teamId 为 null 的旧记录
   // 归属不明，宁可多显示，不能被过滤吞掉。
   const belongsToTeam = (item: { teamId: string | null }) => item.teamId === null || item.teamId === team.id;
   const escalations = projection.escalations.filter(belongsToTeam);
   const deploys = projection.deploys.filter(belongsToTeam);
+  // 头部琥珀计数 = 待答问卷 + 未解决升级 + 卡住 + needs-human（与待办中心同口径）。
+  const openQ = questionnaires.filter((item) => item.status === 'open').length;
+  const openEsc = escalations.filter((escalation) => escalation.resolvedAt === null).length;
+  const needsHuman = team.tasks.filter((task) => task.status === 'needs-human').length;
+  const actionCount = openQ + openEsc + projection.blocked.length + needsHuman;
   return (
     <div className={open ? 'dsh-ai-team dsh-ai-team--open' : 'dsh-ai-team'}>
       <button
@@ -749,9 +822,9 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
           {t(`phase.${team.phase}`)}
         </span>
         {/* 折叠时只剩这一行，所以「轮到你」必须在收起状态也看得见。 */}
-        {awaiting > 0 ? (
-          <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting" title={t('awaiting.hint')}>
-            {t('awaiting.count', { count: awaiting })}
+        {actionCount > 0 ? (
+          <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting" title={t('actions.hint')}>
+            {t('actions.count', { count: actionCount })}
           </span>
         ) : null}
         <span className="dsh-ai-team__title">{t('panel.title', { team: team.name })}</span>

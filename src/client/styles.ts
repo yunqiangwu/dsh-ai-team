@@ -115,6 +115,10 @@ const CSS = `
 .dsh-ai-team__floating-head:hover { background: rgba(234,179,8,.12); }
 .dsh-ai-team__floating-head .dsh-ai-team__badge--awaiting { margin-left: auto; }
 .dsh-ai-team__floating-body { padding: 10px 12px 12px; border-top: 1px solid rgba(234,179,8,.35); max-height: 320px; overflow: auto; }
+/* ── 待办中心：四类行动项聚合，问卷/升级内联作答 ── */
+.dsh-ai-team__actions { display: flex; flex-direction: column; gap: 12px; }
+.dsh-ai-team__actions-section { display: flex; flex-direction: column; gap: 6px; }
+.dsh-ai-team__actions-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; font-weight: 600; }
 `;
 
 let injected = false;
