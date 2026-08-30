@@ -895,10 +895,18 @@ export class AutopilotService {
       const cycle = cycleName === null ? undefined : cycleByName(team, cycleName);
       if (cycle === undefined) return;
       if (cycle.status === 'in_review') {
-        if (record.answers['advance']?.value === 'approve') {
+        // 检查点（checkpoint=true）边界拍板（docs/design-cycles.md §6.3）：
+        // 继续 → done 并启动已预排的下一期；结束 → done 并整队 completed。
+        const advance = record.answers['advance']?.value;
+        if (advance === 'continue') {
           cycle.status = 'done';
           cycle.completedAt = Date.now();
           this.startNextPlannedCycle(team);
+        } else if (advance === 'finish') {
+          cycle.status = 'done';
+          cycle.completedAt = Date.now();
+          this.loopState = 'completed';
+          await this.writeCompletionArtifact(team);
         }
       } else if (cycle.status === 'done') {
         if (record.answers['roadmap_done']?.value === 'finish') {
@@ -1079,12 +1087,14 @@ export class AutopilotService {
       createdAt: Date.now(),
     };
     team.cycles = [...(team.cycles ?? []), cycle];
-    // 「规划下一期后自动继续」（§6.3 wait-plan 的落点）：上一周期已 done、没有活跃周期
-    // → 机械地开工，人/组长下一轮 cycle_plan 后自动继续。首批规划（没有 done 周期）
-    // 保持 planned —— 那是 cycle_approve 的职责。checkpoint 只约束验收边界，不拦开工。
+    // 「规划下一期后自动继续」（§6.3 wait-plan 的落点）：上一周期已 done、没有
+    // in_progress / in_review 周期才机械开工。in_review 也要排除 —— 那是 checkpoint
+    // 周期停在验收点等人点头，未经批准不能提前开工下一期（不然用户还在被问「批准
+    // 推进吗」，下一期却已经在跑）。首批规划（没有 done 周期）保持 planned —— 那是
+    // cycle_approve 的职责。checkpoint 只约束验收边界，不拦开工。
     const canAutoStart =
       (team.cycles ?? []).some((c) => c.status === 'done') &&
-      !(team.cycles ?? []).some((c) => c.status === 'in_progress');
+      !(team.cycles ?? []).some((c) => c.status === 'in_progress' || c.status === 'in_review');
     if (canAutoStart) {
       cycle.status = 'in_progress';
       cycle.startedAt = Date.now();
@@ -3419,26 +3429,32 @@ export class AutopilotService {
             },
           ]
         : [
+            // checkpoint 边界拍板是「继续 / 结束」两选（docs/design-cycles.md §6.3）：
+            // 用户可以在边界直接宣告项目结束，不必等 roadmap 自然跑完；两个选项也
+            // 满足 `select` 至少 2 项的校验。刻意不做「暂缓」——它没有后续路径（周期
+            // 已 in_review、问卷已答不可重开），选了只会把团队永久卡死；用户若不认可
+            // 推进，拒绝作答即可（问卷保持 open，邮件 / 工单通知仍在），团队停在
+            // in_review 而不是错误地推进。
             {
               name: 'advance',
-              label: `周期 ${cycle.name}（${cycle.goal}）验收通过。批准推进到下一周期吗？`,
+              label: `周期 ${cycle.name}（${cycle.goal}）验收通过，接下来怎么走？`,
               type: 'select',
               options: [
                 {
-                  value: 'approve',
+                  value: 'continue',
                   label: '批准：周期完成并推进',
                   impact: '周期置 done；下一期已预排则自动开工',
                   recommended: false,
                 },
                 {
-                  value: 'hold',
-                  label: '暂缓：保持等待',
-                  impact: '周期停在 in_review，稍后再决',
+                  value: 'finish',
+                  label: 'roadmap 已无下一期，结束项目',
+                  impact: '写入完成报告并停机',
                   recommended: false,
                 },
               ],
               required: true,
-              defaultValue: 'hold',
+              defaultValue: 'continue',
             },
           ];
     const record = this.questionnaires.create({
@@ -3447,7 +3463,7 @@ export class AutopilotService {
       title:
         kind === 'wait-plan'
           ? `周期 ${cycle.name} 已完成，请规划下一周期（或结束项目）`
-          : `周期 ${cycle.name} 验收通过，批准推进到下一周期吗？`,
+          : `周期 ${cycle.name} 验收通过，请拍板「继续 / 结束」`,
       mode: 'async',
       questions,
       cycleName: cycle.name,

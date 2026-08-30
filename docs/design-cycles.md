@@ -178,7 +178,7 @@ deferred(c) = c.cycle != null
 ### 6.4 空转保护与守护判定
 
 - 「周期完成但下一期未排/未批」是**正常等待，不是故障**：`checkStuck` / `budgetExceeded`（`src/service/daemon.ts`）不得误判成任务卡死。周期等待走问卷的 open 态（沿用既有问卷语义：不产生升级直方图、不捕获学习记录、`checkStuck` 豁免）；
-- 但也不能无限静默：问卷永不答最终走既有 `budget-exceeded` 升级路径（`checkBudget` 不豁免问卷，沿用现状）；
+- 周期边界等待是**靠人收敛的最终态**：它不挂在任何任务上（`taskId: null`）且周期任务已全 done，任务级 `checkBudget` 自然不适用。收敛由人完成 —— 周期边界问卷落 mail + 工单通知（`notifyQuestionnaire`），人在「继续 / 结束」里拍板；人彻底失联时团队停在 open 问卷态，由面板「等你决策」区可见，不自动升级也不提前停机（升级只会把同一件事通知第二遍，无额外价值）；
 - 有周期记录但 roadmap 已无下一期且当前周期已 `done` → 正常 `completed`（§6.5），不算配置不一致；配置与契约不一致（如 `roadmapPath` 指向不存在的正式文档）→ **不静默**，按规格升级（复用既有 `ESCALATION_REASONS`，不新增分类，除非实现确需）。
 
 ### 6.5 roadmap 走完才 completed
@@ -225,7 +225,7 @@ v1 的 `cycles.requireApproval` / `cycles.autoAdvance` **已移除**：开工审
 | **CYC-3 无人值守推进** | [../.tasks/CYC-3.md](../.tasks/CYC-3.md) | `checkCompletion` 按周期 / 周期验收门 / §6.3 推进 / 空转保护（v2 起 `checkpoint` 字段驱动） | `service.ts` `daemon.ts` `report.ts`；README 主循环小节 |
 | **CYC-7 AI 决策与配置收敛** | [../.tasks/CYC-7.md](../.tasks/CYC-7.md) | `CycleRecord.checkpoint` / `cycle_plan` 支持 `checkpoint` 参数 / 移除 `requireApproval` `autoAdvance` 配置 / `cycleAdvancePlan` 改按 checkpoint 判定 / 组长 prompt 规模判断与边界决策 | `options.ts` `index.ts` `roles.ts` `tools.ts` `service.ts` `daemon.ts`；README 配置块；CYC-3/6 测试同步 |
 | **CYC-4 注入与守护** | [../.tasks/CYC-4.md](../.tasks/CYC-4.md) | `buildDescription` 周期上下文 / 周期配置透出（`roadmapPath`）/ 守护判定不误伤 | `description.ts` `options.ts` `vocab.ts`；字典 |
-| **CYC-5 视图面板** | [../.tasks/CYC-5.md](../.tasks/CYC-5.md) | 投影 `CycleView` / 面板周期列表与进度（含 checkpoint 标记）/ i18n zh+en | `schema.ts` `projection.ts` `src/client/` |
+| **CYC-5 视图面板** | [../.tasks/CYC-5.md](../.tasks/CYC-5.md) | 投影 `CycleView` / 面板周期列表与进度 / i18n zh+en | `schema.ts` `projection.ts` `src/client/` |
 | **CYC-6 测试文档** | [../.tasks/CYC-6.md](../.tasks/CYC-6.md) | `tests/test-cycles.ts` / README「迭代周期开发与无人值守闭环」（用户视角）/ 本文件状态转「已实施」 | `tests/` `README.md` |
 
 依赖链：`CYC-0 → CYC-1 → {CYC-2 → {CYC-3, CYC-7, CYC-4}, CYC-5} → CYC-6`。

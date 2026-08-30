@@ -210,7 +210,9 @@ async function driveTaskToDone(service: AutopilotService, teamId: string, contra
   const task = team.tasks.find((candidate) => candidate.contractId === contractId)!;
   const dev = team.members.find((member) => member.id === task.assigneeId)!;
   const reviewer = team.members.find((member) => member.role === 'reviewer')!;
-  commitInWorktree(dev.workspacePath, 'work.ts', 'export const x = 1;\n', `feat: ${contractId}`);
+  // 同一 worktree 里多个任务都要提交时，内容必须随任务变化，否则第二次 commit 会
+  // 因「nothing to commit」失败（git 对空提交报错）。
+  commitInWorktree(dev.workspacePath, 'work.ts', `export const x = 1; // ${contractId}\n`, `feat: ${contractId}`);
   await service.updateTask({ taskId: task.id, status: 'in_review' });
   await service.runGatesForTask({ taskId: task.id });
   await service.review({ taskId: task.id, reviewerId: reviewer.id, verdict: 'approve' });
@@ -343,12 +345,15 @@ describe('cycles: unattended advancement (CYC-3)', () => {
         (q) => q.teamId === team.id && q.kind === 'cycle' && q.status === 'open',
       );
       expect(openCycles).toHaveLength(1);
+      // checkpoint 问卷是「继续 / 结束」两选（docs/design-cycles.md §6.3；P1 删掉了
+      // 「暂缓」死选项）—— 两个选项都能落地，防死锁回归。
+      expect(openCycles[0]!.questions[0]!.options.map((option) => option.value)).toEqual(['continue', 'finish']);
 
       // 等人答（工单页亲手点的才算人）：批准 → 周期 done；没有下一期 → 走完即 completed。
       const questionnaire = openCycles[0]!;
       const answered = await service.answerQuestionnaire({
         questionnaireId: questionnaire.id,
-        answers: { advance: 'approve' },
+        answers: { advance: 'continue' },
         source: 'ticket',
       });
       expect(answered.ok).toBe(true);
@@ -404,7 +409,7 @@ describe('cycles: unattended advancement (CYC-3)', () => {
       // 人批「推进」→ M1 done、M2 机械开工，不提前 completed。
       await service.answerQuestionnaire({
         questionnaireId: openCycles[0]!.id,
-        answers: { advance: 'approve' },
+        answers: { advance: 'continue' },
         source: 'ticket',
       });
       view = service.teamView(team.id);
@@ -413,6 +418,103 @@ describe('cycles: unattended advancement (CYC-3)', () => {
       const tick = await service.tickOnce();
       expect(tick.completed).toBe(false);
       expect(service.teamView(team.id).tasks.find((task) => task.contractId === 'A-2')?.status).toBe('in_progress');
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('checkpoint 边界人答「结束项目」→ 周期 done 且整队 completed（不依赖 roadmap 自然跑完）', async () => {
+    const fixture = await makeFixture('cycle-checkpoint-finish');
+    const service = await AutopilotService.create(testOptions(fixture));
+    try {
+      const team = await seedTeam(service, {
+        name: 'cycles-team',
+        members: [{ role: 'developer' }, { role: 'reviewer' }],
+      });
+      await service.cyclePlan({
+        teamId: team.id,
+        cycleName: 'M1',
+        goal: 'g1',
+        scope: [],
+        checkpoint: true,
+        contracts: [cycleContract('A-1', 'first', { touches: ['a/'] })],
+      });
+      await service.cycleApprove({ teamId: team.id, cycleName: 'M1' });
+      await service.tickOnce();
+      await driveTaskToDone(service, team.id, 'A-1');
+      await service.tickOnce(); // M1 验收 → checkpoint → 停在 in_review
+      let view = service.teamView(team.id);
+      expect(view.cycles![0]!.status).toBe('in_review');
+
+      // 边界拍板「结束」→ 周期 done、整队 completed，写完成报告。
+      const openCycles = service.projection().questionnaires.filter(
+        (q) => q.teamId === team.id && q.kind === 'cycle' && q.status === 'open',
+      );
+      expect(openCycles).toHaveLength(1);
+      const answered = await service.answerQuestionnaire({
+        questionnaireId: openCycles[0]!.id,
+        answers: { advance: 'finish' },
+        source: 'ticket',
+      });
+      expect(answered.ok).toBe(true);
+      view = service.teamView(team.id);
+      expect(view.cycles![0]!.status).toBe('done');
+      expect(service.getLoopState()).toBe('completed');
+      const report = await readFile(join(fixture.stateDir, 'completion.md'), 'utf8');
+      expect(report).toContain('### cycle M1');
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('checkpoint 周期停在 in_review 等点头时，cycle_plan 新周期不自动开工（保持 planned）', async () => {
+    const fixture = await makeFixture('cycle-checkpoint-no-autostart');
+    const service = await AutopilotService.create(testOptions(fixture));
+    try {
+      const team = await seedTeam(service, {
+        name: 'cycles-team',
+        members: [{ role: 'developer' }, { role: 'reviewer' }],
+      });
+      // M1 无 checkpoint → 验收后直通 M2 开工；M2 有 checkpoint → 验收后停在 in_review。
+      await service.cyclePlan({
+        teamId: team.id,
+        cycleName: 'M1',
+        goal: 'g1',
+        scope: [],
+        contracts: [cycleContract('A-1', 'first', { touches: ['a/'] })],
+      });
+      await service.cyclePlan({
+        teamId: team.id,
+        cycleName: 'M2',
+        goal: 'g2',
+        scope: [],
+        checkpoint: true,
+        contracts: [cycleContract('A-2', 'second', { touches: ['a/'] })],
+      });
+      await service.cycleApprove({ teamId: team.id, cycleName: 'M1' });
+      await service.tickOnce(); // 派发 A-1
+      await driveTaskToDone(service, team.id, 'A-1');
+      await service.tickOnce(); // M1 验收 → 直通 M2 开工
+      await service.tickOnce(); // M2 派发 A-2
+      await driveTaskToDone(service, team.id, 'A-2');
+      await service.tickOnce(); // M2 验收 → checkpoint → 停在 in_review 等人点头
+      let view = service.teamView(team.id);
+      expect(view.cycles![0]!.status).toBe('done');
+      expect(view.cycles![1]!.status).toBe('in_review');
+
+      // P3：M2 还没批「推进」，组长此刻 cycle_plan M3 → M3 不得自动开工（保持 planned）、
+      // A-3 不得派发 —— 否则用户还在被问「批准推进吗」，下一期却已经在跑。
+      await service.cyclePlan({
+        teamId: team.id,
+        cycleName: 'M3',
+        goal: 'g3',
+        scope: [],
+        contracts: [cycleContract('A-3', 'third', { touches: ['a/'] })],
+      });
+      await service.tickOnce(); // 新契约经 syncContracts 进看板
+      view = service.teamView(team.id);
+      expect(view.cycles![2]!.status).toBe('planned');
+      expect(view.tasks.find((task) => task.contractId === 'A-3')?.status).toBe('pending');
     } finally {
       await service.dispose();
     }
