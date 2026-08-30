@@ -3,7 +3,7 @@ id: CYC-4
 title: 周期上下文注入与枚举/守护增强
 status: pending
 priority: 5
-depends_on: [CYC-2]
+depends_on: [CYC-2, CYC-7]
 touches:
   - src/service/description.ts
   - src/vocab.ts
@@ -29,7 +29,7 @@ touches:
 ### 场景二：周期状态枚举与守护判定
 
 - **Then** 周期状态枚举（CYC-1 引入）被 `checkStuck` / 周期推进正确读取，等待审批/规划的周期不误判卡死
-- **And** `src/service/options.ts` 的 `AutopilotOptions` 透出周期相关配置（`roadmapPath` / `autoAdvance` / `requireApproval` 等），读取处 `?? 默认值` 兜底老配置
+- **And** `src/service/options.ts` 的 `AutopilotOptions` 透出周期相关配置（`roadmapPath`）与 `checkpoint` 决策状态，读取处 `?? 默认值` 兜底老配置
 - **And** 新增面向人的枚举取值连带 zh/en 字典
 
 ### 场景三：文档与校验

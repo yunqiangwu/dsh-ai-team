@@ -1,9 +1,9 @@
 ---
 id: CYC-6
-title: 多周期测试与 README 收尾
+title: 周期测试与 README 收尾
 status: pending
 priority: 1
-depends_on: [CYC-3, CYC-4, CYC-5]
+depends_on: [CYC-3, CYC-4, CYC-5, CYC-7]
 touches:
   - tests/
   - README.md
@@ -23,13 +23,14 @@ touches:
 
 - **Given** 新增 `tests/test-cycles.ts`（或并入现有测试文件，以规格为准）
 - **Then** 覆盖：周期创建（`cycle_plan` 只拆下一期、不拆远期）、契约 `cycle` 字段解析/回写、看板分组、派发只收窄当前周期、周期完成后自动推进下一期、无下一期时 `completed`
-- **And** 覆盖：`requireApproval` 开关（人批 vs 无人值守）、`autoAdvance` 开关、等待下一期规划/审批时不被误判卡死
+- **And** 覆盖：`checkpoint` 决策（组长声明边界检查点 → 落问卷；未声明 → 直通/等规划）、等待下一期规划/审批时不被误判卡死
 - **And** 覆盖：老团队（无 `cycle` 字段契约）行为不回归（沿用 `testOptions` 工厂）
 - **And** 断言优先用 `AutopilotOptions` 工厂 `testOptions(fixture, overrides)`，别手搓配置对象
 
 ### 场景二：README
 
-- **Then** README 新增「多周期开发与无人值守闭环」小节：周期怎么配、roadmap 怎么写、`cycle_plan` / `cycle_approve` 怎么用、`autoAdvance` / `requireApproval` 语义
+- **Then** README 新增「迭代周期开发与无人值守闭环」小节（用户视角）：你只需提供 PRD；大型项目由 AI 自动起草 roadmap、逐期推进，边界被问到时回「继续 / 结束」；`cycle_plan` / `cycle_approve` 是 AI 内部工具，仅「工具一览」列名
+- **And** README「配置」块只保留 `cycles.roadmapPath`（`requireApproval` / `autoAdvance` 已收敛为周期 `checkpoint` 字段）
 - **And** README「工具一览」补新工具
 - **And** `docs/design-cycles.md` 状态改「已实施」
 
