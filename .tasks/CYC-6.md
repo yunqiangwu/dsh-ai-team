@@ -1,7 +1,7 @@
 ---
 id: CYC-6
 title: 周期测试与 README 收尾
-status: pending
+status: done
 priority: 1
 depends_on: [CYC-3, CYC-4, CYC-5, CYC-7]
 touches:

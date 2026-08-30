@@ -1,7 +1,7 @@
 ---
 id: CYC-4
 title: 周期上下文注入与枚举/守护增强
-status: pending
+status: done
 priority: 5
 depends_on: [CYC-2, CYC-7]
 touches:

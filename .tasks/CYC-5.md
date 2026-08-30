@@ -1,7 +1,7 @@
 ---
 id: CYC-5
 title: 周期视图、面板与 i18n
-status: pending
+status: done
 priority: 7
 depends_on: [CYC-1]
 touches:
