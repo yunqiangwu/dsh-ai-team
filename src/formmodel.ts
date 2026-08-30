@@ -10,6 +10,7 @@
  * 浏览器安全：不得 import node，不得 import zod（架构铁律 5 对 `view.ts` 的要求
  * 同样适用于本文件，它会进 `lib/client.js`）。
  */
+import { MULTI_VALUE_SEP } from './vocab.js';
 import type { Question, QuestionType } from './view.js';
 
 /** 一个可选项。字符串是 `{value, label}` 的简写。 */
@@ -49,12 +50,28 @@ export interface TicketField {
  */
 export function fieldsOfQuestions(questions: readonly Question[]): TicketField[] {
   return questions.map((question) => {
-    const options: TicketOption[] = question.options.map((option) => ({
-      value: option.value,
-      label: option.label,
-      checked: option.recommended || option.value === question.defaultValue,
-      ...(option.impact === '' ? {} : { impact: option.impact }),
-    }));
+    const defaultValues = question.defaultValue
+      .split(MULTI_VALUE_SEP)
+      .map((part) => part.trim())
+      .filter((part) => part !== '');
+    const options: TicketOption[] = question.options.map((option) => {
+      // 单选预选只能有一个：defaultValue 是「没人答时的兜底」，也是超时后的去向，
+      // 表单预勾必须跟它一致 —— 否则人「闭眼提交」与「放着不管」会得到两个不同的答案。
+      // 无默认值时才允许推荐项兜底预勾，免得 recommended 与 defaultValue 指到两处时
+      // 两个 radio 同时被选中（表单无法表达「默认是 A 但推荐 B」）。
+      const checked =
+        question.type === 'multiselect'
+          ? option.recommended || defaultValues.includes(option.value)
+          : question.defaultValue !== ''
+            ? option.value === question.defaultValue
+            : !!option.recommended;
+      return {
+        value: option.value,
+        label: option.label,
+        checked,
+        ...(option.impact === '' ? {} : { impact: option.impact }),
+      };
+    });
     return {
       name: question.name,
       label: question.label,

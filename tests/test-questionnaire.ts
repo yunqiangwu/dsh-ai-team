@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AutopilotService } from '../src/service.js';
+import { fieldsOfQuestions } from '../src/formmodel.js';
 import { TICKET_PATH_PREFIX, TicketHandler, TicketServer, type TicketStore } from '../src/ticket-handler.js';
 import { ticketFieldsOf } from '../src/questionnaire.js';
 import type { QuestionnaireRecord } from '../src/questionnaire.js';
@@ -943,4 +944,45 @@ describe('questionnaire: 持久化', () => {
       await revived.dispose();
     }
   }, 60_000);
+});
+
+describe('formmodel: 预选语义', () => {
+  const checkedOf = (name: string) => {
+    const fields = fieldsOfQuestions([
+      q({ name, label: '部署形态？', type: 'select', options: [
+        { value: 'docker-single', label: '单机 Docker', recommended: true }, { value: 'k8s', label: 'K8s' },
+      ] }),
+    ]);
+    return fields[0]!.options!.find((option) => option.value === 'docker-single')!.checked;
+  };
+
+  it('单选推荐项（无默认值）预勾推荐项', () => {
+    expect(checkedOf('deploy')).toBe(true);
+  });
+
+  it('单选有默认值时预勾默认项；推荐与他人指向另一项时不双预勾', () => {
+    const [platform] = fieldsOfQuestions([
+      q({ name: 'platform', label: '部署形态？', type: 'select', defaultValue: 'k8s', options: [
+        { value: 'docker-single', label: '单机 Docker', recommended: true }, { value: 'k8s', label: 'K8s' },
+      ] }),
+    ]);
+    const fieldOptions = platform!.options!;
+    expect(fieldOptions.find((option) => option.value === 'docker-single')!.checked).toBe(false);
+    expect(fieldOptions.find((option) => option.value === 'k8s')!.checked).toBe(true);
+    // 单选绝不双预勾：推荐项与默认项都只能有一个被选中。
+    expect(fieldOptions.filter((option) => option.checked === true)).toHaveLength(1);
+  });
+
+  it('多选预勾推荐项，defaultValue 里列出的值也预勾', () => {
+    const [secrets] = fieldsOfQuestions([
+      q({ name: 'secrets', label: '哪些密钥？', type: 'multiselect', defaultValue: 'ssh-key, api-token', options: [
+        { value: 'ssh-key', label: 'SSH 私钥', recommended: true }, { value: 'api-token', label: '平台 token' },
+        { value: 'webhook', label: 'Webhook 密钥' },
+      ] }),
+    ]);
+    const fieldOptions = secrets!.options!;
+    expect(fieldOptions.find((option) => option.value === 'ssh-key')!.checked).toBe(true);
+    expect(fieldOptions.find((option) => option.value === 'api-token')!.checked).toBe(true);
+    expect(fieldOptions.find((option) => option.value === 'webhook')!.checked).toBe(false);
+  });
 });
