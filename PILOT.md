@@ -105,7 +105,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
 
 ```bash
 # VPS 上，源码方式
-git clone /tmp/mock-git-repo/dsh-ai-team.git && cd dsh-ai-team
+git clone https://github.com/yunqiangwu/dsh-ai-team.git && cd dsh-ai-team
 pnpm install && pnpm build
 pnpm dsh web --patch ./pilot.patch.yml
 ```
