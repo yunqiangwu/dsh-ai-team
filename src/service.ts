@@ -41,6 +41,7 @@ import { bootstrapEnvironment, type BootstrapReport } from './bootstrap.js';
 import { linkSharedCacheDirs } from './cache.js';
 import { runGates } from './gates.js';
 import { DeployCoordinator, isTasksOnlyChange } from './service/deploys.js';
+import { TeamStore } from './service/team-store.js';
 import { checkRunStatus, githubRepoSlug, upsertPullRequest } from './github.js';
 import { EscalationManager, type EscalationInput } from './escalate.js';
 import { Mailer, postHumanWebhook, renderEscalationMail } from './notification.js';
@@ -223,7 +224,7 @@ interface QuestionnaireOutcome {
 // ── 服务主体 ────────────────────────────────────────────────────────────────
 
 export class AutopilotService {
-  private teams = new Map<string, TeamRecord>();
+  private readonly teams = new TeamStore();
   private listeners = new Set<() => void>();
   /**
    * 由插件层登记的「带外快照推送」回调（见 setSnapshotPublisher）。
@@ -231,7 +232,6 @@ export class AutopilotService {
    * 的变更已经由 publish() 顺带推过一遍了，重复推只是给 session 日志灌水。
    */
   private snapshotPublisher: (() => void) | undefined;
-  private activeTeamId: string | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -1252,8 +1252,7 @@ export class AutopilotService {
     }
     try {
       const state = JSON.parse(raw) as PersistedState;
-      for (const team of state.teams ?? []) this.teams.set(team.id, team);
-      this.activeTeamId = state.activeTeamId ?? null;
+      this.teams.restore({ teams: state.teams ?? [], activeTeamId: state.activeTeamId ?? null });
       this.escalations.restore(state.escalations ?? []);
       // 问卷带着审批码一起恢复：那次审批可能正等人批，作废它等于把人做的事抹掉。
       this.questionnaires.restore(state.questionnaires ?? []);
@@ -1283,7 +1282,6 @@ export class AutopilotService {
       // 否则解析失败 + 随后的正常 persist 会用空状态覆盖掉唯一一份历史，等价于
       // 静默删掉全部团队、任务与升级记录。
       this.teams.clear();
-      this.activeTeamId = null;
       this.escalations.restore([]);
       this.questionnaires.restore([]);
       this.ticketVault.clear();
@@ -1295,8 +1293,8 @@ export class AutopilotService {
   private snapshot(): PersistedState {
     return {
       version: 1,
-      teams: [...this.teams.values()],
-      activeTeamId: this.activeTeamId,
+      teams: this.teams.all(),
+      activeTeamId: this.teams.activeTeamId,
       escalations: [...this.escalations.all],
       questionnaires: [...this.questionnaires.all],
       // 只写还答得动的工单：答完、过期、作废之后，token 留着只是给未来的攻击面
@@ -1347,7 +1345,7 @@ export class AutopilotService {
   }
 
   private changed(teamId?: string): void {
-    if (teamId !== undefined) this.activeTeamId = teamId;
+    if (teamId !== undefined) this.teams.activeTeamId = teamId;
     this.persist();
     for (const listener of this.listeners) listener();
   }
@@ -1403,7 +1401,7 @@ export class AutopilotService {
     return {
       loopState: this.loopState,
       teams: [...this.teams.keys()].map((id) => this.teamView(id)),
-      activeTeamId: this.activeTeamId,
+      activeTeamId: this.teams.activeTeamId,
       escalations: [...this.escalations.all],
       // 走 questionnaireViews() 而不是 manager.all：审批码是服务侧凭据，
       // 进快照就等于进模型读得到的 session 日志。
