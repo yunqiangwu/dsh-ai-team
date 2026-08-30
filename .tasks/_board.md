@@ -11,6 +11,7 @@
 | TECH-1 | webhook 投递合并：升级与问卷收敛到 postHumanWebhook | done | - | - | src/, tests/, docs/ |
 | TECH-2 | 优先级 × 域锁调度策略：域锁推迟但不空转、跳过可见 | done | - | - | src/, tests/, docs/ |
 | TECH-3 | sha256 审批链失效重批：accepted 文档被手改的检测与退回重批 | done | - | - | src/, tests/, docs/ |
+| TECH-4 | 多团队投影一致性：escalations / deploys 补 teamId，面板按当前团队过滤 | done | - | - | src/, tests/, docs/ |
 
 ## 阻塞清单
 

@@ -520,6 +520,55 @@ describe('unattended: daemon loop', () => {
     }
   }, 60_000);
 
+  it('multi-team: escalations carry the owning teamId (TECH-4)', async () => {
+    const fixture = await makeFixture('tech4-teams');
+    const service = await AutopilotService.create(testOptions(fixture));
+    try {
+      const teamA = await seedTeam(service, {
+        name: 'team-a',
+        contracts: [{ id: 'A-1', title: 'work in team a' }],
+        members: [{ role: 'developer' }],
+      });
+      const teamB = await seedTeam(service, {
+        name: 'team-b',
+        contracts: [{ id: 'B-1', title: 'work in team b' }],
+        members: [{ role: 'developer' }],
+      });
+      await service.tickOnce(); // 让两侧契约都同步成任务
+
+      // A：团队级升级，显式传 teamId（service 内部调用点的口径）。
+      await service.escalateTask({
+        teamId: teamA.id,
+        taskId: null,
+        reason: 'manual',
+        message: 'team-level escalation from a',
+        suggestion: 'inspect team a',
+      });
+      // B：任务级升级，不传 teamId —— escalateTask 按 taskId 反查兜底（工具侧口径）。
+      const taskB = service.teamView(teamB.id).tasks.find((candidate) => candidate.contractId === 'B-1');
+      expect(taskB).toBeDefined();
+      await service.escalateTask({
+        taskId: taskB!.id,
+        reason: 'manual',
+        message: 'task-level escalation from b',
+        suggestion: 'inspect team b',
+      });
+
+      // 各归各，互不串（§11-4：多团队并行时单团队视图按 teamId 过滤）。
+      const fromA = service.escalations.all.find((record) => record.message.includes('from a'));
+      const fromB = service.escalations.all.find((record) => record.message.includes('from b'));
+      expect(fromA?.teamId).toBe(teamA.id);
+      expect(fromB?.teamId).toBe(teamB.id);
+
+      // 投影同样携带（stateVersion 8 的形状契约）。
+      const projection = autopilotProjectionSchema.parse(service.projection());
+      expect(projection.escalations.find((record) => record.message.includes('from a'))?.teamId).toBe(teamA.id);
+      expect(projection.escalations.find((record) => record.message.includes('from b'))?.teamId).toBe(teamB.id);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
   it('completion: all tasks done → completed report + loop stops', async () => {
     const { service, teamId, fixture, cleanup } = await serviceWithContracts('complete', [
       { id: 'D-1', title: 'last one' },

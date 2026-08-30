@@ -168,6 +168,12 @@ export const escalationNotificationSchema = zod.object({
 
 export const escalationViewSchema = zod.object({
   id: zod.string(),
+  /**
+   * 归属团队（TECH-4）：面板是单团队视图，升级流要按当前团队过滤。
+   * nullable 兼容旧持久化记录（restore 无此字段）；渲染时 null 也显示 ——
+   * 升级是全局信号，归属不明的旧记录宁可多显示，不能被过滤吞掉。
+   */
+  teamId: zod.string().nullable().default(null),
   taskId: zod.string().nullable(),
   reason: zod.enum(ESCALATION_REASONS),
   message: zod.string(),
@@ -186,6 +192,8 @@ export const escalationViewSchema = zod.object({
 
 export const deployViewSchema = zod.object({
   id: zod.string(),
+  /** 归属团队（TECH-4）：与 escalationViewSchema.teamId 同一语义与兜底。 */
+  teamId: zod.string().nullable().default(null),
   branch: zod.string(),
   command: zod.string(),
   status: zod.enum(DEPLOY_STATUSES),

@@ -1439,6 +1439,7 @@ export class AutopilotService {
     } catch (error) {
       const report = (error as { report?: BootstrapReport }).report ?? null;
       await this.escalateTask({
+        teamId: team.id,
         taskId: null,
         reason: 'bootstrap-failed',
         message: error instanceof Error ? error.message : String(error),
@@ -2223,6 +2224,7 @@ export class AutopilotService {
     if (maxFiles > 0 && stat.files > maxFiles) exceeded.push(`${stat.files} changed files (limit ${maxFiles})`);
     if (exceeded.length === 0) return;
     await this.escalateTask({
+      teamId: team.id,
       taskId: task.id,
       reason: 'change-too-large',
       message: `task "${task.title}" changes ${exceeded.join('; ')}`,
@@ -2432,6 +2434,7 @@ export class AutopilotService {
       // 解析不出来就无法证明干净 —— 门禁不能建立在"查不动就放过"上。
       const missing = baseSha === null ? baseRef : source;
       await this.escalateTask({
+        teamId: team.id,
         taskId,
         reason: 'forbidden-paths',
         message: `cannot verify forbidden paths for "${source}": ref "${missing}" does not resolve in ${team.repoPath}`,
@@ -2444,6 +2447,7 @@ export class AutopilotService {
     const { blocks, approvals } = classifyForbiddenFiles(files, rules);
     if (blocks.length > 0) {
       await this.escalateTask({
+        teamId: team.id,
         taskId,
         reason: 'forbidden-paths',
         message: `branch ${source} touches blocked paths: ${blocks.join(', ')}`,
@@ -2453,6 +2457,7 @@ export class AutopilotService {
     }
     if (approvals.length > 0) {
       await this.escalateTask({
+        teamId: team.id,
         taskId,
         reason: 'manual',
         message: `branch ${source} touches paths needing owner/human approval or a dedicated PR: ${approvals.join(', ')}`,
@@ -2510,7 +2515,13 @@ export class AutopilotService {
    * 然后按 escalation.pauseOnEscalation 决定是否暂停。
    */
   async escalateTask(input: EscalationInput): Promise<EscalationView> {
-    const record = await this.escalations.escalate(input);
+    // 工具侧（autopilot_escalate）不传 teamId：按 taskId 反查归属；查不到
+    // （团队级升级 / 任务已不存在）就是 null —— 面板对每个团队都显示它。
+    const fallbackTeam = input.taskId !== null ? this.tryFindTask(input.taskId) : null;
+    const record = await this.escalations.escalate({
+      ...input,
+      teamId: input.teamId ?? fallbackTeam?.team.id ?? null,
+    });
     const found = input.taskId !== null ? this.tryFindTask(input.taskId) : null;
     if (found !== null) {
       found.task.status = 'needs-human';
@@ -2590,6 +2601,9 @@ export class AutopilotService {
       ...(this.options.fetchFn !== undefined ? { fetchFn: this.options.fetchFn } : {}),
       ...(this.options.tickSleepMs !== undefined ? { backoffMs: Math.max(this.options.tickSleepMs, 10) } : {}),
     });
+    // 落团队归属（TECH-4）：runDeploy 不知道团队是谁，这里盖上再入账 ——
+    // 调用方（工具 / 测试）与投影看到的是同一份带归属的记录。
+    view.teamId = team.id;
     this.deploys.push(view);
     const metrics = this.teamMetrics(team);
     metrics.deploys += 1;
@@ -2598,6 +2612,7 @@ export class AutopilotService {
       this.lastDeployBaseSha = await resolveRef(team.repoPath, team.baseBranch);
     } else {
       await this.escalateTask({
+        teamId: team.id,
         taskId: null,
         reason: 'deploy-failed',
         message: `deploy ${view.id} ended ${view.status}`,
@@ -2698,6 +2713,9 @@ export class AutopilotService {
       } catch (error) {
         if (signal.aborted) break;
         await this.escalateTask({
+          // tick 失败无法可靠归属到某个团队（可能来自任何团队的编排）：
+          // null 让面板对每个团队都显示这条升级，宁可多显示，不能被过滤吞掉。
+          teamId: null,
           taskId: null,
           reason: 'manual',
           message: `run loop tick failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -2867,12 +2885,12 @@ export class AutopilotService {
       .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
     for (const task of candidates) {
       if (signal?.aborted === true) return;
-      if (await this.escalateCrossDomain(task, report)) continue;
-      if (await this.escalateForbiddenTouches(task, report)) continue;
+      if (await this.escalateCrossDomain(team, task, report)) continue;
+      if (await this.escalateForbiddenTouches(team, task, report)) continue;
       if (!task.dependsOn.every((dep) => tasksByKey.get(dep)?.status === 'done')) {
         // 前置「永不可能满足」必须出声：静默 continue 会让下游无限不派发、
         // 不报错、也永远凑不出"全部 done"。
-        await this.escalateBlockedDependency(task, report, tasksByKey);
+        await this.escalateBlockedDependency(team, task, report, tasksByKey);
         continue;
       }
       if (task.touches.length > 0 && touchesOverlap(task.touches, lockedTouches)) {
@@ -2928,6 +2946,7 @@ export class AutopilotService {
    * tick 继续。
    */
   private async escalateBlockedDependency(
+    team: TeamRecord,
     task: TaskRecord,
     report: TickReport,
     tasksByKey: Map<string, TaskRecord>,
@@ -2943,6 +2962,7 @@ export class AutopilotService {
     report.escalated.push(task.id);
     report.events.push(`blocked-dependency:${task.id}`);
     await this.escalateTask({
+      teamId: team.id,
       taskId: task.id,
       reason: 'blocked-dependency',
       message:
@@ -2957,13 +2977,14 @@ export class AutopilotService {
    * 跨域检查：触及的领域数超过阈值就升级并跳过派发。
    * @returns 是否已升级（true 表示本轮不要再派发这个任务）
    */
-  private async escalateCrossDomain(task: TaskRecord, report: TickReport): Promise<boolean> {
+  private async escalateCrossDomain(team: TeamRecord, task: TaskRecord, report: TickReport): Promise<boolean> {
     const threshold = this.options.profile.crossDomainThreshold;
     const { domainCount, exceeded } = domainLimitStatus(task.touches, threshold);
     if (!exceeded) return false;
     report.escalated.push(task.id);
     report.events.push(`cross-domain:${task.id}`);
     await this.escalateTask({
+      teamId: team.id,
       taskId: task.id,
       reason: 'cross-domain',
       message: `task "${task.title}" touches ${domainCount} distinct domains (limit ${threshold})`,
@@ -2978,12 +2999,13 @@ export class AutopilotService {
    * 复用 `forbidden-paths` 这个升级原因，语义精确且不必再手抄一份枚举。
    * @returns 是否已升级（true 表示本轮不要再派发这个任务）
    */
-  private async escalateForbiddenTouches(task: TaskRecord, report: TickReport): Promise<boolean> {
+  private async escalateForbiddenTouches(team: TeamRecord, task: TaskRecord, report: TickReport): Promise<boolean> {
     const hits = forbiddenTouchesViolation(task.touches, task.forbidden ?? []);
     if (hits.length === 0) return false;
     report.escalated.push(task.id);
     report.events.push(`forbidden-touches:${task.id}`);
     await this.escalateTask({
+      teamId: team.id,
       taskId: task.id,
       reason: 'forbidden-paths',
       message: `task "${task.title}" touches paths its own contract declares forbidden: ${hits.join(', ')}`,
@@ -3010,6 +3032,7 @@ export class AutopilotService {
         report.escalated.push(task.id);
         report.events.push(`review-rounds:${task.id}`);
         await this.escalateTask({
+          teamId: team.id,
           taskId: task.id,
           reason: 'review-rounds-exceeded',
           message: `task "${task.title}" was sent back ${task.reviewRound} times (limit ${this.options.daemon.maxReviewRounds})`,
@@ -3042,6 +3065,7 @@ export class AutopilotService {
         report.escalated.push(task.id);
         report.events.push(`stuck:${task.id}`);
         await this.escalateTask({
+          teamId: team.id,
           taskId: task.id,
           reason: 'task-stuck',
           message: `task "${task.title}" had no git activity for ${this.options.daemon.stuckMinutes} minutes`,
@@ -3063,6 +3087,7 @@ export class AutopilotService {
       report.escalated.push(task.id);
       report.events.push(`budget:${task.id}`);
       await this.escalateTask({
+        teamId: team.id,
         taskId: task.id,
         reason: 'budget-exceeded',
         message: `task "${task.title}" exceeded its wall-clock budget of ${this.options.daemon.maxTaskHours}h since dispatch`,

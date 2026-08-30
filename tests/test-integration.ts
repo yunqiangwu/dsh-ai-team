@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AutopilotService } from '../src/service.js';
+import { autopilotProjectionSchema } from '../src/schema.js';
 import { gitTest, makeFixture, seedRemote, testOptions, writeContract, commitInWorktree } from './helpers.js';
 
 describe('integration: full lifecycle', () => {
@@ -168,6 +169,9 @@ describe('integration: full lifecycle', () => {
       // Healthy: the health endpoint answers 200.
       const healthy = await service.deployRun(team.id);
       expect(healthy.status).toBe('healthy');
+      // 部署记录归属触发它的团队（TECH-4：面板按 teamId 过滤部署历史）。
+      expect(healthy.teamId).toBe(team.id);
+      expect(autopilotProjectionSchema.parse(service.projection()).deploys[0]?.teamId).toBe(team.id);
 
       // Unhealthy: 3 failed probes → rollback runs → rolled-back + escalation.
       const service2 = await AutopilotService.create(

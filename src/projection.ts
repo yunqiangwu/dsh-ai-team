@@ -36,8 +36,10 @@ export function registerAutopilotProjection(ctx: Context): void {
       // 升级原因新增 `blocked-dependency`（前置永不可能满足，区别于"还没完成"）。
       // v7：投影新增 `questionnaires`（问卷实体，独立于 escalation；见
       // docs/design-interaction.md §3）。旧负载靠 `.default([])` 继续 parse 得过。
+      // v8：escalationView / deployView 新增 `teamId`（TECH-4：面板单团队视图
+      // 按当前团队过滤升级流与部署历史；null 兼容旧持久化记录）。
       // 变更形状时需递增。
-      stateVersion: 7,
+      stateVersion: 8,
     });
   });
 }

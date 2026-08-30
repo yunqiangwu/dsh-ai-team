@@ -558,6 +558,11 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
   const dispatchable = DISPATCHABLE_PHASES.includes(team.phase);
   const questionnaires = projection.questionnaires.filter((item) => item.teamId === team.id);
   const awaiting = questionnaires.filter((item) => item.status === 'open').length;
+  // 单团队视图只看当前团队的升级与部署（TECH-4）；teamId 为 null 的旧记录
+  // 归属不明，宁可多显示，不能被过滤吞掉。
+  const belongsToTeam = (item: { teamId: string | null }) => item.teamId === null || item.teamId === team.id;
+  const escalations = projection.escalations.filter(belongsToTeam);
+  const deploys = projection.deploys.filter(belongsToTeam);
   return (
     <div className={open ? 'dsh-ai-team dsh-ai-team--open' : 'dsh-ai-team'}>
       <button
@@ -586,7 +591,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
             members: team.members.length,
             busy,
             tasks: openTasks,
-            escalations: projection.escalations.filter((escalation) => escalation.resolvedAt === null).length,
+            escalations: escalations.filter((escalation) => escalation.resolvedAt === null).length,
           })}
         </span>
         <span className="dsh-ai-team__chevron">›</span>
@@ -596,11 +601,11 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
           <TeamBody team={team} blocked={projection.blocked} questionnaires={questionnaires} t={t} />
           <section>
             <h4 className="dsh-ai-team__section-title">{t('section.escalations')}</h4>
-            <EscalationFeed escalations={projection.escalations} t={t} />
+            <EscalationFeed escalations={escalations} t={t} />
           </section>
           <section>
             <h4 className="dsh-ai-team__section-title">{t('section.deploys')}</h4>
-            <DeployHistory deploys={projection.deploys} t={t} />
+            <DeployHistory deploys={deploys} t={t} />
           </section>
         </div>
       ) : null}

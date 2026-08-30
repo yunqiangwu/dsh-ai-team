@@ -103,6 +103,8 @@ export async function runDeploy(options: DeployOptions): Promise<DeployView> {
 
   const view: DeployView = {
     id: `deploy_${Date.now().toString(36)}_${(deploySeq += 1)}`,
+    // 团队归属由调用侧（service.deployRun）落；这里不知道团队是谁。
+    teamId: null,
     branch: options.branch,
     command: options.command,
     status: 'running',

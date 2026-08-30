@@ -10,6 +10,12 @@ import { SecretRedactor } from './secrets.js';
 import { postHumanWebhook } from './notification.js';
 
 export interface EscalationInput {
+  /**
+   * 归属团队（TECH-4）：面板按团队过滤升级流；null / 缺省 = 无法归属（渲染时
+   * 全团队可见）。service 内部调用点显式传；工具侧（autopilot_escalate）缺省，
+   * 由 `escalateTask` 按 taskId 反查兜底。
+   */
+  teamId?: string | null;
   taskId: string | null;
   reason: EscalationReason;
   message: string;
@@ -69,6 +75,7 @@ export class EscalationManager {
     const redactor = this.options.redactor;
     const record: EscalationView = {
       id: `esc_${Date.now().toString(36)}_${(escalationSeq += 1)}`,
+      teamId: input.teamId ?? null,
       taskId: input.taskId,
       reason: input.reason,
       message: redactor.redact(input.message),
