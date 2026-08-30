@@ -118,6 +118,7 @@ function CiBadge({ task, t }: { task: TaskView; t: Translator }) {
 
 function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: QuestionnaireView | undefined; t: Translator }) {
   const [hover, setHover] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const ref = useRef<HTMLDivElement>(null);
 
@@ -133,7 +134,23 @@ function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: Questionnai
   };
 
   return (
-    <div ref={ref} className="dsh-ai-team__card" onMouseEnter={showTip} onMouseLeave={() => setHover(false)}>
+    <div
+      ref={ref}
+      className={`dsh-ai-team__card${expanded ? ' dsh-ai-team__card--expanded' : ''}`}
+      onMouseEnter={showTip}
+      onMouseLeave={() => setHover(false)}
+      onClick={() => setExpanded((value) => !value)}
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      title={t('task.expand')}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          setExpanded((value) => !value);
+        }
+      }}
+    >
       <span className="dsh-ai-team__card-title">{task.title}</span>
       <span className="dsh-ai-team__card-meta">
         <span>{task.assigneeName}</span>
@@ -150,12 +167,18 @@ function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: Questionnai
       <span className="dsh-ai-team__card-meta">
         <span>{task.branch}</span>
         {task.prUrl !== null ? (
-          <a href={task.prUrl} target="_blank" rel="noreferrer">
+          <a href={task.prUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
             PR
           </a>
         ) : null}
       </span>
-      {hover ? (
+      {/* 点击展开的详情：不只 hover 可见（P2-1），键盘也可达（P3-3）。 */}
+      {expanded ? (
+        <div className="dsh-ai-team__card-detail">
+          <div className="dsh-ai-team__card-tip-desc">{task.description}</div>
+        </div>
+      ) : null}
+      {hover && !expanded ? (
         <div className="dsh-ai-team__card-tip" style={{ top: pos.top, left: pos.left }}>
           <span className="dsh-ai-team__card-tip-title">{task.title}</span>
           <div className="dsh-ai-team__card-tip-desc">{task.description}</div>
@@ -831,9 +854,29 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
   // 容器瀑布流：保留按状态分组（开发中 / 待处理 / 已完成 …），每组是一个容器，
   // 容器自身以紧凑瀑布流排布（见 styles .dsh-ai-team__kanban：多列、高度自适应、
   // 无每列内部滚动），让有内容的容器撑开、空容器不占大片空白。
+  const [query, setQuery] = useState('');
+  const [memberFilter, setMemberFilter] = useState('');
+  const [cycleFilter, setCycleFilter] = useState('');
+  const cycles = team.cycles ?? [];
   const openStandalone = questionnaires.filter(
     (item) => item.status === 'open' && item.taskId === null,
   );
+
+  // 看板过滤（P2-1）：关键字命中标题/描述，成员按 assigneeName，周期按契约 id 归属。
+  const matches = (task: TaskView): boolean => {
+    if (query !== '' && !`${task.title}\n${task.description}`.toLowerCase().includes(query.toLowerCase())) return false;
+    if (memberFilter !== '' && task.assigneeName !== memberFilter) return false;
+    if (cycleFilter !== '') {
+      const cycle = cycles.find((candidate) => candidate.id === cycleFilter);
+      const inCycle = task.contractId !== null && cycle !== undefined && cycle.taskIds.includes(task.contractId);
+      if (!inCycle) return false;
+    }
+    return true;
+  };
+
+  const filtering = query !== '' || memberFilter !== '' || cycleFilter !== '';
+  const visibleTasks = team.tasks.filter(matches);
+
   return (
     <>
       <section>
@@ -847,9 +890,44 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
       <CycleSection team={team} t={t} />
       <section>
         <h4 className="dsh-ai-team__section-title">{t('section.tasks')}</h4>
+        <div className="dsh-ai-team__filters">
+          <input
+            className="dsh-ai-team__config-input dsh-ai-team__filter-search"
+            type="search"
+            placeholder={t('kanban.searchPlaceholder')}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <select
+            className="dsh-ai-team__config-input"
+            value={memberFilter}
+            onChange={(event) => setMemberFilter(event.target.value)}
+          >
+            <option value="">{t('kanban.allMembers')}</option>
+            {team.members.map((member) => (
+              <option key={member.id} value={member.name}>
+                {member.name}
+              </option>
+            ))}
+          </select>
+          {cycles.length > 0 ? (
+            <select
+              className="dsh-ai-team__config-input"
+              value={cycleFilter}
+              onChange={(event) => setCycleFilter(event.target.value)}
+            >
+              <option value="">{t('kanban.allCycles')}</option>
+              {cycles.map((cycle) => (
+                <option key={cycle.id} value={cycle.id}>
+                  {cycle.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+        </div>
         <div className="dsh-ai-team__kanban">
           {TASK_STATUSES.map((status) => {
-            const tasks = team.tasks.filter((task) => task.status === status);
+            const tasks = team.tasks.filter((task) => task.status === status && matches(task));
             return (
               <div key={status} className="dsh-ai-team__column">
                 <h5 className="dsh-ai-team__column-title">
@@ -881,6 +959,9 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
             ))}
           </div>
         </div>
+        {filtering && visibleTasks.length === 0 ? (
+          <span className="dsh-ai-team__empty">{t('kanban.noMatch')}</span>
+        ) : null}
       </section>
     </>
   );

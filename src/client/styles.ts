@@ -50,6 +50,12 @@ const CSS = `
 .dsh-ai-team__card-tip-title { display: block; font-size: 12px; font-weight: 700; }
 .dsh-ai-team__card-tip-desc { margin-top: 4px; font-size: 11px; white-space: pre-wrap; word-break: break-word; opacity: .9; }
 .dsh-ai-team__card-tip-branch { display: block; margin-top: 6px; font-size: 10px; opacity: .6; }
+/* ── 看板过滤（P2-1）：关键字/成员/周期过滤条 ── */
+.dsh-ai-team__filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.dsh-ai-team__filter-search { flex: 1; min-width: 140px; }
+/* 任务卡点击展开的详情（P2-1）：就地展开，不依赖 hover */
+.dsh-ai-team__card--expanded { border-color: rgba(59,130,246,.5); }
+.dsh-ai-team__card-detail { margin-top: 4px; padding-top: 4px; border-top: 1px dashed rgba(127,127,127,.25); font-size: 11px; }
 .dsh-ai-team__badge { padding: 0 6px; border-radius: 999px; font-size: 10px; border: 1px solid rgba(127,127,127,.35); }
 .dsh-ai-team__badge--pass { color: #22c55e; border-color: #22c55e; }
 .dsh-ai-team__badge--fail { color: #ef4444; border-color: #ef4444; }
