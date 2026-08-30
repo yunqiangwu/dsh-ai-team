@@ -229,7 +229,7 @@ forbidden: [server/core/legacy/]   # 本任务不得触碰的路径（按任务�
 Given/When/Then 验收标准……
 ```
 
-- `task_assign` 传 `contractId` 时校验任务单存在且状态为 `pending`，title/depends_on/touches 以任务单为准。
+- `task_assign` 传 `contractId` 时校验任务单存在且状态为 `pending`，title/depends_on/touches 以任务单为准。同一张契约若已被守护循环以组长名义收养成 pending 占位任务、尚未真正派发，组长点名派发时会**接管**这张占位任务给点名的开发者（建分支 → 检出工作区 → 置 in_progress → 回写契约），而不是报「already on the board」硬错误；若它已被某成员真正负责或卡住，则给出可操作处置指引（`task_replan` 撤销/解除堵塞后再派）而不只是抛错。
 - `forbidden` 不只是给人看的注释：派发期会拿它和 `touches` 求交（两个方向都算，`touches: [app/]` 命中 `forbidden: [app/server/]` 同样违规），违规立刻升级，而不是白跑一轮门和评审才被门拦下。
 - 每次状态变更回写 frontmatter 并重新生成 `.tasks/_board.md`（自动生成，勿手改），改动以插件身份提交在 base 分支，保持集成检出干净。
 - **一个坏文件不拖垮整块看板**：契约逐文件解析，某个 `.md` frontmatter 写坏了只跳过它并上报一次 `contract-rejected`（同一文件不重复报，否则每拍都产生事件、空转降频永远生效不了），其余契约照常采纳。
@@ -350,7 +350,7 @@ Given/When/Then 验收标准……
 
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、八列看板（含 needs-human、needs-clarification 与 cancelled，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标（CI 徽标仅 github 平台有数据，自建远端 generic 下无）、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。看板主体高度默认不超过 `min(62vh, 720px)`、超出内部滚动，右下角有拖拽手柄可手动改高度（`resize: vertical`）。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、八列看板（含 needs-human、needs-clarification 与 cancelled，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标（CI 徽标仅 github 平台有数据，自建远端 generic 下无）、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。看板主体为 **CSS 多列瀑布流**（`columns` 断列，容器不跨栏断裂）：各状态列按分组紧凑排布、有内容的撑开、空列不占大片空白，未绑定任务的开放式问卷并入「等你决策」容器（计数只统计 `open` 且未绑定任务的）。看板主体高度默认不超过 `min(62vh, 720px)`、超出内部滚动，右下角有拖拽手柄可手动改高度（`resize: vertical`）。无人值守循环每拍有状态变更时主动向会话推一帧最新投影（空闲退避时不推），让面板的 in_progress / in_review 中间态与 state.json 对齐、不再滞拍。
 
 > **面板内直接作答（M2）**：提交打到同源相对路径 `POST /autopilot/ticket/<id>/answer`，不需要外部浏览器、也不需要知道工单端口。漏必填项时**保留你已填的内容**并重述缺失项；成功后卡片等服务端推回来的新快照翻「已答复」，不做乐观更新。面板上**不再有跳外部的工单链接** —— 投影里的 `ticketUrl` 刻意不带凭据，从面板点过去必然 404，那是我们自己发布坏按钮；要在面板外作答请用邮件里的链接（带 token）或在会话里直接调 `answer_questionnaire`。
 

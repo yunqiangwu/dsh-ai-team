@@ -4,6 +4,27 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)；条目按 git 提交历史（Conventional Commits）归纳，feat / fix 优先。
 
+## [1.6.0] - 2026-08-31
+
+### 新增
+
+- **组长接管占位任务（`task_assign`）**：同一张契约若已被守护循环以组长名义收养成 `pending` 占位任务、尚未真正派发，组长点名派发时会**接管**这张占位任务给点名的开发者（建分支 → 检出工作区 → 置 `in_progress` → 回写契约），不再报「already on the board」硬错误——消除「守护循环已收养 + 组长点名派发」的相撞卡死；若任务已被某成员真正负责或卡住，则给出可操作的处置指引（`task_replan` 撤销/解除堵塞后再派），而不是摸不着头脑的一句报错。developer 提示词同步补「先读后写」约束，防止模型覆盖未读文件炸掉已有代码。
+- **面板问卷按状态分组 & 看板瀑布流化**：看板改为 **CSS 多列瀑布流**（`columns` 断列、容器不跨栏断裂），各状态列紧凑排布、空列不占整块空白；「等你决策」容器的计数口径修正为「`open` 且未绑定任务的」开放式问卷。
+- **面板与 state 中间态对齐**：无人值守循环每拍有状态变更时主动向会话推一帧最新投影（空闲退避时不推），让运行中的 `in_progress` / `in_review` 中间态不再滞拍，与 state.json 对齐。
+
+### 变更
+
+- **P1 service/tools 拆分**（`docs/refactor-p1-service-split.md`）：把可容器化域从编排层抽成独立模块——发布工具注册（`service/` 内部收敛 `publish` 双入口）、部署协调器 `DeployCoordinator`（原部署域）、工单凭据簿 `TicketVault`、团队状态容器 `TeamStore`、团队/派发纯校验 `team-rules`。纯行为搬运，不改变既有流程语义，`exec.ts` 行为锁定测试原样通过；判断准则是「可容器化的域 vs 应留驻的高耦合编排」，见设计纪要。
+
+### 修复
+
+- **工单表单单选预选语义（杜绝双预勾）**：`fieldsOfQuestions` 原用「`recommended` 或值为默认值」决定预勾，当某选项的 `recommended` 与另一选项的 `defaultValue` 指到两处时，选单会同时预勾两个 radio。改为单选「默认值优先、无默认值才回落推荐项」，多选的 `defaultValue` 也按分隔符拆开正确预勾（此前整串比对恒不命中）。现有调用点行为不变（当前所有题面 `recommended` 均为 false）。
+
+### 文档
+
+- **任务工作流统一为「分支开发 → 质量门 → reviewer 审查 → 本地 merge base → push 自建远端」**：不再在 github 上建 PR / 走远端 CI；`pr_sync` 与 CI 徽标标注为仅 github 平台可选能力；随包默认配置 `cordis.patch.yml` 的 `requireCiGreen` 置 `false` 以匹配 generic 自建远端。
+- 新增试点运行记录 `docs/pilot-scenarios.md` 与 `docs/runs/s1-gfm-template.md` / `s2-parallel-lock.md` / `s3-human-decision.md` / `s4-escalation.md`（含 `_summary.md` 汇总：四场景完成率 100%、仅 1 次人为触发的 manual 升级）。
+
 ## [1.5.0] - 2026-08-30
 
 ### 新增
