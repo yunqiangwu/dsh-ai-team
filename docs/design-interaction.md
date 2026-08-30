@@ -1,8 +1,8 @@
 # 设计文档：需求采集 → 文档先行 → 并行开发 → 重规划
 
-> 状态：**M0 / M1 / M2 / M3 已实施**（2026-08-30）。M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md`、M3 = `INT-4.md` 已落代码，`stateVersion` 随之 5 → 7（M2 只加内部记录字段；M3 的 `cancelled` 是枚举取值、`priority` 不进视图，所以仍是 7）。
+> 状态：**M0 / M1 / M2 / M3 已实施**（2026-08-30）。M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md`、M3 = `INT-4.md` 已落代码，`stateVersion` 随之 5 → 7（M2 只加内部记录字段；M3 的 `cancelled` 是枚举取值、`priority` 不进视图，所以仍是 7）。此后随面板演进再升：`escalationView`/`deployView` 补 `teamId` 升到 8（见 §11 未决问题 4）；多周期 CYC-1 的 `CycleView` 进入投影又升到 **9**（当前值，见 [design-cycles.md](design-cycles.md) 与 `src/projection.ts`）。
 > 两处与 §3 / §9 的口径不同，已知且有意：
-> ① **`_board.md` 没有「等人回答」列**（§3.1 场景一原本要求"看板与面板都显示"）。看板由 `team.ts` 从 `.tasks/*.md` 单向生成且要求字节稳定，把只活在 `state.json` 里的问卷状态混进去，等于给它第二个真相源；等待信息已由面板与 `autopilot_status` 的 `awaitingHuman` 覆盖。
+> ① **`.tasks/_board.md` 不承载问卷状态**：它由 `team.ts` 从 `.tasks/*.md` 单向生成且要求字节稳定，把只活在 `state.json` 里的问卷状态混进去等于给它第二个真相源（§3.1 场景一原要求"看板与面板都显示"，实现口径是后者）。`_board.md` 确实没有问卷列，但**看板 UI** 已演进：1.4.0 起面板看板新增「等你决策」列，未绑定任务的开放问卷以卡片上板、绑定任务的仍挂「等人回答」徽标（UI 细节以 README「Web 面板」为准）；等待信息始终由面板与 `autopilot_status` 的 `awaitingHuman` 覆盖。
 > ② **问卷投递的 webhook 曾与 `EscalationManager.deliverWebhook` 是两份实现，已合并（[`TECH-1`](../.tasks/TECH-1.md)）**：升级侧改调 `notification.ts` 的 `postHumanWebhook`，合并的是传输层（fetch / 超时 / 头 / URL 脱敏登记）；载荷语义保持各自不变——问卷侧仍推带 token 的链接，升级侧仍 POST `{ text, escalation }`。
 > 配置字段语义仍以 [../README.md](../README.md) 为准，试点操作仍以 [../PILOT.md](../PILOT.md) 为准。引用代码一律写符号名（函数 / 类 / 常量），不引裸行号。
 

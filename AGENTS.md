@@ -44,7 +44,7 @@ src/
   schema.ts       zod 形状真相 + `z.infer` 派生视图类型：视图与投影校验的唯一来源，只依赖 zod 与 vocab
   view.ts         类型门面：`export * from './vocab.js'` + 纯类型 re-export（禁 node、禁值引用 schema）
   events.ts       session 事件与投影的类型声明合并（唯一词汇表）
-  projection.ts   `autopilot` 投影单元的注册（schema 已移到 schema.ts；stateVersion: 7）
+  projection.ts   `autopilot` 投影单元的注册（schema 已移到 schema.ts；stateVersion: 9）
   git.ts          git CLI 薄封装：远端 clone/push、push 安全规则、ref 名校验（assertSafeRef）
   team.ts         .tasks/*.md 契约解析 / 回写 / _board.md 生成、touches 重叠判断
   gates.ts        质量门执行器 + 命令白名单（CommandNotAllowedError）
@@ -66,7 +66,7 @@ src/
   client/         Web 端：面板、设置卡片、i18n 字典、样式、宿主契约（React 18，CJS 产物）
 preset/
   autopilot-team/ 插件自带的 agent preset 模板（agent.cordis.yml + preset.yml），随包发布，运行时拷到用户级预设根
-tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict / questionnaire / ticket-http 十三个测试文件 + smoke-cordis 冒烟（含预设落盘断言）
+tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict / questionnaire / ticket-http / cycles 十四个常规测试 + test-e2e-*.ts 十一个确定性闭环（md2html / parallel / askhuman / clarify / docflow / escalation / escalations / gfm / replan / replans / multiteam，驱动：packages/llm-mock）+ smoke-cordis 冒烟（含预设落盘断言）
 ```
 
 ## 运行时拓扑
@@ -183,9 +183,11 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 - `tests/test-exec.ts` **shell runner 的行为锁定**：超时折算成 exitCode 1、只有 abort 才 reject、`CI=true`、日志尾保留最后 4000 字符。改 `exec.ts` 时这组必须一条不改地通过，才是「纯搬家没改行为」。
 - `tests/test-allowlist.ts` **白名单判定语义**：命令替换 / 反引号 / 换行 / 裸 `&` 一律不给静默放行（含一条"标记文件没被创建"的证据断言，证明确实没 spawn），而重定向与 glob 仍放行 —— 判据见「安全硬规则 2」。
 - `tests/test-service-modules.ts` `service/` 下纯函数的直接单测（描述预算倒排、完成报告渲染、state 工具）。
+- `tests/test-cycles.ts` 多周期开发闭环（CYC-1..7）：周期实体 / 增量规划与派发收窄 / 验收门与自动推进 / checkpoint 边界问卷 / 老团队兼容。
 - `tests/test-questionnaire.ts` 问卷闭环：独立实体（不产生升级/教训/直方图）、工单表单渲染与 400 重述、interactive 真 await 与超时兜底、答案 `[decision]` 回写、draft→accepted 审批链（含防「批 A 合 B」）、`contract_create` 写前校验。
 - `tests/test-ticket-http.ts` **工单 HTTP 契约的行为锁定**：前缀剥离（挂 `/autopilot/ticket` 却请求 `/ticket/x` → 404）、未知 id / 缺 token / token 不符**响应体逐字节相同**、DNS rebinding（`Host: evil.com` + 相同 `Origin` → 404）、`sec-fetch-site: cross-site` 拒、`0.0.0.0` 绑定拒启、JSON 400 保留 `missing`、超 body 413。⚠️ 它必须用裸 `node:http` 客户端而不是 `fetch` —— `fetch` 不给设 `Host`，而 `Host` 正是围栏的第一判据。
 - `tests/smoke-cordis.ts` Loader 契约冒烟。⚠️ 它把**注册工具名清单整条锁死**，新增 tool 必须同步那份数组，否则 `pnpm test` 红在这一条上。
+- `tests/test-e2e-*.ts` 确定性 e2e 系列（离线、零 token、可重复复跑）：md2html / parallel / askhuman / clarify / docflow / escalation / escalations / gfm / replan / replans / multiteam 各锁一段真实闭环；由独立子项目 `packages/llm-mock`（OpenAI 兼容流式 mock）驱动。
 - 新增断言优先用 `AutopilotOptions` 工厂 `testOptions(fixture, overrides)`，别手搓配置对象。
 - ⚠️ 校验顺序必须是 `typecheck && lint && build && test`：`smoke-cordis` 跑的是 `lib/` 产物，把 build 放在 test 之后会拿上一版 lib 测出**假失败**（本轮实测踩过）。
 
