@@ -12,7 +12,7 @@
  * 状态落到 <stateDir>/state.json（防抖写入），每个循环 tick 再写一次心跳文件；
  * dispose() 做最终 flush。
  */
-import { randomBytes } from 'node:crypto';
+import { TicketVault } from './service/ticket-vault.js';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
@@ -249,7 +249,7 @@ export class AutopilotService {
    * key 覆盖 `qn_` 与 `esc_` 两个 id 空间：作答入口是共用的（`submitTicketAnswer`），
    * 凭据表也就只有一张。
    */
-  private readonly ticketTokens = new Map<string, string>();
+  private readonly ticketVault = new TicketVault();
   private readonly deployCoordinator: DeployCoordinator;
   private recoveredOnce = false;
   /**
@@ -424,11 +424,7 @@ export class AutopilotService {
    * 走围栏，不需要 token。
    */
   private mintTicketToken(id: string): string {
-    const existing = this.ticketTokens.get(id);
-    if (existing !== undefined) return existing;
-    const token = randomBytes(16).toString('hex');
-    this.ticketTokens.set(id, token);
-    return token;
+    return this.ticketVault.mint(id);
   }
 
   /**
@@ -437,10 +433,10 @@ export class AutopilotService {
    * 开放问卷就属于后者，不需要数据迁移）。
    */
   private ticketTokenOf(id: string): string | undefined {
-    const existing = this.ticketTokens.get(id);
+    const existing = this.ticketVault.get(id);
     if (existing !== undefined) return existing;
     if (!this.ticketAnswerable(id)) return undefined;
-    const token = this.mintTicketToken(id);
+    const token = this.ticketVault.mint(id);
     this.changed();
     return token;
   }
@@ -1263,7 +1259,9 @@ export class AutopilotService {
       this.questionnaires.restore(state.questionnaires ?? []);
       // 凭据表同样要跨重启存活：邮件里那条链接已经发出去了，换一枚 token 就等于
       // 把已经叫来的人关在门外。老 state.json 没这个字段，`?? {}` 兜底。
-      for (const [id, token] of Object.entries(state.ticketTokens ?? {})) this.ticketTokens.set(id, token);
+      const restoredTokens: Record<string, string> = {};
+      for (const [id, token] of Object.entries(state.ticketTokens ?? {})) restoredTokens[id] = token;
+      this.ticketVault.restore(restoredTokens);
       this.deployCoordinator.restore({
         deploys: state.deploys ?? [],
         lastDeployBaseSha: state.lastDeployBaseSha ?? null,
@@ -1288,7 +1286,7 @@ export class AutopilotService {
       this.activeTeamId = null;
       this.escalations.restore([]);
       this.questionnaires.restore([]);
-      this.ticketTokens.clear();
+      this.ticketVault.clear();
       this.deployCoordinator.restore({ deploys: [], lastDeployBaseSha: null });
       await rename(this.stateFile, `${this.stateFile}.corrupt-${Date.now()}`).catch(() => {});
     }
@@ -1304,7 +1302,7 @@ export class AutopilotService {
       // 只写还答得动的工单：答完、过期、作废之后，token 留着只是给未来的攻击面
       // 留库存，而记录本身要留在 state.json 里做审计。派生而不是原地删，是为了
       // 让"内存里那把表"与"磁盘上那份视图"各自清楚。
-      ticketTokens: Object.fromEntries([...this.ticketTokens].filter(([id]) => this.ticketAnswerable(id))),
+      ticketTokens: Object.fromEntries([...this.ticketVault.entries()].filter(([id]) => this.ticketAnswerable(id))),
       runtimeConfig: this.runtimeConfig,
       deploys: this.deployCoordinator.deploys,
       loopState: this.loopState,
