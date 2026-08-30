@@ -29,6 +29,7 @@ describe('smoke: cordis Loader contract', () => {
       remote: { platform: string; sshKeyEnv: string };
       daemon: { maxReviewRounds: number };
       security: { forbiddenPaths: string[] };
+      bootstrap: { setupCommand: string; verifyCommand: string };
     };
     expect(config.maxMembers).toBe(8);
     expect(config.maxTasks).toBe(512);
@@ -36,6 +37,12 @@ describe('smoke: cordis Loader contract', () => {
     expect(config.remote.sshKeyEnv).toBe('AUTOPILOT_GIT_KEY');
     expect(config.daemon.maxReviewRounds).toBe(3);
     expect(config.security.forbiddenPaths).toEqual(['LICENSE']);
+    // 已知坑 1 的回归钉：默认引导命令必须是空串（跳过）。空 remote 时团队仓库是
+    // 空仓库、真实用户仓库也没有普适脚本 —— 默认指向任何具体命令都会让
+    // autopilot_init 一上来就 bootstrap-failed。要跑 setup/verify 的人自己在
+    // 配置里指认目标仓库真实存在的命令。
+    expect(config.bootstrap.setupCommand).toBe('');
+    expect(config.bootstrap.verifyCommand).toBe('');
     // Misconfiguration fails loud and names the key.
     expect(() => plugin.Config({ rootDir: root, maxMembers: 0 })).toThrow(/maxMembers/);
     expect(() => plugin.Config({ rootDir: root, remote: { platform: 'gitlab-' } })).toThrow(/platform/);

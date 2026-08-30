@@ -176,8 +176,13 @@ const DEFAULT_REMOTE = { url: '', sshKeyEnv: 'AUTOPILOT_GIT_KEY', platform: 'gen
 const DEFAULT_BOOTSTRAP = {
   enabled: true,
   toolchain: ['git', 'bun', 'pnpm'],
-  setupCommand: 'pnpm run setup',
-  verifyCommand: 'pnpm run e2e:local',
+  // 空串 = 跳过（bootstrap.ts 只做工具链探测 + rootless 安装）。默认不指向任何
+  // 具体命令：空 remote 时团队仓库是空仓库，任何 pnpm 脚本必失败；真实用户的
+  // 仓库也没有普适脚本名 —— 默认 `pnpm run setup` 让 autopilot_init 一上来就
+  // bootstrap-failed（原已知坑 1）。要跑 setup/verify 的人在配置里指认目标
+  // 仓库真实存在的命令（README「配置」有示例）。
+  setupCommand: '',
+  verifyCommand: '',
   systemPackages: [] as never[],
   packageManagerCommand: '',
   envFile: '',

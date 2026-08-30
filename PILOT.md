@@ -49,7 +49,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
 
 - [ ] 用 `AUTOPILOT_GIT_KEY` 能从 VPS 上 clone 目标仓库；
 - [ ] `gates.commands` 每条单独跑全绿；
-- [ ] `bootstrap.setupCommand` / `verifyCommand` 真实存在且能跑完（不存在就把 `bootstrap.enabled` 置 false）。
+- [ ] `bootstrap.setupCommand` / `verifyCommand` 真实存在且能跑完（默认空串 = 跳过该步；配了就必须能跑通）。
 
 ## 2. 首跑配置模板
 
@@ -68,7 +68,12 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
           platform: github
           apiTokenEnv: GITHUB_TOKEN
         bootstrap:
-          enabled: false            # 本仓库没有 setup/e2e:local 脚本；首跑跳过引导
+          enabled: true
+          toolchain: [git, bun, pnpm]
+          # dogfood 顺手把引导链路也验了：目标仓库是本仓库的克隆，
+          # 这两条命令真实存在（默认空串 = 只做工具链探测）。
+          setupCommand: pnpm install
+          verifyCommand: pnpm run typecheck
         gates:
           commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
           requireCiGreen: true
@@ -94,7 +99,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
           enabled: true
 ```
 
-换真实项目时的增量改动：`bootstrap.enabled: true` + 真实 `setupCommand`/`verifyCommand`/`toolchain`；`commandAllowlist` 按项目门命令收窄；`notification` 打开（邮件 + 工单；工单独立端口保持 `127.0.0.1`，配成非回环会**拒绝启动**）。远程只需**一条**隧道打通宿主 web 端口（`ssh -L 8080:127.0.0.1:<webPort>`）—— 面板内作答走同源路由，一起就通了；只有坚持点邮件里的链接，才需要再单独隧道化 `ticket.port`。部署放在 L2 通过后单独开。
+换真实项目时的增量改动：`setupCommand`/`verifyCommand` 换成该仓库真实存在的命令（默认空串 = 只做工具链探测）、`toolchain` 按需增删；`commandAllowlist` 按项目门命令收窄；`notification` 打开（邮件 + 工单；工单独立端口保持 `127.0.0.1`，配成非回环会**拒绝启动**）。远程只需**一条**隧道打通宿主 web 端口（`ssh -L 8080:127.0.0.1:<webPort>`）—— 面板内作答走同源路由，一起就通了；只有坚持点邮件里的链接，才需要再单独隧道化 `ticket.port`。部署放在 L2 通过后单独开。
 
 ## 3. 启动与首跑
 

@@ -24,8 +24,12 @@
         bootstrap:
           enabled: true
           toolchain: [git, bun, pnpm]
-          setupCommand: pnpm run setup
-          verifyCommand: pnpm run e2e:local
+          # 空串 = 跳过：默认只做工具链探测 + rootless 安装。若目标仓库有
+          # 真实存在的初始化 / 自检命令，在这里指认（须命中 commandAllowlist），例如：
+          #   setupCommand: pnpm install
+          #   verifyCommand: pnpm run typecheck
+          setupCommand: ''
+          verifyCommand: ''
         gates:
           commands:
             - pnpm run typecheck

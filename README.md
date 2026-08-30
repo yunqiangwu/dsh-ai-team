@@ -97,8 +97,8 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
         bootstrap:
           enabled: true
           toolchain: [git, bun, pnpm, node]       # bun rootless 装到 ~/.bun；node rootless 装到 ~/.node
-          setupCommand: pnpm run setup            # 仓库内一键初始化
-          verifyCommand: pnpm run e2e:local       # 环境自验证
+          setupCommand: ''                        # 空串 = 跳过；指认目标仓库真实存在的命令，如 pnpm install
+          verifyCommand: ''                       # 空串 = 跳过；环境自检命令，如 pnpm run typecheck
           systemPackages: [python3, make, g++]    # 原生模块(node-gyp)编译所需，如 better-sqlite3
           packageManagerCommand: sudo apt-get install -y   # 系统包安装命令，须命中白名单
           envFile: .env                           # 从模板生成 .env（不覆盖已有，缺省不动作）
