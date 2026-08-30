@@ -4,6 +4,23 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)；条目按 git 提交历史（Conventional Commits）归纳，feat / fix 优先。
 
+## [1.5.0] - 2026-08-30
+
+### 新增
+
+- **多周期开发（迭代周期）**：大型项目按多个迭代周期推进、小型项目单周期多任务，项目规模由组长 AI 自主判断、用户零概念（新增设计文档 `docs/design-cycles.md`）——
+  - **周期实体与看板分组（CYC-1）**：`CycleRecord`（id / name / goal / scope / status：planned → in_progress → in_review → done / taskIds / checkpoint），契约文件新增 `cycle` 字段，看板按周期分组展示。
+  - **增量规划（CYC-2）**：新增 leader 工具 `cycle_plan`（只规划下一期、复用 `contract_create` 写前校验、重复规划被拒）与 `cycle_approve`（无审批门时机械开工，有审批门走问卷）；派发收窄到活跃周期，`planned` 周期契约不派发。
+  - **周期完成与验收门（CYC-3）**：`checkCompletion` 按当前活跃周期任务子集判定完成；周期验收通过时在完成报告 `## cycles` 区生成周期小结；`cycleAdvancePlan` 三条推进路径（直通 / 等规划 / 手工检查点），守护循环不把边界等待误判成卡死。
+  - **周期上下文注入（CYC-4）**：任务描述注入所属周期目标与范围，预算优先级「所有权 > 周期上下文 > 教训 > 正文」。
+  - **面板周期视图（CYC-5）**：面板新增周期区——周期名 / 状态徽标 / 进度（done+cancelled 任务占比）、活跃周期高亮、周期目标与任务分组；老团队无周期时不渲染、沿用扁平看板；i18n zh/en 同步。
+  - **checkpoint 周期边界与配置收敛（CYC-7）**：组长规划时按需设 `checkpoint`，决定周期验收后是否要人确认，默认全自动推进；移除 `cycles.requireApproval` / `cycles.autoAdvance` 全局开关，仅保留 `cycles.roadmapPath`，边界决策收敛到周期级 `checkpoint` 字段由 AI 判断。
+
+### 修复
+
+- **checkpoint 问卷死锁与提前开工**：checkpoint 问卷收敛为「继续 / 结束」单向确认，删除无后续路径的「暂缓」死选项（防周期永久卡 in_review）；`cycle_plan` 在上一周期停在 in_review 等人批时不再提前开工下一期（新周期保持 planned、不派发）。
+- **仓库克隆地址统一为 GitHub HTTPS**：README / PILOT.md 等文档中的克隆命令与示例地址同步更新。
+
 ## [1.4.1] - 2026-08-30
 
 ### 测试
