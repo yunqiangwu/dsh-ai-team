@@ -98,11 +98,17 @@ function appendSnapshot(service: AutopilotService, session: SessionHandle): void
   ) => unknown)('autopilot/update', { state: service.projection() }, { ignorable: true });
 }
 
-/** 把全量状态快照推送到调用方 agent 的 session 日志。 */
+/**
+ * 把全量状态快照推送到调用方 agent 的 session 日志。
+ * session 的单一来源是 lastSessions WeakMap：工具调用路径在这里用 `exec.agent.session`
+ * 登记；无 `exec` 的带外路径（setSnapshotPublisher 回调 = 工单答卷的 HTTP 回调）直接
+ * 复用已登记的句柄。两条路径由此走同一份发布函数、同一份 session 绑定。
+ */
 function publish(service: AutopilotService, exec?: ToolRunContext): void {
-  const session = exec?.agent?.session;
+  const atExecution = exec?.agent?.session;
+  if (atExecution !== undefined) lastSessions.set(service, atExecution);
+  const session = lastSessions.get(service);
   if (session === undefined) return;
-  lastSessions.set(service, session);
   appendSnapshot(service, session);
 }
 
@@ -115,10 +121,8 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
   // 于是 `this.changed()` 只落了盘、没人往 session 追加事件 —— 人答完问卷要等到下一次
   // 工具调用才看得到面板刷新。登记一次，让那条路径也推一帧。
   service.setSnapshotPublisher(() => {
-    const session = lastSessions.get(service);
-    if (session === undefined) return;
     try {
-      appendSnapshot(service, session);
+      publish(service);
     } catch (error) {
       // session 可能已经销毁。失败要留痕：静默吞掉的话，"答复没生效"就又变成一次人肉排查。
       ctx.logger.warn('autopilot: out-of-band snapshot publish failed', error);
