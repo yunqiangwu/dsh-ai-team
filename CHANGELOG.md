@@ -4,6 +4,17 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)；条目按 git 提交历史（Conventional Commits）归纳，feat / fix 优先。
 
+## [1.4.1] - 2026-08-30
+
+### 测试
+
+- 继续补齐**确定性 e2e**（离线、零 token、可重复，均可直接 `pnpm test` 复跑）：
+  - `tests/test-e2e-escalation.ts`：**升级分诊**——任务改动触及禁区 → 门禁全绿仍不能合并 → 触发 `forbidden-paths` 升级（任务 `needs-human`）→ `escalation_resolve` 分诊 → 升级标记已解决、任务回 `pending` 可重新派发。
+  - `tests/test-e2e-docflow.ts`：**文档先行审批**——`doc_write` 写草稿 → `ask_human(kind: approval)` 生成审批问卷+一次性 code → 人批（`decision=approve` → `doc_approve(code)`）→ 进入 `scaffolding` → 切 `developing` → 派发开发 → 门禁 → 评审 → 合并。
+  - `tests/test-e2e-gfm.ts`：**ask_human 人工确认 → 派生后续任务闭环**——leader 提问 → 开放问卷 → 人作答 → 派生实现 → 门禁 → 评审 → 合并。
+  - `tests/test-e2e-clarify.ts`：**任务澄清**——dev 发现契约矛盾 → `task_clarify`（不返工、不升级）→ 任务 `needs-clarification`、成员释放 → leader 以 note 回答释放回 `pending`。
+  - `tests/test-e2e-replan.ts`：**重规划**——进行中任务因需求变更被 `replanTask(supersede)` 重规划，原契约文件保留不删、派生后续实体、无升级。
+
 ## [1.4.0] - 2026-08-30
 
 ### 新增
