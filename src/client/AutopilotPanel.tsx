@@ -88,7 +88,13 @@ function EscalationAlerts({ escalations, t }: { escalations: EscalationView[]; t
 function MemberChip({ member, t }: { member: MemberView; t: Translator }) {
   return (
     <span className="dsh-ai-team__member" title={`${member.workspacePath}\n${member.branch}`}>
-      <span className={`dsh-ai-team__dot dsh-ai-team__dot--${member.status}`} />
+      {/* 纯色状态点补可读文本（P3-3）：颜色不是唯一的信息通道。 */}
+      <span
+        className={`dsh-ai-team__dot dsh-ai-team__dot--${member.status}`}
+        role="img"
+        aria-label={t(`memberStatus.${member.status}`)}
+        title={t(`memberStatus.${member.status}`)}
+      />
       <span>{member.name}</span>
       <span className={`dsh-ai-team__role`}>{t(`role.${member.role}`)}</span>
     </span>
@@ -133,12 +139,25 @@ function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: Questionnai
     setHover(true);
   };
 
+  // 看板键盘导航（P3-3）：方向键在卡片之间移动焦点。卡片按 DOM 序排列
+  // （列内自上而下、列间从左到右），这就是自然的阅读顺序。
+  const moveFocus = (delta: number) => {
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('.dsh-ai-team__card'));
+    const current = ref.current;
+    if (!current) return;
+    const index = cards.indexOf(current);
+    cards[index + delta]?.focus();
+  };
+
   return (
     <div
       ref={ref}
       className={`dsh-ai-team__card${expanded ? ' dsh-ai-team__card--expanded' : ''}`}
       onMouseEnter={showTip}
       onMouseLeave={() => setHover(false)}
+      // hover-only tooltip 键盘可达（P3-3）：焦点进来同样弹提示，失焦收起。
+      onFocus={showTip}
+      onBlur={() => setHover(false)}
       onClick={() => setExpanded((value) => !value)}
       role="button"
       tabIndex={0}
@@ -148,6 +167,14 @@ function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: Questionnai
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           setExpanded((value) => !value);
+        }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+          event.preventDefault();
+          moveFocus(1);
+        }
+        if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+          event.preventDefault();
+          moveFocus(-1);
         }
       }}
     >

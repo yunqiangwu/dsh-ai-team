@@ -87,6 +87,24 @@ async function serve(handler: TicketHandler): Promise<Endpoint> {
   };
 }
 
+/** 团队切换端点的起服：与 `serve` 同构，只是 handler 是 TeamSwitchHandler。 */
+async function serveSwitch(store: { switchTeam: (teamId: string) => boolean }): Promise<Endpoint> {
+  const handler = new TeamSwitchHandler({ store });
+  const server = createServer((request, response) => {
+    void handler.handle(request, response);
+  });
+  await new Promise<void>((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
+  const address = server.address() as AddressInfo;
+  return {
+    base: `http://127.0.0.1:${address.port}`,
+    port: address.port,
+    close: () =>
+      new Promise<void>((resolvePromise) => {
+        server.close(() => resolvePromise());
+      }),
+  };
+}
+
 interface Call {
   status: number;
   body: string;
@@ -444,27 +462,6 @@ describe('ticket http: 监听与纯函数', () => {
 
 describe('team switch http: 面板团队切换（P3-2）', () => {
   const TEAM_BASE = '/autopilot/team';
-
-  function buildSwitch(store: { switchTeam: (teamId: string) => boolean }) {
-    return new TeamSwitchHandler({ store });
-  }
-
-  async function serveSwitch(store: { switchTeam: (teamId: string) => boolean }): Promise<Endpoint> {
-    const handler = buildSwitch(store);
-    const server = createServer((request, response) => {
-      void handler.handle(request, response);
-    });
-    await new Promise<void>((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
-    const address = server.address() as AddressInfo;
-    return {
-      base: `http://127.0.0.1:${address.port}`,
-      port: address.port,
-      close: () =>
-        new Promise<void>((resolvePromise) => {
-          server.close(() => resolvePromise());
-        }),
-    };
-  }
 
   it('同源 POST 切到存在的团队返回 200 并调用 store', async () => {
     const switched: string[] = [];
