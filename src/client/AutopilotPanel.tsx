@@ -316,6 +316,9 @@ function AnswerField({
  * `quickAction` 是升级分诊的快捷动作（P1-3）：把 `suggestion` 一键预填进首字段
  * （升级表单即 decision），人看一眼确认就能提交，不用把建议抄一遍。
  *
+ * `asyncHint` 是异步问卷提交后的引导（P1-4）：async 模式答完没人接着跑，
+ * 提交成功后再提醒一句「回会话说继续」，别让人以为答完就完事了。
+ *
  * 重播种靠**父级 `key={ticketId}`**，不用 `useEffect`：投影每个 tick 都是新对象，
  * 按字段内容做依赖会把人正在打的字冲掉。
  */
@@ -324,11 +327,13 @@ function AnswerForm({
   fields,
   t,
   quickAction,
+  asyncHint,
 }: {
   ticketId: string;
   fields: TicketField[];
   t: Translator;
   quickAction?: { label: string; value: string };
+  asyncHint?: string;
 }) {
   const [values, setValues] = useState<AnswerValues>(() => initialValues(fields));
   const [pending, setPending] = useState(false);
@@ -364,7 +369,12 @@ function AnswerForm({
       ) : null}
       {/* 成功不在这里就地改状态：卡片转成「已答复」靠的是那份回推的快照，
           乐观更新会在答复其实被拒时留下一张已经消失的卡片。 */}
-      {result !== null && result.ok ? <p className="dsh-ai-team__form-ok">{t('questionnaire.submitted')}</p> : null}
+      {result !== null && result.ok ? (
+        <>
+          <p className="dsh-ai-team__form-ok">{t('questionnaire.submitted')}</p>
+          {asyncHint !== undefined ? <p className="dsh-ai-team__form-ok">{asyncHint}</p> : null}
+        </>
+      ) : null}
       <div className="dsh-ai-team__form-row">
         {quickAction !== undefined ? (
           <button
@@ -452,7 +462,12 @@ function AwaitingList({ items, t }: { items: QuestionnaireView[]; t: Translator 
           </div>
           {/* 模式要说得出：interactive 是「这一轮卡住了」，async 是「答完记得回会话里说继续」。 */}
           <p className="dsh-ai-team__awaiting-hint">{t(`questionnaire.mode.${item.mode}`)}</p>
-          <AnswerForm ticketId={item.id} fields={fieldsOfQuestions(item.questions)} t={t} />
+          <AnswerForm
+            ticketId={item.id}
+            fields={fieldsOfQuestions(item.questions)}
+            t={t}
+            asyncHint={item.mode === 'async' ? t('questionnaire.continueHint') : undefined}
+          />
         </div>
       ))}
     </div>
