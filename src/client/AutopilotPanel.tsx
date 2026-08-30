@@ -313,10 +313,23 @@ function AnswerField({
  * 一张工单的作答表单。升级分诊与问卷共用它 —— 两者在服务端本来就汇成同一个入口
  * （`submitTicketAnswer`），界面上也没有理由长成两样。
  *
+ * `quickAction` 是升级分诊的快捷动作（P1-3）：把 `suggestion` 一键预填进首字段
+ * （升级表单即 decision），人看一眼确认就能提交，不用把建议抄一遍。
+ *
  * 重播种靠**父级 `key={ticketId}`**，不用 `useEffect`：投影每个 tick 都是新对象，
  * 按字段内容做依赖会把人正在打的字冲掉。
  */
-function AnswerForm({ ticketId, fields, t }: { ticketId: string; fields: TicketField[]; t: Translator }) {
+function AnswerForm({
+  ticketId,
+  fields,
+  t,
+  quickAction,
+}: {
+  ticketId: string;
+  fields: TicketField[];
+  t: Translator;
+  quickAction?: { label: string; value: string };
+}) {
   const [values, setValues] = useState<AnswerValues>(() => initialValues(fields));
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<SubmitResult | null>(null);
@@ -353,6 +366,19 @@ function AnswerForm({ ticketId, fields, t }: { ticketId: string; fields: TicketF
           乐观更新会在答复其实被拒时留下一张已经消失的卡片。 */}
       {result !== null && result.ok ? <p className="dsh-ai-team__form-ok">{t('questionnaire.submitted')}</p> : null}
       <div className="dsh-ai-team__form-row">
+        {quickAction !== undefined ? (
+          <button
+            type="button"
+            className="dsh-ai-team__form-quick"
+            disabled={busy}
+            onClick={() => {
+              const target = fields[0]?.name;
+              if (target !== undefined) setValues((previous) => ({ ...previous, [target]: quickAction.value }));
+            }}
+          >
+            {quickAction.label}
+          </button>
+        ) : null}
         <button type="button" disabled={busy || fields.length === 0} onClick={() => void submit()}>
           {pending ? t('questionnaire.submitting') : t('questionnaire.submit')}
         </button>
@@ -394,7 +420,12 @@ function EscalationFeed({ escalations, t }: { escalations: EscalationView[]; t: 
             {/* 投影里的 ticketUrl 刻意不带凭据，独立端口无 token 一律 404 ——
                 所以这里不再放链接，直接把分诊表单内联进来（同源路由作答）。 */}
             {escalation.resolvedAt === null ? (
-              <AnswerForm ticketId={escalation.id} fields={escalationFields(t)} t={t} />
+              <AnswerForm
+                ticketId={escalation.id}
+                fields={escalationFields(t)}
+                t={t}
+                quickAction={{ label: t('escalation.applySuggestion'), value: escalation.suggestion }}
+              />
             ) : null}
           </div>
         );

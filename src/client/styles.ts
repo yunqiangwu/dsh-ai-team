@@ -79,6 +79,8 @@ const CSS = `
 .dsh-ai-team__form-row { display: flex; justify-content: flex-end; gap: 8px; }
 .dsh-ai-team__form-row button { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid transparent; border-radius: 8px; padding: 5px 14px; background: rgba(234,179,8,.9); color: #1f2329; font-weight: 600; }
 .dsh-ai-team__form-row button:disabled { opacity: .45; cursor: default; }
+/* 升级分诊的「按建议执行」：次级描边按钮，与主提交区分（P1-3） */
+.dsh-ai-team__form-row .dsh-ai-team__form-quick { background: transparent; border-color: rgba(234,179,8,.6); color: #eab308; }
 .dsh-ai-team__form-error { margin: 0; font-size: 11px; color: #ef4444; }
 .dsh-ai-team__form-ok { margin: 0; font-size: 11px; color: #22c55e; }
 /* ── 插件设置卡片（settings.plugin.item / autopilot namespace） ── */
