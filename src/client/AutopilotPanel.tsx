@@ -8,7 +8,7 @@
  * 表单，提交走同源相对路径 `<TICKET_ROUTE_PREFIX>/<id>/answer`，凭据是宿主那套
  * 同源围栏 —— 所以投影里那条 `ticketUrl` 不需要（也不允许）带访问凭据。
  */
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import type { SlotProps, Translator } from './contract.js';
 import type { AutopilotProjection, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
 import { DISPATCHABLE_PHASES, TASK_STATUSES, TICKET_ROUTE_PREFIX } from '../view.js';
@@ -55,8 +55,23 @@ function CiBadge({ task, t }: { task: TaskView; t: Translator }) {
 }
 
 function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: QuestionnaireView | undefined; t: Translator }) {
+  const [hover, setHover] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+
+  const showTip = () => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (rect !== undefined) {
+      setPos({
+        top: Math.min(rect.bottom + 6, window.innerHeight - 240),
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)),
+      });
+    }
+    setHover(true);
+  };
+
   return (
-    <div className="dsh-ai-team__card" title={task.description}>
+    <div ref={ref} className="dsh-ai-team__card" onMouseEnter={showTip} onMouseLeave={() => setHover(false)}>
       <span className="dsh-ai-team__card-title">{task.title}</span>
       <span className="dsh-ai-team__card-meta">
         <span>{task.assigneeName}</span>
@@ -78,6 +93,13 @@ function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: Questionnai
           </a>
         ) : null}
       </span>
+      {hover ? (
+        <div className="dsh-ai-team__card-tip" style={{ top: pos.top, left: pos.left }}>
+          <span className="dsh-ai-team__card-tip-title">{task.title}</span>
+          <div className="dsh-ai-team__card-tip-desc">{task.description}</div>
+          <span className="dsh-ai-team__card-tip-branch">{task.branch}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -459,34 +481,109 @@ function BlockedList({ ids, team, t }: { ids: string[]; team: TeamView; t: Trans
   );
 }
 
-/** 团队累计运行指标：一行计数 + 非零升级原因直方图（无人值守试点的观测面）。 */
-function MetricsList({ team, t }: { team: TeamView; t: Translator }) {
-  const metrics = team.metrics;
-  const reasons = Object.entries(metrics.escalations)
-    .filter(([, count]) => count > 0)
-    .toSorted(([, a], [, b]) => b - a);
+/**
+ * Grafana 风格统计卡：短标签 + 数字。作为按钮，点击时在父组件打开对应详情浮窗。
+ */
+function StatTile({ label, value, onClick }: { label: string; value: string; onClick: () => void }) {
   return (
-    <div className="dsh-ai-team__metrics">
-      <div className="dsh-ai-team__card-meta">
-        <span>{t('metrics.dispatched', { dispatched: metrics.dispatched, completed: metrics.completed })}</span>
-        <span>{t('metrics.reviewRounds', { reviewRounds: metrics.reviewRounds })}</span>
-        <span>{t('metrics.gates', { gateRuns: metrics.gateRuns, gateFailures: metrics.gateFailures })}</span>
-        <span>{t('metrics.deploys', { deploys: metrics.deploys, rollbacks: metrics.rollbacks })}</span>
-      </div>
-      {reasons.length > 0 ? (
+    <button type="button" className="dsh-ai-team__stat" onClick={onClick}>
+      <span className="dsh-ai-team__stat-value">{value}</span>
+      <span className="dsh-ai-team__stat-label">{label}</span>
+    </button>
+  );
+}
+
+type DetailKind = 'metrics' | 'blocked' | 'questionnaires' | 'learnings' | 'escalations' | 'deploys';
+
+/**
+ * 状态栏：一排统计卡按钮。点击某张卡，弹出浮窗展示该类的详细面板（卡住/问卷/教训/升级/部署）。
+ * 数据全部来自已有的 projection，不改 schema / stateVersion。
+ */
+function StatsStrip({
+  team,
+  blocked,
+  questionnaires,
+  escalations,
+  deploys,
+  t,
+}: {
+  team: TeamView;
+  blocked: string[];
+  questionnaires: QuestionnaireView[];
+  escalations: EscalationView[];
+  deploys: DeployView[];
+  t: Translator;
+}) {
+  const [open, setOpen] = useState<DetailKind | null>(null);
+  const metrics = team.metrics;
+  const openEsc = escalations.filter((escalation) => escalation.resolvedAt === null).length;
+  const openQ = questionnaires.filter((item) => item.status === 'open').length;
+
+  const content = (() => {
+    switch (open) {
+      case 'blocked': return <BlockedList ids={blocked} team={team} t={t} />;
+      case 'questionnaires': return <QuestionnaireFeed items={questionnaires} t={t} />;
+      case 'learnings': return <LearningList learnings={team.learnings} t={t} />;
+      case 'escalations': return <EscalationFeed escalations={escalations} t={t} />;
+      case 'deploys': return <DeployHistory deploys={deploys} t={t} />;
+      case 'metrics': return (
         <div className="dsh-ai-team__card-meta">
-          {reasons.map(([reason, count]) => (
-            <span key={reason}>
-              {t(`reason.${reason}`)} ×{count}
-            </span>
-          ))}
+          <span>{t('metrics.dispatched', { dispatched: metrics.dispatched, completed: metrics.completed })}</span>
+          <span>{t('metrics.reviewRounds', { reviewRounds: metrics.reviewRounds })}</span>
+          <span>{t('metrics.gates', { gateRuns: metrics.gateRuns, gateFailures: metrics.gateFailures })}</span>
+          <span>{t('metrics.deploys', { deploys: metrics.deploys, rollbacks: metrics.rollbacks })}</span>
+        </div>
+      );
+      default: return null;
+    }
+  })();
+
+  return (
+    <>
+      <div className="dsh-ai-team__stats">
+        <StatTile label={t('section.metrics')} value={`${metrics.completed}/${metrics.dispatched}`} onClick={() => setOpen('metrics')} />
+        <StatTile label={t('section.blocked')} value={String(blocked.length)} onClick={() => setOpen('blocked')} />
+        <StatTile label={t('section.questionnaires')} value={`${openQ}/${questionnaires.length}`} onClick={() => setOpen('questionnaires')} />
+        <StatTile label={t('section.learnings')} value={String(team.learnings.length)} onClick={() => setOpen('learnings')} />
+        <StatTile label={t('section.escalations')} value={String(openEsc)} onClick={() => setOpen('escalations')} />
+        <StatTile label={t('section.deploys')} value={String(deploys.length)} onClick={() => setOpen('deploys')} />
+      </div>
+      {open !== null ? (
+        <div className="dsh-ai-team__overlay" onClick={() => setOpen(null)}>
+          <div className="dsh-ai-team__overlay-panel" onClick={(event) => event.stopPropagation()}>
+            <header className="dsh-ai-team__overlay-head">
+              <span>{t(`section.${open}`)}</span>
+              <button type="button" className="dsh-ai-team__overlay-close" onClick={() => setOpen(null)}>✕</button>
+            </header>
+            <div className="dsh-ai-team__overlay-body">{content}</div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** 「等你决策」可最小化浮窗：默认收起成右下角小胶囊，点开浮窗作答。 */
+function WaitingDecisions({ items, t }: { items: QuestionnaireView[]; t: Translator }) {
+  const [min, setMin] = useState(true);
+  if (items.length === 0) return null;
+  return (
+    <div className="dsh-ai-team__floating">
+      <button type="button" className="dsh-ai-team__floating-head" onClick={() => setMin((value) => !value)}>
+        <span>{t('section.awaiting')}</span>
+        <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">{t('awaiting.count', { count: items.length })}</span>
+        <span>{min ? '▲' : '▼'}</span>
+      </button>
+      {!min ? (
+        <div className="dsh-ai-team__floating-body">
+          <AwaitingList items={items} t={t} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function TeamBody({ team, blocked, questionnaires, t }: { team: TeamView; blocked: string[]; questionnaires: QuestionnaireView[]; t: Translator }) {
+function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires: QuestionnaireView[]; t: Translator }) {
   return (
     <>
       <section>
@@ -514,29 +611,28 @@ function TeamBody({ team, blocked, questionnaires, t }: { team: TeamView; blocke
               </div>
             );
           })}
+          {/* 等你决策：开放式问卷（含未绑定任务的「无人值守决策」）也在看板上可见。
+              已绑定任务的问卷会在其任务卡上显示「等人回答」徽标，这里只补无绑定的那些，
+              避免同一份决策在两处重复呈现。 */}
+          <div className="dsh-ai-team__column dsh-ai-team__column--awaiting">
+            <h5 className="dsh-ai-team__column-title">
+              <span>{t('section.awaiting')}</span>
+              <span>{questionnaires.filter((item) => item.status === 'open').length}</span>
+            </h5>
+            {questionnaires
+              .filter((item) => item.status === 'open' && item.taskId === null)
+              .map((item) => (
+                <div key={item.id} className="dsh-ai-team__card" title={item.title}>
+                  <span className="dsh-ai-team__card-title">{item.title}</span>
+                  <span className="dsh-ai-team__card-meta">
+                    <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">
+                      {t('questionnaire.onTask')}
+                    </span>
+                  </span>
+                </div>
+              ))}
+          </div>
         </div>
-      </section>
-      {/* 排在卡住与告警之前：无人值守时面板的第一问是「现在轮到谁」，
-          而"轮到我"和"坏了"是两件事，答案不该由颜色决定。 */}
-      <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.awaiting')}</h4>
-        <AwaitingList items={questionnaires.filter((item) => item.status === 'open')} t={t} />
-      </section>
-      <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.blocked')}</h4>
-        <BlockedList ids={blocked} team={team} t={t} />
-      </section>
-      <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.questionnaires')}</h4>
-        <QuestionnaireFeed items={questionnaires} t={t} />
-      </section>
-      <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.learnings')}</h4>
-        <LearningList learnings={team.learnings} t={t} />
-      </section>
-      <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.metrics')}</h4>
-        <MetricsList team={team} t={t} />
       </section>
     </>
   );
@@ -598,17 +694,18 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
         </span>
         <span className="dsh-ai-team__chevron">›</span>
       </button>
+      <WaitingDecisions items={questionnaires.filter((item) => item.status === 'open')} t={t} />
       {open ? (
         <div className="dsh-ai-team__body">
-          <TeamBody team={team} blocked={projection.blocked} questionnaires={questionnaires} t={t} />
-          <section>
-            <h4 className="dsh-ai-team__section-title">{t('section.escalations')}</h4>
-            <EscalationFeed escalations={escalations} t={t} />
-          </section>
-          <section>
-            <h4 className="dsh-ai-team__section-title">{t('section.deploys')}</h4>
-            <DeployHistory deploys={deploys} t={t} />
-          </section>
+          <StatsStrip
+            team={team}
+            blocked={projection.blocked}
+            questionnaires={questionnaires}
+            escalations={escalations}
+            deploys={deploys}
+            t={t}
+          />
+          <TeamBody team={team} questionnaires={questionnaires} t={t} />
         </div>
       ) : null}
     </div>

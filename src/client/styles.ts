@@ -4,7 +4,7 @@
  * 并为状态提供语义化强调色。
  */
 const CSS = `
-.dsh-ai-team { border: 1px solid rgba(127,127,127,.25); border-radius: 12px; margin: 8px 0; overflow: hidden; font-size: 12px; }
+.dsh-ai-team { position: relative; border: 1px solid rgba(127,127,127,.25); border-radius: 12px; margin: 8px 0; overflow: hidden; font-size: 12px; }
 .dsh-ai-team__header { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 16px; background: rgba(127,127,127,.06); border: none; cursor: pointer; color: inherit; font: inherit; font-size: 13px; text-align: left; }
 .dsh-ai-team__header:hover { background: rgba(127,127,127,.12); }
 .dsh-ai-team__header:active { background: rgba(127,127,127,.16); }
@@ -31,12 +31,16 @@ const CSS = `
 .dsh-ai-team__dot--working { background: #22c55e; }
 .dsh-ai-team__dot--reviewing { background: #3b82f6; }
 .dsh-ai-team__role { opacity: .55; font-size: 10px; }
-.dsh-ai-team__kanban { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 8px; overflow-x: auto; }
-.dsh-ai-team__column { border: 1px solid rgba(127,127,127,.2); border-radius: 8px; padding: 6px; min-height: 48px; }
-.dsh-ai-team__column-title { display: flex; justify-content: space-between; margin: 0 0 6px; font-size: 11px; opacity: .75; }
-.dsh-ai-team__card { display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 6px; background: rgba(127,127,127,.12); margin-bottom: 6px; }
-.dsh-ai-team__card-title { font-weight: 600; }
-.dsh-ai-team__card-meta { display: flex; gap: 6px; flex-wrap: wrap; opacity: .7; font-size: 11px; }
+.dsh-ai-team__kanban { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.dsh-ai-team__column { flex: 0 0 150px; min-width: 140px; border: 1px solid rgba(127,127,127,.2); border-radius: 8px; padding: 6px; min-height: 30px; max-height: 360px; overflow-y: auto; }
+.dsh-ai-team__column-title { display: flex; justify-content: space-between; margin: 0 0 6px; font-size: 11px; opacity: .75; position: sticky; top: 0; background: inherit; }
+.dsh-ai-team__card { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; border-radius: 6px; background: rgba(127,127,127,.12); margin-bottom: 6px; }
+.dsh-ai-team__card-title { font-weight: 600; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dsh-ai-team__card-meta { display: flex; gap: 6px; flex-wrap: wrap; opacity: .7; font-size: 10px; }
+.dsh-ai-team__card-tip { position: fixed; z-index: 80; min-width: 220px; max-width: 340px; max-height: 240px; overflow: auto; background: #1f2329; color: #eef1f6; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+.dsh-ai-team__card-tip-title { display: block; font-size: 12px; font-weight: 700; }
+.dsh-ai-team__card-tip-desc { margin-top: 4px; font-size: 11px; white-space: pre-wrap; word-break: break-word; opacity: .9; }
+.dsh-ai-team__card-tip-branch { display: block; margin-top: 6px; font-size: 10px; opacity: .6; }
 .dsh-ai-team__badge { padding: 0 6px; border-radius: 999px; font-size: 10px; border: 1px solid rgba(127,127,127,.35); }
 .dsh-ai-team__badge--pass { color: #22c55e; border-color: #22c55e; }
 .dsh-ai-team__badge--fail { color: #ef4444; border-color: #ef4444; }
@@ -83,6 +87,25 @@ const CSS = `
 .dsh-ai-team__config-actions button { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 5px 14px; background: transparent; color: inherit; }
 .dsh-ai-team__config-actions button:disabled { opacity: .4; cursor: default; }
 .dsh-ai-team__config-actions button[type='button']:last-child { background: rgba(59,130,246,.9); border-color: transparent; color: #fff; }
+/* ── Grafana 风格统计卡（短标签 + 数字，点击弹详情浮窗） ── */
+.dsh-ai-team__stats { width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; align-items: stretch; }
+.dsh-ai-team__stat { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px; border: 1px solid rgba(127,127,127,.2); border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.dsh-ai-team__stat:hover { background: rgba(127,127,127,.1); border-color: rgba(59,130,246,.4); }
+.dsh-ai-team__stat-value { font-size: 20px; font-weight: 700; line-height: 1; }
+.dsh-ai-team__stat-label { font-size: 11px; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 点击统计卡弹出的详情浮窗 */
+.dsh-ai-team__overlay { position: absolute; inset: 0; z-index: 60; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 12px; }
+.dsh-ai-team__overlay-panel { width: min(560px, 96%); max-height: 70%; overflow: auto; background: #1f2329; color: #eef1f6; border: 1px solid rgba(127,127,127,.4); border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,.5); }
+.dsh-ai-team__overlay-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid rgba(127,127,127,.25); font-size: 13px; font-weight: 600; }
+.dsh-ai-team__overlay-close { font: inherit; border: none; background: transparent; color: inherit; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.dsh-ai-team__overlay-close:hover { background: rgba(127,127,127,.2); }
+.dsh-ai-team__overlay-body { padding: 12px 14px; }
+/* ── 等你决策：可最小化的浮动弹窗（默认收起，右下角小胶囊；点开浮窗作答） ── */
+.dsh-ai-team__floating { position: absolute; right: 8px; bottom: 8px; z-index: 40; max-width: 420px; border: 1px solid rgba(234,179,8,.5); border-radius: 10px; background: rgba(20,20,20,.92); color: #eef1f6; box-shadow: 0 10px 28px rgba(0,0,0,.5); }
+.dsh-ai-team__floating-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.dsh-ai-team__floating-head:hover { background: rgba(234,179,8,.12); }
+.dsh-ai-team__floating-head .dsh-ai-team__badge--awaiting { margin-left: auto; }
+.dsh-ai-team__floating-body { padding: 10px 12px 12px; border-top: 1px solid rgba(234,179,8,.35); max-height: 320px; overflow: auto; }
 `;
 
 let injected = false;
