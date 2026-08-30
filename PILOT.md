@@ -63,7 +63,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
         rootDir: .dsh-ai-team
         baseBranch: main
         remote:
-          url: git@github.com:yunqiangwu/dsh-ai-team.git   # 换成你的 fork
+          url: /tmp/mock-git-repo/mdtohtml.git   # 换成你的 fork
           sshKeyEnv: AUTOPILOT_GIT_KEY
           platform: github
           apiTokenEnv: GITHUB_TOKEN
@@ -105,7 +105,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
 
 ```bash
 # VPS 上，源码方式
-git clone https://github.com/yunqiangwu/dsh-ai-team.git && cd dsh-ai-team
+git clone /tmp/mock-git-repo/dsh-ai-team.git && cd dsh-ai-team
 pnpm install && pnpm build
 pnpm dsh web --patch ./pilot.patch.yml
 ```
