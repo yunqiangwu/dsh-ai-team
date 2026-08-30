@@ -11,7 +11,7 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import type { SlotProps, Translator } from './contract.js';
 import type { AutopilotProjection, CycleView, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
-import { DISPATCHABLE_PHASES, TASK_STATUSES, TICKET_ROUTE_PREFIX } from '../view.js';
+import { DISPATCHABLE_PHASES, TASK_STATUSES, TEAM_SWITCH_ROUTE_PREFIX, TICKET_ROUTE_PREFIX } from '../view.js';
 import { escalationFields, fieldsOfQuestions, normalizeOption, type TicketField } from '../formmodel.js';
 
 function LoopLamp({ state, t }: { state: AutopilotProjection['loopState']; t: Translator }) {
@@ -1103,6 +1103,55 @@ function AsyncResumeBanner({ items, t }: { items: QuestionnaireView[]; t: Transl
 }
 
 /**
+ * 多团队切换（P3-2）：团队选择器。只在多于一个团队时出现；切换走同源路由
+ * POST，服务端更新 activeTeamId 后推快照，面板随之重绘。select 的值始终
+ * 反映服务端 truth，不本地乐观更新 —— 失败时自然弹回原团队。
+ */
+function TeamSwitcher({
+  teams,
+  activeTeamId,
+  t,
+}: {
+  teams: TeamView[];
+  activeTeamId: string | null;
+  t: Translator;
+}) {
+  const [pending, setPending] = useState(false);
+  if (teams.length < 2) return null;
+  const active = activeTeamId ?? teams[0]?.id ?? '';
+  const switchTo = async (teamId: string) => {
+    if (teamId === active || pending) return;
+    setPending(true);
+    try {
+      await fetch(TEAM_SWITCH_ROUTE_PREFIX, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ teamId }),
+      });
+    } catch {
+      // 网络失败：保持原团队，等下一次快照自然纠正。
+    }
+    setPending(false);
+  };
+  return (
+    <label className="dsh-ai-team__team-switch" title={t('team.switch')}>
+      <select
+        className="dsh-ai-team__config-input"
+        value={active}
+        disabled={pending}
+        onChange={(event) => void switchTo(event.target.value)}
+      >
+        {teams.map((team) => (
+          <option key={team.id} value={team.id}>
+            {team.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/**
  * 面板本体。在团队存在之前不渲染任何内容，
  * 以便普通会话保持清爽。
  */
@@ -1166,6 +1215,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       <WaitingDecisions items={questionnaires.filter((item) => item.status === 'open')} t={t} />
       {open ? (
         <div className="dsh-ai-team__body">
+          <TeamSwitcher teams={teams} activeTeamId={projection.activeTeamId} t={t} />
           <PhaseGuide phase={team.phase} t={t} />
           {projection.loopState === 'completed' ? <CompletionSummary team={team} t={t} /> : null}
           <AsyncResumeBanner items={questionnaires} t={t} />

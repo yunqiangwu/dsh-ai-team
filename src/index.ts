@@ -20,7 +20,7 @@ import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
 import type { RuntimeConfig } from './service/options.js';
 import type { PauseOnEscalation, QuestionnaireMode, RemotePlatform } from './view.js';
-import { TICKET_ROUTE_PREFIX } from './view.js';
+import { TICKET_ROUTE_PREFIX, TEAM_SWITCH_ROUTE_PREFIX } from './view.js';
 
 export const name = 'dsh-ai-team';
 
@@ -620,6 +620,19 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       // 重复 (kind, path) 会抛（HMR / 双装载）。挂载失败只是面板内作答没了，
       // 邮件工单与会话内 answer_questionnaire 都还在，不该把插件拖死。
       webCtx.logger.warn('autopilot: 工单路由挂载失败，面板内作答不可用', error);
+    }
+    // 面板团队切换（P3-2）：同源围栏的视图偏好路由，挂不上只是多团队切换没了，
+    // 单团队面板照常工作。
+    const teamSwitch = service.panelTeamSwitchHandler(() => webRuntime?.trustedHosts ?? []);
+    try {
+      const dispose = webServer.register({
+        kind: 'prefix',
+        path: TEAM_SWITCH_ROUTE_PREFIX,
+        handler: (request, response) => teamSwitch.handle(request, response),
+      });
+      webCtx.effect(() => dispose, 'autopilot: team switch route');
+    } catch (error) {
+      webCtx.logger.warn('autopilot: 团队切换路由挂载失败，多团队切换不可用', error);
     }
   });
   // 自动供给的用户体验：当某个 session 选用 `autopilot-team` agent preset 时，

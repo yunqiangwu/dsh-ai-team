@@ -664,3 +664,77 @@ export class TicketServer {
     });
   }
 }
+
+// ── 面板团队切换（P3-2）──────────────────────────────────────────────────────
+
+/** 面板切换当前团队的数据源。 */
+export interface TeamSwitchStore {
+  /** 切换当前团队；返回 false 表示团队不存在。 */
+  switchTeam(teamId: string): boolean;
+}
+
+export interface TeamSwitchHandlerOptions {
+  store: TeamSwitchStore;
+  /** 与工单同源的围栏清单（见 TicketHandlerOptions.trustedAuthorities）。 */
+  trustedAuthorities?: () => readonly string[];
+  warn?: (message: string, error?: unknown) => void;
+}
+
+/**
+ * 面板团队切换端点。只认**同源面板**的 POST —— 这是视图偏好，不是决策，
+ * 但围栏照旧：本机任意进程都不该能改别人面板在看哪个团队。
+ */
+export class TeamSwitchHandler {
+  constructor(private readonly options: TeamSwitchHandlerOptions) {}
+
+  private authorities(): Authority[] {
+    return (this.options.trustedAuthorities?.() ?? [])
+      .map((entry) => parseAuthority(entry))
+      .filter((entry): entry is Authority => entry !== null);
+  }
+
+  /** 宿主 `WebRoute.handler` 与 `node:http` 回调签名共用。绝不抛。 */
+  async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.method !== 'POST' || !isSameOriginPanelRequest(request, this.authorities())) {
+      // 与工单同姿态：围栏失败回 404，不给扫描者任何判别面。
+      TeamSwitchHandler.notFound(response);
+      return;
+    }
+    let body: string;
+    try {
+      body = await readBody(request);
+    } catch (error) {
+      this.options.warn?.('team-switch: request body rejected', error);
+      request.resume();
+      TeamSwitchHandler.json(response, 400, { ok: false, message: '无法读取请求体' });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body) as unknown;
+    } catch {
+      TeamSwitchHandler.json(response, 400, { ok: false, message: '请求体必须是 JSON 对象' });
+      return;
+    }
+    const teamId = (parsed as { teamId?: unknown } | null)?.teamId;
+    if (typeof teamId !== 'string' || teamId === '') {
+      TeamSwitchHandler.json(response, 400, { ok: false, message: '缺少 teamId' });
+      return;
+    }
+    if (!this.options.store.switchTeam(teamId)) {
+      TeamSwitchHandler.notFound(response);
+      return;
+    }
+    TeamSwitchHandler.json(response, 200, { ok: true });
+  }
+
+  private static notFound(response: ServerResponse): void {
+    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end('team not found');
+  }
+
+  private static json(response: ServerResponse, status: number, payload: unknown): void {
+    response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify(payload));
+  }
+}

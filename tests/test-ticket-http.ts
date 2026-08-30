@@ -19,6 +19,7 @@ import {
   isLoopbackHostname,
   isSameOriginPanelRequest,
   TICKET_PATH_PREFIX,
+  TeamSwitchHandler,
   TicketHandler,
   TicketServer,
   ticketUrlWithToken,
@@ -438,5 +439,86 @@ describe('ticket http: 监听与纯函数', () => {
     expect(isLoopbackHostname('10.0.0.8')).toBe(false);
     // 缺 Host 头就不是同源（Host 是 HTTP/1.1 必填，缺了说明有人在伪造请求）。
     expect(isSameOriginPanelRequest({ headers: {} } as unknown as IncomingMessage, [])).toBe(false);
+  });
+});
+
+describe('team switch http: 面板团队切换（P3-2）', () => {
+  const TEAM_BASE = '/autopilot/team';
+
+  function buildSwitch(store: { switchTeam: (teamId: string) => boolean }) {
+    return new TeamSwitchHandler({ store });
+  }
+
+  async function serveSwitch(store: { switchTeam: (teamId: string) => boolean }): Promise<Endpoint> {
+    const handler = buildSwitch(store);
+    const server = createServer((request, response) => {
+      void handler.handle(request, response);
+    });
+    await new Promise<void>((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
+    const address = server.address() as AddressInfo;
+    return {
+      base: `http://127.0.0.1:${address.port}`,
+      port: address.port,
+      close: () =>
+        new Promise<void>((resolvePromise) => {
+          server.close(() => resolvePromise());
+        }),
+    };
+  }
+
+  it('同源 POST 切到存在的团队返回 200 并调用 store', async () => {
+    const switched: string[] = [];
+    const endpoint = await serveSwitch({ switchTeam: (id) => (switched.push(id), id === 'team-a') });
+    try {
+      const ok = await call(endpoint.port, 'POST', TEAM_BASE, {
+        headers: panelHeaders(endpoint.port, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ teamId: 'team-a' }),
+      });
+      expect(ok.status).toBe(200);
+      expect(JSON.parse(ok.body)).toEqual({ ok: true });
+      expect(switched).toEqual(['team-a']);
+    } finally {
+      await endpoint.close();
+    }
+  });
+
+  it('围栏失败与非 POST 一律 404，不调用 store', async () => {
+    const switched: string[] = [];
+    const endpoint = await serveSwitch({ switchTeam: (id) => (switched.push(id), true) });
+    try {
+      const rebinding = await call(endpoint.port, 'POST', TEAM_BASE, {
+        headers: { host: 'evil.com', origin: 'http://evil.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ teamId: 'team-a' }),
+      });
+      expect(rebinding.status).toBe(404);
+      const get = await call(endpoint.port, 'GET', TEAM_BASE, { headers: panelHeaders(endpoint.port) });
+      expect(get.status).toBe(404);
+      expect(switched).toHaveLength(0);
+    } finally {
+      await endpoint.close();
+    }
+  });
+
+  it('未知团队回 404；坏请求体回 400', async () => {
+    const endpoint = await serveSwitch({ switchTeam: () => false });
+    try {
+      const unknown = await call(endpoint.port, 'POST', TEAM_BASE, {
+        headers: panelHeaders(endpoint.port, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ teamId: 'team-nope' }),
+      });
+      expect(unknown.status).toBe(404);
+      const broken = await call(endpoint.port, 'POST', TEAM_BASE, {
+        headers: panelHeaders(endpoint.port, { 'content-type': 'application/json' }),
+        body: '{"teamId": ',
+      });
+      expect(broken.status).toBe(400);
+      const missing = await call(endpoint.port, 'POST', TEAM_BASE, {
+        headers: panelHeaders(endpoint.port, { 'content-type': 'application/json' }),
+        body: '{}',
+      });
+      expect(missing.status).toBe(400);
+    } finally {
+      await endpoint.close();
+    }
   });
 });

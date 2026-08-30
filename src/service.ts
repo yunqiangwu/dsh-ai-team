@@ -50,6 +50,7 @@ import {
   TICKET_PATH_PREFIX,
   TicketHandler,
   TicketServer,
+  TeamSwitchHandler,
   ticketUrlWithToken,
   type TicketStore,
   type TicketTrust,
@@ -416,6 +417,21 @@ export class AutopilotService {
    */
   panelTicketHandler(trustedHosts?: () => readonly string[]): TicketHandler {
     return this.buildTicketHandler(TICKET_ROUTE_PREFIX, 'fence-or-token', trustedHosts);
+  }
+
+  /**
+   * 面板团队切换端点（P3-2）：由插件层 `register` 到宿主 `webServer` 的
+   * `TEAM_SWITCH_ROUTE_PREFIX` 前缀上。只改视图偏好，走与工单同一套同源围栏。
+   */
+  panelTeamSwitchHandler(trustedHosts?: () => readonly string[]): TeamSwitchHandler {
+    return new TeamSwitchHandler({
+      store: { switchTeam: (teamId) => this.switchActiveTeam(teamId) },
+      trustedAuthorities: () => {
+        const publicBaseUrl = this.options.notification?.ticket.publicBaseUrl;
+        return [...(publicBaseUrl === undefined || publicBaseUrl === '' ? [] : [publicBaseUrl]), ...(trustedHosts?.() ?? [])];
+      },
+      warn: (message, error) => this.warn(message, error),
+    });
   }
 
   // ── 工单凭据 ──────────────────────────────────────────────────────────────
@@ -1727,6 +1743,19 @@ export class AutopilotService {
       });
     }
     return this.teamView(id);
+  }
+
+  /**
+   * 切换面板当前展示的团队（P3-2）。返回 false 表示团队不存在。
+   * 只改「面板看哪个团队」这个视图偏好，不动任何团队状态。
+   * 走 HTTP 路由（带外变更），所以除了落盘还要推一次快照，否则面板
+   * 要等到下一次工具调用才看得见切换结果。
+   */
+  switchActiveTeam(teamId: string): boolean {
+    if (!this.teams.has(teamId)) return false;
+    this.changed(teamId);
+    this.snapshotPublisher?.();
+    return true;
   }
 
   async addMember(input: { teamId: string; role: Role; name?: string; specialization?: string }): Promise<MemberView> {

@@ -213,6 +213,13 @@ export type LearningBucket = (typeof LEARNING_BUCKETS)[number];
  */
 export const TICKET_ROUTE_PREFIX = '/autopilot/ticket';
 
+/**
+ * 面板切换当前团队的路由前缀（P3-2），同样挂在宿主 `ctx.webServer` 上。
+ * 与 `TICKET_ROUTE_PREFIX` 同一份「两端共用」的理由：服务端注册路由与客户端
+ * `fetch` 必须是同一个字符串，写死两份必然漂移。
+ */
+export const TEAM_SWITCH_ROUTE_PREFIX = '/autopilot/team';
+
 /** 远端 git 平台。只有 github 有 PR upsert 与 CI 状态查询；其余按 generic 语义。 */
 export const REMOTE_PLATFORMS = ['github', 'cnb', 'gitlab', 'generic'] as const;
 export type RemotePlatform = (typeof REMOTE_PLATFORMS)[number];

@@ -136,6 +136,9 @@ const CSS = `
 .dsh-ai-team__async-text { font-weight: 600; font-size: 12px; }
 .dsh-ai-team__async-hint { font-size: 11px; opacity: .8; }
 .dsh-ai-team__async-dismiss { font: inherit; font-size: 11px; cursor: pointer; border: 1px solid rgba(234,179,8,.5); border-radius: 6px; padding: 2px 10px; background: transparent; color: #eab308; margin-left: auto; }
+/* ── 多团队切换（P3-2）：面板顶部右对齐的团队选择器 ── */
+.dsh-ai-team__team-switch { display: flex; justify-content: flex-end; }
+.dsh-ai-team__team-switch select { max-width: 240px; font-size: 11px; padding: 4px 8px; }
 /* ── 等你决策：可最小化的浮动弹窗（默认收起，右下角小胶囊；点开浮窗作答） ── */
 .dsh-ai-team__floating { position: absolute; right: 8px; bottom: 8px; z-index: 40; max-width: 420px; border: 1px solid rgba(234,179,8,.5); border-radius: 10px; background: rgba(20,20,20,.92); color: #eef1f6; box-shadow: 0 10px 28px rgba(0,0,0,.5); }
 .dsh-ai-team__floating-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
