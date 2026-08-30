@@ -122,6 +122,10 @@ const CSS = `
 .dsh-ai-team__overlay-close { font: inherit; border: none; background: transparent; color: inherit; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .dsh-ai-team__overlay-close:hover { background: rgba(127,127,127,.2); }
 .dsh-ai-team__overlay-body { padding: 12px 14px; }
+/* ── 首次使用引导（P2-4）：非派发阶段把「下一步」摆出来，别让人对着不动的看板猜 ── */
+.dsh-ai-team__guide { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid rgba(234,179,8,.45); border-left: 3px solid #eab308; background: rgba(234,179,8,.08); border-radius: 8px; }
+.dsh-ai-team__guide-label { font-weight: 600; font-size: 11px; color: #eab308; }
+.dsh-ai-team__guide-hint { font-size: 12px; opacity: .9; }
 /* ── 等你决策：可最小化的浮动弹窗（默认收起，右下角小胶囊；点开浮窗作答） ── */
 .dsh-ai-team__floating { position: absolute; right: 8px; bottom: 8px; z-index: 40; max-width: 420px; border: 1px solid rgba(234,179,8,.5); border-radius: 10px; background: rgba(20,20,20,.92); color: #eef1f6; box-shadow: 0 10px 28px rgba(0,0,0,.5); }
 .dsh-ai-team__floating-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }

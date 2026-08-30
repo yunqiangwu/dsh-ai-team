@@ -1030,6 +1030,24 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
 }
 
 /**
+ * 首次使用引导（P2-4）：非派发阶段（intake / kickoff_pending_approval / scaffolding）
+ * 看板不会动，新用户最容易以为坏了。这里把「下一步该做什么」直接摆出来。
+ * 派发阶段（developing / replanning）没有对应提示 key，`t` 会原样返回 key，
+ * 借此判断不渲染。
+ */
+function PhaseGuide({ phase, t }: { phase: TeamView['phase']; t: Translator }) {
+  const hint = t(`phase.next.${phase}`);
+  if (hint === `phase.next.${phase}`) return null;
+  return (
+    <div className="dsh-ai-team__guide" role="note">
+      <span className="dsh-ai-team__badge dsh-ai-team__badge--pending">{t(`phase.${phase}`)}</span>
+      <span className="dsh-ai-team__guide-label">{t('phase.nextLabel')}</span>
+      <span className="dsh-ai-team__guide-hint">{hint}</span>
+    </div>
+  );
+}
+
+/**
  * 面板本体。在团队存在之前不渲染任何内容，
  * 以便普通会话保持清爽。
  */
@@ -1093,6 +1111,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       <WaitingDecisions items={questionnaires.filter((item) => item.status === 'open')} t={t} />
       {open ? (
         <div className="dsh-ai-team__body">
+          <PhaseGuide phase={team.phase} t={t} />
           <StatsStrip
             team={team}
             blocked={projection.blocked}
