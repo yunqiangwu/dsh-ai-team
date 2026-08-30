@@ -15,6 +15,7 @@ import type { LearningRecord } from '../learnings.js';
 import type { RuntimeConfig } from './options.js';
 import type {
   CiStatus,
+  CycleStatus,
   DeployView,
   EscalationView,
   GateSummary,
@@ -233,6 +234,27 @@ export function emptyTeamMetrics(): TeamMetrics {
  */
 export const teamPhase = (team: Pick<TeamRecord, 'phase'>): TeamPhase => team.phase ?? 'developing';
 
+/**
+ * 周期实体（docs/design-cycles.md §2.1）：一个里程碑批次（目标 + 范围 + 一组任务）。
+ * 挂在 `TeamRecord.cycles` 下整体落盘。老 state.json 没有该数组，读取处一律 `?? []`
+ * 兜底（同 learnings / metrics 的兼容约定）。
+ */
+export interface CycleRecord {
+  id: string;
+  /** 周期名（"M1"）—— 与 roadmap 章节名、契约 frontmatter 的 `cycle` 值对齐。 */
+  name: string;
+  status: CycleStatus;
+  /** 本周期目标（来自 roadmap，注入任务描述用）。 */
+  goal: string;
+  /** 本周期范围（路径粒度，供域锁 / 描述用）。 */
+  scope: string[];
+  /** 本周期任务契约 id。 */
+  taskIds: string[];
+  startedAt?: number | undefined;
+  completedAt?: number | undefined;
+  createdAt: number;
+}
+
 /** 一个团队的内存记录：成员、任务、评审与学习记录都随它整体落盘。 */
 export interface TeamRecord {
   id: string;
@@ -255,6 +277,12 @@ export interface TeamRecord {
    * （同 TaskRecord.contractPath）。`<stateDir>/learnings.md` 是它的全量生成物。
    */
   learnings?: LearningRecord[] | undefined;
+  /**
+   * 多周期开发的周期列表。可选：老 state.json 里没有这个字段，读取处一律
+   * `?? []` 兜底（同 learnings / metrics 的兼容约定）—— 老团队因此一字不变地
+   * 走「无周期」路径（docs/design-cycles.md §9）。
+   */
+  cycles?: CycleRecord[] | undefined;
   metrics?: TeamMetrics | undefined;
   createdAt: number;
 }

@@ -10,7 +10,7 @@ import { buildDescription, CONTRACT_BODY_LIMIT, DESCRIPTION_TOTAL_LIMIT } from '
 import { renderCompletionReport } from '../src/service/report.js';
 import { budgetExceeded, reviewRoundsExceeded, taskStuck } from '../src/service/daemon.js';
 import { effectiveAnswers, withApprovalQuestion } from '../src/service/docflow.js';
-import { memberView as memberViewOf, taskView as taskViewOf } from '../src/service/views.js';
+import { memberView as memberViewOf, cycleView as cycleViewOf, taskView as taskViewOf } from '../src/service/views.js';
 import { clip, HELD_STATUSES, noteLines, oneLine, shortId } from '../src/service/state.js';
 import { defaultProfile } from '../src/profile.js';
 import { DEFAULT_LEARNINGS } from '../src/learnings.js';
@@ -419,6 +419,43 @@ describe('views: taskView / memberView', () => {
       status: 'working',
       currentTaskId: 'task_1',
     });
+  });
+
+  it('cycleView 把记录侧可选时间折算成视图侧 null（不丢字段、不复制引用）', () => {
+    const view = cycleViewOf({
+      id: 'cycle_1',
+      name: 'M1',
+      status: 'planned',
+      goal: '首期目标',
+      scope: ['app/'],
+      taskIds: ['M1-1'],
+      createdAt: 123,
+    });
+    expect(view).toEqual({
+      id: 'cycle_1',
+      name: 'M1',
+      status: 'planned',
+      goal: '首期目标',
+      scope: ['app/'],
+      taskIds: ['M1-1'],
+      startedAt: null,
+      completedAt: null,
+      createdAt: 123,
+    });
+    // 拷贝数组：改原记录不会透过投影污染视图。
+    const withTimes = cycleViewOf({
+      id: 'cycle_2',
+      name: 'M2',
+      status: 'done',
+      goal: '',
+      scope: ['server/'],
+      taskIds: [],
+      startedAt: 1,
+      completedAt: 2,
+      createdAt: 0,
+    });
+    expect(withTimes.startedAt).toBe(1);
+    expect(withTimes.completedAt).toBe(2);
   });
 });
 

@@ -38,8 +38,10 @@ export function registerAutopilotProjection(ctx: Context): void {
       // docs/design-interaction.md §3）。旧负载靠 `.default([])` 继续 parse 得过。
       // v8：escalationView / deployView 新增 `teamId`（TECH-4：面板单团队视图
       // 按当前团队过滤升级流与部署历史；null 兼容旧持久化记录）。
+      // v9：teamView 新增 `cycles`（多周期开发的周期列表，CYC-1；旧负载靠
+      // `.default([])` 继续 parse 得过，老团队无周期）。
       // 变更形状时需递增。
-      stateVersion: 8,
+      stateVersion: 9,
     });
   });
 }

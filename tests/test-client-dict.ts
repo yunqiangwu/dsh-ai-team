@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { en, zh } from '../src/client/index.js';
 import {
   CI_STATUSES,
+  CYCLE_STATUSES,
   DEPLOY_STATUSES,
   ESCALATION_REASONS,
   LOOP_STATES,
@@ -33,6 +34,7 @@ import {
 const rendered: [string, readonly string[]][] = [
   ['role', ROLES],
   ['status', TASK_STATUSES],
+  ['cycleStatus', CYCLE_STATUSES],
   ['reason', ESCALATION_REASONS],
   ['loop', LOOP_STATES],
   ['phase', TEAM_PHASES],

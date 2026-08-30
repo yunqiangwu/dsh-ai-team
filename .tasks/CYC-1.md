@@ -1,7 +1,7 @@
 ---
 id: CYC-1
 title: 周期实体：CycleRecord / 契约 cycle 字段 / 看板分组
-status: pending
+status: done
 priority: 9
 depends_on: [CYC-0]
 touches:

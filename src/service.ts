@@ -144,6 +144,7 @@ import {
   teamPhase,
 } from './service/state.js';
 import {
+  cycleView as cycleViewOf,
   memberView as memberViewOf,
   reviewView as reviewViewOf,
   taskView as taskViewOf,
@@ -1246,6 +1247,7 @@ export class AutopilotService {
       tasks: team.tasks.map((task) => this.taskView(team, task)),
       reviews: team.reviews.map((review) => this.reviewView(team, review)),
       learnings: (team.learnings ?? []).map((record) => viewOf(record)),
+      cycles: (team.cycles ?? []).map((cycle) => cycleViewOf(cycle)),
       metrics: this.teamMetrics(team),
       createdAt: team.createdAt,
     };

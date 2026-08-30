@@ -16,6 +16,7 @@ import { z as zod } from 'zod';
 import {
   ANSWER_SOURCES,
   CI_STATUSES,
+  CYCLE_STATUSES,
   DEPLOY_STATUSES,
   ESCALATION_REASONS,
   LEARNING_BUCKETS,
@@ -112,6 +113,24 @@ export const learningViewSchema = zod.object({
   promoted: zod.boolean(),
 });
 
+/** 周期视图（docs/design-cycles.md §2.1）：多周期开发的一等公民数据形状。 */
+export const cycleViewSchema = zod.object({
+  id: zod.string(),
+  /** 周期名（"M1"）—— 与 roadmap 章节名、契约 `cycle` 值对齐。 */
+  name: zod.string(),
+  status: zod.enum(CYCLE_STATUSES),
+  /** 本周期目标（来自 roadmap，注入任务描述用）。 */
+  goal: zod.string(),
+  /** 本周期范围（路径粒度，供域锁 / 描述用）。 */
+  scope: zod.array(zod.string()),
+  /** 本周期任务契约 id。 */
+  taskIds: zod.array(zod.string()),
+  /** 未开工 / 未完成的周期为 null（记录侧为可选字段）。 */
+  startedAt: zod.number().nullable().default(null),
+  completedAt: zod.number().nullable().default(null),
+  createdAt: zod.number(),
+});
+
 export const teamViewSchema = zod.object({
   id: zod.string(),
   name: zod.string(),
@@ -149,6 +168,8 @@ export const teamViewSchema = zod.object({
       rollbacks: 0,
       escalations: {},
     }),
+  // v9 才新增的字段：多周期开发的周期列表，旧负载缺省补空数组（老团队无周期）。
+  cycles: zod.array(cycleViewSchema).default([]),
   createdAt: zod.number(),
 });
 
@@ -318,6 +339,7 @@ export type MemberView = zod.infer<typeof memberViewSchema>;
 export type TaskView = zod.infer<typeof taskViewSchema>;
 export type ReviewView = zod.infer<typeof reviewViewSchema>;
 export type LearningView = zod.infer<typeof learningViewSchema>;
+export type CycleView = zod.infer<typeof cycleViewSchema>;
 export type TeamView = zod.infer<typeof teamViewSchema>;
 export type EscalationNotification = zod.infer<typeof escalationNotificationSchema>;
 export type EscalationView = zod.infer<typeof escalationViewSchema>;

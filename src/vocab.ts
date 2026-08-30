@@ -72,6 +72,16 @@ export type TeamPhase = (typeof TEAM_PHASES)[number];
 export const DISPATCHABLE_PHASES: readonly TeamPhase[] = ['developing', 'replanning'];
 
 /**
+ * 周期状态机（docs/design-cycles.md §2.2）：
+ *   planned → in_progress → in_review → done
+ * `planned` 的周期内契约不派发（§5.4）；`in_progress` 是当前活跃周期；`in_review`
+ * 等验收；`done` 周期结束。状态推进与验收逻辑归 CYC-3，这里只定词表 —— 与
+ * `TeamPhase` 正交：周期是 developing 内的子推进，不是新 phase（§1.2）。
+ */
+export const CYCLE_STATUSES = ['planned', 'in_progress', 'in_review', 'done'] as const;
+export type CycleStatus = (typeof CYCLE_STATUSES)[number];
+
+/**
  * 问卷（questionnaire）：AI 需要人给一个**决策**才能继续时走这里。它与 escalation
  * 是两件事，绝不能混用同一个记录 —— 升级说「我卡住了，来个人分诊」，问卷说「一切正常，
  * 只是这个选择得由人来做」。把问卷塞进升级会付出三重代价：任务被错误打上

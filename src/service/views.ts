@@ -6,8 +6,15 @@
  *
  * 与 service/report.ts 同一条分工约定：这里是纯函数，编排与副作用留在 service.ts。
  */
-import type { MemberView, ReviewView, TaskView } from '../view.js';
-import { requireTeamMember, type MemberRecord, type ReviewRecord, type TaskRecord, type TeamRecord } from './state.js';
+import type { CycleView, MemberView, ReviewView, TaskView } from '../view.js';
+import {
+  requireTeamMember,
+  type CycleRecord,
+  type MemberRecord,
+  type ReviewRecord,
+  type TaskRecord,
+  type TeamRecord,
+} from './state.js';
 
 export function memberView(member: MemberRecord): MemberView {
   return {
@@ -52,5 +59,19 @@ export function reviewView(team: TeamRecord, review: ReviewRecord): ReviewView {
     verdict: review.verdict,
     comments: review.comments,
     createdAt: review.createdAt,
+  };
+}
+
+export function cycleView(cycle: CycleRecord): CycleView {
+  return {
+    id: cycle.id,
+    name: cycle.name,
+    status: cycle.status,
+    goal: cycle.goal,
+    scope: [...cycle.scope],
+    taskIds: [...cycle.taskIds],
+    startedAt: cycle.startedAt ?? null,
+    completedAt: cycle.completedAt ?? null,
+    createdAt: cycle.createdAt,
   };
 }

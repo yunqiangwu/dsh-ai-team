@@ -7,7 +7,7 @@
  *     新增枚举值忘了配字典就会把原始 key 渲染给人看。
  */
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,7 +23,7 @@ import {
   selectLearnings,
   type LearningRecord,
 } from '../src/learnings.js';
-import { patchTaskContract, parseTaskContract } from '../src/team.js';
+import { patchTaskContract, parseTaskContract, regenerateBoard } from '../src/team.js';
 import { forbiddenTouchesViolation } from '../src/profile.js';
 import { en, zh } from '../src/client/index.js';
 import {
@@ -208,6 +208,83 @@ describe('task contract round-trip', () => {
     const reread = parseTaskContract(path, await readFile(path, 'utf8'));
     expect(reread.status).toBe('needs-clarification');
     expect(reread.touches).toEqual(['server/']);
+  });
+
+  it('parses the optional cycle field, and patches it in place preserving other lines', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-ai-team-cycle-'));
+    const path = join(dir, 'CYC-1.md');
+    const body = 'Given/When/Then …';
+    await writeFile(path, `---\nid: CYC-1\ntitle: cycle task\nstatus: pending\n---\n\n${body}\n`, 'utf8');
+    // 缺省 = null（未排期），行为与老契约一字不变。
+    expect(parseTaskContract(path, await readFile(path, 'utf8')).cycle).toBeNull();
+    // 就地打上周期归属，其它 frontmatter 行逐字节保留。
+    await patchTaskContract(path, { cycle: 'M1' });
+    const patched = await readFile(path, 'utf8');
+    expect(patched).toContain('cycle: M1');
+    expect(patched).toContain('title: cycle task');
+    expect(parseTaskContract(path, patched).cycle).toBe('M1');
+    // 传 null 删除归属（回到未排期），不残留空 cycle key。
+    await patchTaskContract(path, { cycle: null });
+    const unassigned = await readFile(path, 'utf8');
+    expect(unassigned).not.toMatch(/cycle:/);
+    expect(parseTaskContract(path, unassigned).cycle).toBeNull();
+    expect(unassigned).toContain(body);
+  });
+});
+
+/** 看板分组测试的契约种子：只关心 cycle / status 两个字段。 */
+function contract(id: string, cycle: string | null, status = 'pending') {
+  return {
+    id,
+    title: `title ${id}`,
+    status,
+    owner: null,
+    dependsOn: [] as string[],
+    touches: ['app/'],
+    forbidden: [] as string[],
+    priority: 0,
+    cycle,
+    path: `.tasks/${id}.md`,
+    body: '',
+  };
+}
+
+describe('regenerateBoard groups contracts by cycle', () => {
+  it('renders cycle headers with done/total progress, then unscheduled, blocking and cancelled sections', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-ai-team-board-'));
+    await mkdir(join(dir, '.tasks'), { recursive: true });
+    await regenerateBoard(dir, [
+      contract('M1-1', 'M1', 'done'),
+      contract('M1-2', 'M1', 'in_progress'),
+      contract('M2-1', 'M2'),
+      contract('FREE-1', null),
+      contract('DEAD-1', 'M1', 'cancelled'),
+    ]);
+    const board = await readFile(join(dir, '.tasks', '_board.md'), 'utf8');
+    // 周期头：name + done/total 进度（M1 含 done/in_progress/cancelled 共 3 条，cancelled 计入总数）。
+    expect(board).toContain('## M1（1/3 done）');
+    expect(board).toContain('## M2（0/1 done）');
+    // 无周期契约归「未排期」区，且按首次出现顺序先列 M1、M2。
+    expect(board.indexOf('## M1（1/3 done）')).toBeLessThan(board.indexOf('## 未排期'));
+    expect(board.indexOf('## 未排期')).toBeLessThan(board.indexOf('## 阻塞清单'));
+    // 各分区内容都在，且不弄脏 worktree（无时间戳）。
+    expect(board).toContain('| M1-1 |');
+    expect(board).toContain('| M1-2 |');
+    expect(board).toContain('| FREE-1 |');
+    expect(board).toContain('## 已废弃');
+    expect(board).toContain('DEAD-1 title DEAD-1 — cancelled');
+    expect(board).not.toMatch(/regenerated at/);
+  });
+
+  it('keeps a bare board byte-stable across regenerations (no timestamps, stable progress)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-ai-team-board-stable-'));
+    await mkdir(join(dir, '.tasks'), { recursive: true });
+    const contracts = [contract('B-1', null), contract('B-2', 'M1')];
+    await regenerateBoard(dir, contracts);
+    const first = await readFile(join(dir, '.tasks', '_board.md'), 'utf8');
+    await regenerateBoard(dir, contracts);
+    const second = await readFile(join(dir, '.tasks', '_board.md'), 'utf8');
+    expect(second).toBe(first);
   });
 });
 

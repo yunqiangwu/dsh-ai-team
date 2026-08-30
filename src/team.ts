@@ -26,6 +26,8 @@ export interface TaskContract {
    * 且只在「依赖条件相同」的任务之间生效 —— 前置没满足的任务永远排在后面。
    */
   priority: number;
+  /** 所属周期（如 "M1"），与 roadmap 章节名对齐。可选；缺省 null = 未排期。 */
+  cycle: string | null;
   /** 契约文件的绝对路径。 */
   path: string;
   /** Markdown 正文（验收标准等），不含 frontmatter。 */
@@ -58,6 +60,7 @@ export function parseTaskContract(path: string, content: string): TaskContract {
     touches: toStringArray(raw['touches']),
     forbidden: toStringArray(raw['forbidden']),
     priority: typeof raw['priority'] === 'number' && Number.isFinite(raw['priority']) ? raw['priority'] : 0,
+    cycle: typeof raw['cycle'] === 'string' && raw['cycle'] !== '' ? raw['cycle'] : null,
     path,
     body: match[2] ?? '',
   };
@@ -121,6 +124,8 @@ interface FrontmatterPatch {
   owner?: string | null;
   /** 重规划调优先级时同步契约 frontmatter（看板记录与契约文件保持一份事实）。 */
   priority?: number;
+  /** 周期归属（`cycle: M1`）；传 null 删除该 key（契约回到未排期）。 */
+  cycle?: string | null;
 }
 
 /**
@@ -152,6 +157,9 @@ export async function patchTaskContract(path: string, patch: FrontmatterPatch): 
     frontmatter = setFrontmatterKey(frontmatter, 'owner', patch.owner === null ? null : patch.owner);
   }
   if (patch.priority !== undefined) frontmatter = setFrontmatterKey(frontmatter, 'priority', String(patch.priority));
+  if (patch.cycle !== undefined) {
+    frontmatter = setFrontmatterKey(frontmatter, 'cycle', patch.cycle === null ? null : patch.cycle);
+  }
   const body = match[2] ?? '';
   await writeFile(path, `---\n${frontmatter}\n---\n${body}`, 'utf8');
 }
@@ -173,8 +181,13 @@ export function renderTaskNote(kind: string, at: number, author: string): string
 }
 
 /**
- * 根据当前契约重新生成 `.tasks/_board.md`（状态表 + 阻塞清单）。
+ * 根据当前契约重新生成 `.tasks/_board.md`（按周期分组的状态表 + 阻塞清单）。
  * 绝不手改；每次状态变更后被调用。
+ *
+ * 分组口径（docs/design-cycles.md §3.2）：先列各周期的头（name + 该周期内
+ * done/total 进度），再列其任务；无 `cycle` 字段的契约归「未排期」区。周期头的
+ * 进度数字由契约 status 推出，而看板恰好在 status 变化时才重生成，因此字节稳定、
+ * 不弄脏 worktree（与下方刻意不加时间戳同一道理）。
  */
 export async function regenerateBoard(repoPath: string, contracts: TaskContract[]): Promise<void> {
   const lines: string[] = [
@@ -186,13 +199,34 @@ export async function regenerateBoard(repoPath: string, contracts: TaskContract[
     '| id | title | status | owner | depends_on | touches |',
     '| --- | --- | --- | --- | --- | --- |',
   ];
+  // 按周期名分组（Map 保持首次出现顺序）；无周期契约归「未排期」。
+  const byCycle = new Map<string, TaskContract[]>();
+  const unscheduled: TaskContract[] = [];
   for (const contract of contracts) {
-    lines.push(
-      `| ${contract.id} | ${contract.title} | ${contract.status} | ${contract.owner ?? '-'} | ${contract.dependsOn.join(', ') || '-'} | ${contract.touches.join(', ') || '-'} |`,
-    );
+    const target = contract.cycle === null ? unscheduled : (byCycle.get(contract.cycle) ?? []);
+    target.push(contract);
+    if (contract.cycle !== null) byCycle.set(contract.cycle, target);
+  }
+  const renderGroup = (group: TaskContract[]): void => {
+    for (const contract of group) {
+      lines.push(
+        `| ${contract.id} | ${contract.title} | ${contract.status} | ${contract.owner ?? '-'} | ${contract.dependsOn.join(', ') || '-'} | ${contract.touches.join(', ') || '-'} |`,
+      );
+    }
+  };
+  for (const [cycle, group] of byCycle) {
+    const done = group.filter((contract) => contract.status === 'done').length;
+    lines.push(`## ${cycle}（${done}/${group.length} done）`, '', '| id | title | status | owner | depends_on | touches |', '| --- | --- | --- | --- | --- | --- |');
+    renderGroup(group);
+    lines.push('');
+  }
+  if (unscheduled.length > 0 || byCycle.size === 0) {
+    lines.push('## 未排期', '', '| id | title | status | owner | depends_on | touches |', '| --- | --- | --- | --- | --- | --- |');
+    renderGroup(unscheduled);
+    lines.push('');
   }
   const blocked = contracts.filter((contract) => contract.status === 'needs-human');
-  lines.push('', '## 阻塞清单', '');
+  lines.push('## 阻塞清单', '');
   if (blocked.length === 0) {
     lines.push('- (none)');
   } else {
