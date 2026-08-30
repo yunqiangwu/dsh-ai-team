@@ -16,6 +16,7 @@
   - `tests/test-e2e-replan.ts`：**重规划**——进行中任务因需求变更被 `replanTask(supersede)` 重规划，原契约文件保留不删、派生后续实体、无升级。
   - `tests/test-e2e-escalations.ts`：**门禁失败升级 & 付费依赖升级**——门禁红不能合并（`gate-failure`）→ `needs-human` → `escalation_resolve` 回 `pending`；任务需要付费依赖/密钥（`paid-dependency`）→ 升级 → resolve 回 `pending`。
   - `tests/test-e2e-multiteam.ts`：**多团队并行**——同一进程两个团队各走完「契约 → 派发 → 门禁 → 评审 → 合并」闭环，互不干扰。
+  - `tests/test-e2e-replans.ts`：**replan 后二次派发完整闭环**——在途任务 `task_replan(supersede)` → 派生承接契约落盘 → 原任务照常落地合并 → 派生契约重新派发 → 门禁 → 评审 → 合并。
 
 ## [1.4.0] - 2026-08-30
 
