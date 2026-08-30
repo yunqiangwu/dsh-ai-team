@@ -131,6 +131,11 @@ const CSS = `
 .dsh-ai-team__summary-head { display: flex; align-items: center; gap: 8px; }
 .dsh-ai-team__summary-title { font-weight: 600; font-size: 12px; }
 .dsh-ai-team__summary-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; opacity: .85; }
+/* ── async 摩擦横幅（P3-1）：已答复待继续的醒目提醒，可手动关闭 ── */
+.dsh-ai-team__async-banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid rgba(234,179,8,.45); border-left: 3px solid #eab308; background: rgba(234,179,8,.08); border-radius: 8px; }
+.dsh-ai-team__async-text { font-weight: 600; font-size: 12px; }
+.dsh-ai-team__async-hint { font-size: 11px; opacity: .8; }
+.dsh-ai-team__async-dismiss { font: inherit; font-size: 11px; cursor: pointer; border: 1px solid rgba(234,179,8,.5); border-radius: 6px; padding: 2px 10px; background: transparent; color: #eab308; margin-left: auto; }
 /* ── 等你决策：可最小化的浮动弹窗（默认收起，右下角小胶囊；点开浮窗作答） ── */
 .dsh-ai-team__floating { position: absolute; right: 8px; bottom: 8px; z-index: 40; max-width: 420px; border: 1px solid rgba(234,179,8,.5); border-radius: 10px; background: rgba(20,20,20,.92); color: #eef1f6; box-shadow: 0 10px 28px rgba(0,0,0,.5); }
 .dsh-ai-team__floating-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }

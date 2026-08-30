@@ -1082,6 +1082,27 @@ function CompletionSummary({ team, t }: { team: TeamView; t: Translator }) {
 }
 
 /**
+ * async 摩擦横幅（P3-1）：已答复的异步问卷在等组长继续 —— 答完不回会话说
+ * 「继续」，组长不会自己接着跑。横幅比问卷流水里的状态标签更醒目，可手动
+ * 关闭（宿主写入口另行排期，本插件只做可见性）。
+ */
+function AsyncResumeBanner({ items, t }: { items: QuestionnaireView[]; t: Translator }) {
+  const [dismissed, setDismissed] = useState(false);
+  const pending = items.filter((item) => item.status === 'answered' && item.mode === 'async');
+  if (pending.length === 0 || dismissed) return null;
+  return (
+    <div className="dsh-ai-team__async-banner" role="status">
+      <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">{t('questionnaire.awaitingLeader')}</span>
+      <span className="dsh-ai-team__async-text">{t('async.pendingTitle', { count: pending.length })}</span>
+      <span className="dsh-ai-team__async-hint">{t('questionnaire.continueHint')}</span>
+      <button type="button" className="dsh-ai-team__async-dismiss" onClick={() => setDismissed(true)}>
+        {t('async.dismiss')}
+      </button>
+    </div>
+  );
+}
+
+/**
  * 面板本体。在团队存在之前不渲染任何内容，
  * 以便普通会话保持清爽。
  */
@@ -1147,6 +1168,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
         <div className="dsh-ai-team__body">
           <PhaseGuide phase={team.phase} t={t} />
           {projection.loopState === 'completed' ? <CompletionSummary team={team} t={t} /> : null}
+          <AsyncResumeBanner items={questionnaires} t={t} />
           <StatsStrip
             team={team}
             blocked={projection.blocked}
