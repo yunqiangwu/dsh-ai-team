@@ -235,6 +235,15 @@ Given/When/Then 验收标准……
 - `<stateDir>/learnings.md` 同为生成物（程序全量重写），见下节。
 - developer 的 DoD：质量门全绿 + 每条验收标准的验证证据写入 PR 描述。
 
+## 多周期开发与无人值守闭环（roadmap）
+
+大型项目按里程碑（如 M1~M8）拆成**多个周期**，每个周期内多个任务、任务按波次推进；当前周期全部完成后，Agent 查阅 PRD 路线图与看板波次生成下一轮待办 —— **完成一期 → 再规划一期**的增量模式，而不是开工前把全部任务规划完。细读 [docs/design-cycles.md](docs/design-cycles.md)。
+
+- **周期实体**：每个周期一张 `CycleRecord`（挂在团队上），含目标（goal）、范围（scope）、任务清单与状态（`planned → in_progress → in_review → done`）；契约 frontmatter 用 `cycle: M1` 声明归属，无该字段的契约视为「未排期」，行为不变。
+- **增量规划**：只拆当前要做的下一期，新周期契约状态为 `planned`，未来周期的契约保持 pending、不被 `dispatch` 提前派出；当前周期任务全部完成后触发周期验收，验收通过推进到下一期，直到 roadmap 走完才真正 `completed` 停机。
+- **无人值守直通**：下一期已由组长预排好（契约已在盘上）时，插件机械地把 `planned → in_progress` 并继续派发——唯一全程无人值守的路径；未预排时落一张问卷等人规划，绝不静默空转。
+- **周期边界**：是否要人点头由 `cycles.requireApproval`（开工审批）与 `cycles.autoAdvance`（周期验收后自动推进）配置决定，默认无人值守自动推进；`cycle_plan` 永远只拆当前要做的那个周期。
+
 ## 需求变更与重规划
 
 开发过程中需求会变。组长重排计划时有**两条硬边界**（分级表）：该自主的别发邮件，该人批的别偷跑。
