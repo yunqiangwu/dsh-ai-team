@@ -40,7 +40,7 @@ import {
 import { bootstrapEnvironment, type BootstrapReport } from './bootstrap.js';
 import { linkSharedCacheDirs } from './cache.js';
 import { runGates } from './gates.js';
-import { runDeploy } from './deploy.js';
+import { DeployCoordinator, isTasksOnlyChange } from './service/deploys.js';
 import { checkRunStatus, githubRepoSlug, upsertPullRequest } from './github.js';
 import { EscalationManager, type EscalationInput } from './escalate.js';
 import { Mailer, postHumanWebhook, renderEscalationMail } from './notification.js';
@@ -238,7 +238,6 @@ export class AutopilotService {
   private loopState: LoopState = 'stopped';
   private tick = 0;
   private bootstrapped = false;
-  private lastDeployBaseSha: string | null = null;
   private notificationMailer: Mailer | null = null;
   private notificationServer: TicketServer | null = null;
   /**
@@ -251,7 +250,7 @@ export class AutopilotService {
    * 凭据表也就只有一张。
    */
   private readonly ticketTokens = new Map<string, string>();
-  private deploys: DeployView[] = [];
+  private readonly deployCoordinator: DeployCoordinator;
   private recoveredOnce = false;
   /**
    * 已经进过 `contract-rejected` 事件的坏契约路径。去重是必需的：坏文件每拍都会
@@ -326,6 +325,7 @@ export class AutopilotService {
       ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
     });
     this.questionnaires = new QuestionnaireManager({ redactor: this.redactor });
+    this.deployCoordinator = new DeployCoordinator(this.redactor);
     // 提前把所有以环境变量引用的密钥登记进脱敏器，之后任何输出都不会漏出明文。
     this.redactor.registerEnvNames([
       options.remote.sshKeyEnv,
@@ -1264,12 +1264,14 @@ export class AutopilotService {
       // 凭据表同样要跨重启存活：邮件里那条链接已经发出去了，换一枚 token 就等于
       // 把已经叫来的人关在门外。老 state.json 没这个字段，`?? {}` 兜底。
       for (const [id, token] of Object.entries(state.ticketTokens ?? {})) this.ticketTokens.set(id, token);
-      this.deploys = state.deploys ?? [];
-      // 崩崩恢复的硬规则：持久化的 running 一律降级为 paused，等人来 resume。
+      this.deployCoordinator.restore({
+        deploys: state.deploys ?? [],
+        lastDeployBaseSha: state.lastDeployBaseSha ?? null,
+      });
+      // 崩溃恢复的硬规则：持久化的 running 一律降级为 paused，等人来 resume。
       this.loopState = state.loopState === 'running' ? 'paused' : (state.loopState ?? 'stopped');
       this.tick = state.tick ?? 0;
       this.bootstrapped = state.bootstrapped ?? false;
-      this.lastDeployBaseSha = state.lastDeployBaseSha ?? null;
       // 覆盖配置随状态一起恢复，让「面板里改过 / config_set 设过」的值跨重启保持。
       this.runtimeConfig = state.runtimeConfig ?? {};
       if (Object.keys(this.runtimeConfig).length > 0) this.reconcileRuntime();
@@ -1287,8 +1289,7 @@ export class AutopilotService {
       this.escalations.restore([]);
       this.questionnaires.restore([]);
       this.ticketTokens.clear();
-      this.deploys = [];
-      this.lastDeployBaseSha = null;
+      this.deployCoordinator.restore({ deploys: [], lastDeployBaseSha: null });
       await rename(this.stateFile, `${this.stateFile}.corrupt-${Date.now()}`).catch(() => {});
     }
   }
@@ -1305,11 +1306,11 @@ export class AutopilotService {
       // 让"内存里那把表"与"磁盘上那份视图"各自清楚。
       ticketTokens: Object.fromEntries([...this.ticketTokens].filter(([id]) => this.ticketAnswerable(id))),
       runtimeConfig: this.runtimeConfig,
-      deploys: this.deploys,
+      deploys: this.deployCoordinator.deploys,
       loopState: this.loopState,
       tick: this.tick,
       bootstrapped: this.bootstrapped,
-      lastDeployBaseSha: this.lastDeployBaseSha,
+      lastDeployBaseSha: this.deployCoordinator.lastDeployBaseSha,
     };
   }
 
@@ -1409,7 +1410,7 @@ export class AutopilotService {
       // 走 questionnaireViews() 而不是 manager.all：审批码是服务侧凭据，
       // 进快照就等于进模型读得到的 session 日志。
       questionnaires: this.questionnaireViews(),
-      deploys: this.deploys,
+      deploys: this.deployCoordinator.deploys,
       heartbeat: { at: Date.now(), loopState: this.loopState, tick: this.tick } satisfies HeartbeatView,
       blocked,
     };
@@ -2787,28 +2788,22 @@ export class AutopilotService {
     }
     const team = teamId !== undefined ? this.teamOf(teamId) : [...this.teams.values()][0];
     if (team === undefined) throw new Error('no team yet — nothing to deploy');
-    const view = await runDeploy({
-      command: deploy.command,
-      healthCheckUrl: deploy.healthCheckUrl,
-      rollbackCommand: deploy.rollbackCommand,
-      secretsEnv: deploy.secretsEnv,
-      allowlist: this.options.security.commandAllowlist,
-      redactor: this.redactor,
-      cwd: team.repoPath,
-      branch: team.baseBranch,
-      ...(this.options.fetchFn !== undefined ? { fetchFn: this.options.fetchFn } : {}),
-      ...(this.options.tickSleepMs !== undefined ? { backoffMs: Math.max(this.options.tickSleepMs, 10) } : {}),
-    });
-    // 落团队归属（TECH-4）：runDeploy 不知道团队是谁，这里盖上再入账 ——
-    // 调用方（工具 / 测试）与投影看到的是同一份带归属的记录。
-    view.teamId = team.id;
-    this.deploys.push(view);
+    const view = await this.deployCoordinator.run(
+      {
+        command: deploy.command,
+        healthCheckUrl: deploy.healthCheckUrl,
+        rollbackCommand: deploy.rollbackCommand,
+        secretsEnv: deploy.secretsEnv,
+        allowlist: this.options.security.commandAllowlist,
+        ...(this.options.fetchFn !== undefined ? { fetchFn: this.options.fetchFn } : {}),
+        ...(this.options.tickSleepMs !== undefined ? { backoffMs: Math.max(this.options.tickSleepMs, 10) } : {}),
+      },
+      { repoPath: team.repoPath, branch: team.baseBranch, teamId: team.id },
+    );
     const metrics = this.teamMetrics(team);
     metrics.deploys += 1;
     if (view.status === 'rolled-back' || view.status === 'rollback-failed') metrics.rollbacks += 1;
-    if (view.status === 'healthy') {
-      this.lastDeployBaseSha = await resolveRef(team.repoPath, team.baseBranch);
-    } else {
+    if (view.status !== 'healthy') {
       await this.escalateTask({
         teamId: team.id,
         taskId: null,
@@ -3304,15 +3299,16 @@ export class AutopilotService {
   private async maybeDeploy(team: TeamRecord, report: TickReport): Promise<void> {
     const deploy = this.options.deploy;
     if (deploy?.enabled !== true || deploy.command === undefined || deploy.command === '') return;
+    const lastBase = this.deployCoordinator.lastDeployBaseSha;
     const baseSha = await resolveRef(team.repoPath, team.baseBranch).catch(() => null);
-    if (baseSha === null || baseSha === this.lastDeployBaseSha) return;
+    if (baseSha === null || baseSha === lastBase) return;
     // 任务单状态回写与看板重生成都会往 base 提交 `.tasks/` 改动。这些提交不含
     // 任何代码，部署它们只会误触回滚与升级 —— 先比对上一次部署点以来的变更面，
-    // 纯文档就不部署。
-    if (deploy.skipTasksOnlyCommits !== false && this.lastDeployBaseSha !== null) {
-      const changed = await changedFiles(team.repoPath, this.lastDeployBaseSha, baseSha).catch(() => null);
-      if (changed !== null && changed.length > 0 && changed.every((file) => file.startsWith(`${TASKS_DIR}/`))) {
-        this.lastDeployBaseSha = baseSha;
+    // 纯文档就不部署（isTasksOnlyChange 见 service/deploys.ts，可单测）。
+    if (deploy.skipTasksOnlyCommits !== false && lastBase !== null) {
+      const changed = await changedFiles(team.repoPath, lastBase, baseSha).catch(() => null);
+      if (changed !== null && isTasksOnlyChange(changed)) {
+        this.deployCoordinator.lastDeployBaseSha = baseSha;
         report.events.push(`deploy-skipped:tasks-only:${team.id}`);
         return;
       }
@@ -3510,7 +3506,7 @@ export class AutopilotService {
   private async writeCompletionArtifact(team: TeamRecord): Promise<void> {
     const summary = renderCompletionReport({
       team,
-      deploys: this.deploys,
+      deploys: this.deployCoordinator.deploys,
       promoteAfterHits: this.learningOptions()?.promoteAfterHits,
       finishedAt: Date.now(),
     });
@@ -3562,7 +3558,7 @@ export class AutopilotService {
       // 该催谁，而不是对着一个不动的任务反复重排计划。
       awaitingHuman: this.awaitingHuman(),
       escalations: [...this.escalations.all],
-      deploys: this.deploys,
+      deploys: this.deployCoordinator.deploys,
     };
   }
 }
