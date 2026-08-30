@@ -14,6 +14,8 @@
   - `tests/test-e2e-gfm.ts`：**ask_human 人工确认 → 派生后续任务闭环**——leader 提问 → 开放问卷 → 人作答 → 派生实现 → 门禁 → 评审 → 合并。
   - `tests/test-e2e-clarify.ts`：**任务澄清**——dev 发现契约矛盾 → `task_clarify`（不返工、不升级）→ 任务 `needs-clarification`、成员释放 → leader 以 note 回答释放回 `pending`。
   - `tests/test-e2e-replan.ts`：**重规划**——进行中任务因需求变更被 `replanTask(supersede)` 重规划，原契约文件保留不删、派生后续实体、无升级。
+  - `tests/test-e2e-escalations.ts`：**门禁失败升级 & 付费依赖升级**——门禁红不能合并（`gate-failure`）→ `needs-human` → `escalation_resolve` 回 `pending`；任务需要付费依赖/密钥（`paid-dependency`）→ 升级 → resolve 回 `pending`。
+  - `tests/test-e2e-multiteam.ts`：**多团队并行**——同一进程两个团队各走完「契约 → 派发 → 门禁 → 评审 → 合并」闭环，互不干扰。
 
 ## [1.4.0] - 2026-08-30
 
