@@ -4,14 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)；条目按 git 提交历史（Conventional Commits）归纳，feat / fix 优先。
 
-## [Unreleased]
+## [1.1.2] - 2026-08-30
 
 ### 修复
 
 - **bootstrap 默认命令改为空串（已知坑 1）**：`DEFAULT_BOOTSTRAP` 的 `setupCommand` / `verifyCommand` 不再默认指向 `pnpm run setup` / `pnpm run e2e:local`——空 remote 时团队仓库是空仓库、真实用户仓库也没有普适脚本名，默认必致 `autopilot_init` 上来就 `bootstrap-failed`。空串 = 跳过，引导只做工具链探测 + rootless 安装；要跑初始化/自检在配置里指认目标仓库真实存在的命令（README / PILOT.md 有示例）。
 - **多团队投影一致性（TECH-4）**：`escalationView` / `deployView` 补 `teamId`（`stateVersion` 8），面板单团队视图的升级流、部署历史与摘要计数改按当前团队过滤，多团队并行时不再混显；归属不明的旧记录（`teamId: null`）全团队可见。升级侧 13 个内部触发点显式归属，工具侧按 `taskId` 反查兜底。
 
-## [1.1.1]
+## [1.1.1] - 2026-08-30
 
 ### 新增
 

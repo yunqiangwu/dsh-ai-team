@@ -1,6 +1,6 @@
 {
   "name": "dsh-ai-team",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "DSH plugin: an unattended AI software team. Feed it a bare Linux server, a set of secrets (env-var references only) and a git remote, and the plugin-driven AI team drives the whole project lifecycle — environment bootstrap, scaffolding, task decomposition, parallel multi-agent development, objective quality gates, code review, merge, deploy, monitoring and iteration — with humans involved only when the plugin escalates.",
   "author": "yunke",
   "license": "MIT",
