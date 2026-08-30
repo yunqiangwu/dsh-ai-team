@@ -18,6 +18,7 @@ import { DEFAULT_LEARNINGS } from './learnings.js';
 import type { LearningOptions } from './learnings.js';
 import { AutopilotService } from './service.js';
 import { registerAutopilotTools } from './tools.js';
+import type { RuntimeConfig } from './service/options.js';
 import type { PauseOnEscalation, QuestionnaireMode, RemotePlatform } from './view.js';
 import { TICKET_ROUTE_PREFIX } from './view.js';
 
@@ -166,6 +167,50 @@ export interface Config {
 
 /** schemastery 把可选 string 的缺省填成 ''；映射到 options 层统一归一成 undefined。 */
 const orUndefined = (value: string): string | undefined => (value === '' ? undefined : value);
+
+/**
+ * 把「设置面板保存后的完整 Config」投影成运行时覆盖子集。面板只暴露了
+ * AUTOPILOT_KEY_FIELDS 对应的字段，但 Config 全程可达，这里把能热改的那一批
+ * 取出交给 service.setRuntimeConfig —— 保存即生效，无需重启 dsh web。
+ */
+function runtimeConfigFromConfig(cfg: Config): RuntimeConfig {
+  return {
+    baseBranch: cfg.baseBranch,
+    remote: {
+      url: cfg.remote.url,
+      sshKeyEnv: cfg.remote.sshKeyEnv,
+      platform: cfg.remote.platform,
+      apiTokenEnv: orUndefined(cfg.remote.apiTokenEnv),
+    },
+    bootstrap: {
+      enabled: cfg.bootstrap.enabled,
+      toolchain: cfg.bootstrap.toolchain,
+      setupCommand: cfg.bootstrap.setupCommand,
+      verifyCommand: cfg.bootstrap.verifyCommand,
+    },
+    gates: {
+      commands: cfg.gates.commands,
+      requireCiGreen: cfg.gates.requireCiGreen,
+      timeoutMinutes: cfg.gates.timeoutMinutes,
+    },
+    daemon: cfg.daemon,
+    escalation: {
+      webhookUrlEnv: orUndefined(cfg.escalation.webhookUrlEnv),
+      label: cfg.escalation.label,
+      pauseOnEscalation: cfg.escalation.pauseOnEscalation,
+    },
+    security: cfg.security,
+    learnings: cfg.learnings !== undefined
+      ? {
+          enabled: cfg.learnings.enabled,
+          injectMaxCount: cfg.learnings.injectMaxCount,
+          injectCharBudget: cfg.learnings.injectCharBudget,
+          promoteAfterHits: cfg.learnings.promoteAfterHits,
+          maxEntries: cfg.learnings.maxEntries,
+        }
+      : undefined,
+  };
+}
 
 // ── Config 默认值的唯一清单 ─────────────────────────────────────────────────
 // schemastery 的对象级 `.default({...})` 要求完整字面量，逐字段 `.default(x)` 又
@@ -432,12 +477,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // 让浏览器卡片可以编辑关键字段；当 settings 服务已挂载时，从解析后的作用域
   // 读取生效配置。未挂载（无头模式）时，数据源回退到入口配置。
   let current: () => Config = () => config;
+  // 设置面板保存即热改：服务实例先于 installSettingsSection 创建，这里用
+  // 变量承接；第一次 onChange 时它一定已赋值。热改走 service.setRuntimeConfig，
+  // 无需重启 dsh web（这正是需求「配置不该写死在文件里」的落点）。
+  let autopilot: AutopilotService | undefined;
   installSettingsSection(ctx, settingsNamespace('autopilot'), Config, config, {
     setSource: (get) => {
       current = get as () => Config;
     },
     onChange: () => {
-      // 若插件将来需要运行时热改配置，可在此处重新推导派生状态。
+      void autopilot?.setRuntimeConfig(runtimeConfigFromConfig(current()));
     },
   });
   const effective = current();
@@ -509,6 +558,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     warn: (message, error) => ctx.logger.warn(message, error),
   });
   // 把服务暴露给其它插件（以及驱动 host 的测试）。
+  autopilot = service;
   ctx.provide('autopilot', service);
   // Host → Web UI 数据流：`autopilot` session projection。
   // 可选的 inject 接缝保证无头 profile 也能工作。

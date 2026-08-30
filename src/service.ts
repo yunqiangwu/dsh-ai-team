@@ -127,7 +127,8 @@ import type {
 // 阶段枚举经 view.ts 门面取自唯一词表（与 tools.ts 同一惯例）：手抄一份漏掉新值，
 // 编译器和测试都不响。
 import { DISPATCHABLE_PHASES, TICKET_ROUTE_PREFIX } from './view.js';
-import type { AutopilotOptions } from './service/options.js';
+import { mergeRuntimeConfig, runtimeConfigViewOf } from './service/options.js';
+import type { AutopilotOptions, RuntimeConfig } from './service/options.js';
 import {
   clip,
   createTaskRecord,
@@ -287,7 +288,16 @@ export class AutopilotService {
     }
   >();
 
-  private constructor(private readonly options: AutopilotOptions & { rootDir: string; stateDir: string }) {
+  /** 配置文件解析出的基线（不可变）；运行时覆盖叠加在其上。 */
+  private readonly baseOptions: AutopilotOptions & { rootDir: string; stateDir: string };
+  /** 运行时覆盖（面板设置 / config_set），持久化在 state.json 的 `runtimeConfig`。 */
+  private runtimeConfig: RuntimeConfig = {};
+  /** 生效配置 = baseOptions ⊕ runtimeConfig。逐次读 fresh，热改即时生效。 */
+  private options: AutopilotOptions & { rootDir: string; stateDir: string };
+
+  private constructor(options: AutopilotOptions & { rootDir: string; stateDir: string }) {
+    this.baseOptions = options;
+    this.options = options;
     this.escalations = new EscalationManager({
       webhookUrlEnv: options.escalation.webhookUrlEnv,
       label: options.escalation.label,
@@ -1055,6 +1065,41 @@ export class AutopilotService {
     this.snapshotPublisher = undefined;
   }
 
+  // ── 运行时配置（热改，免重启）─────────────────────────────────────────────
+
+  /**
+   * 返回生效配置的「运行时覆盖子集」（config_show 用）。值里只有环境变量名与
+   * 路径，不是明文密钥；即便如此也一律经过脱敏器兜底，防止未来字段引入泄漏。
+   */
+  runtimeConfigView(): RuntimeConfig {
+    // 视图里只有环境变量名与路径，但为守「输出必经脱敏」的硬规则，先 stringify 整体
+    // 过一遍 redact 再还原。命中已登记密钥值的地方会被换成 `***`，不会漏进模型。
+    return JSON.parse(this.redactor.redact(JSON.stringify(runtimeConfigViewOf(this.options)))) as RuntimeConfig;
+  }
+
+  /**
+   * 运行时热配置：把 part 叠加到 baseOptions 上，重算生效配置、补齐新引入的
+   * 环境变量名到脱敏器、落盘，并通知监听者。面板设置与 leader 的 config_set 工具
+   * 都走这里 —— 之后的下一次操作立即用新值，无需重启 dsh web。
+   */
+  setRuntimeConfig(part: RuntimeConfig): RuntimeConfig {
+    this.runtimeConfig = { ...this.runtimeConfig, ...part };
+    this.reconcileRuntime();
+    this.changed();
+    return this.runtimeConfigView();
+  }
+
+  /** 重算生效配置；并把 runtimeConfig 里新出现的密钥环境变量名登记进脱敏器。 */
+  private reconcileRuntime(): void {
+    this.options = mergeRuntimeConfig(this.baseOptions, this.runtimeConfig);
+    this.redactor.registerEnvNames([
+      this.options.remote.sshKeyEnv,
+      this.options.remote.apiTokenEnv,
+      this.options.escalation.webhookUrlEnv,
+      ...(this.options.deploy?.secretsEnv ?? []),
+    ]);
+  }
+
   // ── 持久化 ────────────────────────────────────────────────────────────────
 
   private get stateFile(): string {
@@ -1088,6 +1133,9 @@ export class AutopilotService {
       this.tick = state.tick ?? 0;
       this.bootstrapped = state.bootstrapped ?? false;
       this.lastDeployBaseSha = state.lastDeployBaseSha ?? null;
+      // 覆盖配置随状态一起恢复，让「面板里改过 / config_set 设过」的值跨重启保持。
+      this.runtimeConfig = state.runtimeConfig ?? {};
+      if (Object.keys(this.runtimeConfig).length > 0) this.reconcileRuntime();
       for (const team of this.teams.values()) {
         // 老state.json 没有 metrics 字段：读取处归一化兜底，之后所有埋点都可直接写。
         team.metrics ??= emptyTeamMetrics();
@@ -1119,6 +1167,7 @@ export class AutopilotService {
       // 留库存，而记录本身要留在 state.json 里做审计。派生而不是原地删，是为了
       // 让"内存里那把表"与"磁盘上那份视图"各自清楚。
       ticketTokens: Object.fromEntries([...this.ticketTokens].filter(([id]) => this.ticketAnswerable(id))),
+      runtimeConfig: this.runtimeConfig,
       deploys: this.deploys,
       loopState: this.loopState,
       tick: this.tick,

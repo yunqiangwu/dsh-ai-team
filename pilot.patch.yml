@@ -1,14 +1,14 @@
 # 首跑试点 patch（dogfood：拿 dsh-ai-team 仓库自己当目标仓库）。
-# 与 PILOT.md §2 模板的差异只有一处：本机没有 GITHUB_TOKEN，
-# 走 generic 语义（pr_sync 纯推送、requireCiGreen 显式关——本地四件套门照跑）。
+# L1 试点：改用本地 bare 远端 /tmp/dsh-ai-team-l1.git，rootDir 换新以隔离 L0 状态。
+# 本机没有 GITHUB_TOKEN，走 generic 语义（pr_sync 纯推送、requireCiGreen 显式关——本地四件套门照跑）。
 - insert:
   - id: autopilot
     name: dsh-ai-team
     config:
-      rootDir: .dsh-ai-team
+      rootDir: .dsh-ai-team-l1
       baseBranch: main
       remote:
-        url: git@github.com:yunqiangwu/dsh-ai-team.git
+        url: /tmp/dsh-ai-team-l1.git
         sshKeyEnv: AUTOPILOT_GIT_KEY
         platform: generic
       bootstrap:

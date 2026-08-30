@@ -70,6 +70,8 @@ describe('smoke: cordis Loader contract', () => {
         'answer_questionnaire',
         'ask_human',
         'autopilot_init',
+        'config_set',
+        'config_show',
         'autopilot_pause',
         'autopilot_phase',
         'autopilot_resume',

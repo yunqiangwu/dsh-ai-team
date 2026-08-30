@@ -8,6 +8,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { JsonValue } from '@deepseek-ai/dsh-session';
 import type { AutopilotService } from './service.js';
 import type { ContractDraft } from './service/contracts.js';
+import type { RuntimeConfig } from './service/options.js';
 import './events.js';
 // 工具层的枚举一律引用唯一词表（经 view.ts 门面）：手抄一份漏掉新值，表现为模型报不出
 // 那个原因 / 分类，而编译器和测试都不会响。
@@ -16,9 +17,11 @@ import {
   ESCALATION_REASONS,
   LEARNING_BUCKETS,
   LEARNING_KINDS,
+  PAUSE_ON_ESCALATION,
   QUESTIONNAIRE_KINDS,
   QUESTIONNAIRE_MODES,
   QUESTION_TYPES,
+  REMOTE_PLATFORMS,
   REVIEW_VERDICTS,
   ROLES,
   TASK_MOVEABLE_STATUSES,
@@ -565,6 +568,116 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       return status;
     },
     presentCall: present('Autopilot status'),
+  });
+
+  // ── 运行时配置（热改，免重启）─────────────────────────────────────────────
+
+  ctx.tools.register(
+    defineTool({
+      name: 'config_show',
+      description:
+        'Show the EFFECTIVE runtime configuration (config file baseline merged with ' +
+        'runtime overrides). Values are env var names and paths, not secrets — they are ' +
+        'still redacted before rendering. Call this to see what the team is actually ' +
+        'configured with, then change it with config_set without restarting the host.',
+      parameters: {},
+      output: jsonOutput,
+      async execute() {
+        return asJson(service.runtimeConfigView());
+      },
+      presentCall: present('Show effective config'),
+    }),
+  );
+
+  registerPublishingTool({
+    name: 'config_set',
+    description:
+      'Change the EFFECTIVE runtime configuration at runtime — no host restart needed. ' +
+      'Only pass the fields you want to override; omitted groups keep their current values. ' +
+      'Purely scalar/array fields replace wholesale; group objects (remote / gates / ' +
+      'daemon / security …) merge per key. This is how a leader configures the repo ' +
+      'address, branch name, gate commands etc. in plain language instead of editing a ' +
+      'config file. Takes effect on the next operation — the running loop reads the ' +
+      'merged options fresh each time. Returns the new effective config.',
+    parameters: {
+      baseBranch: { type: 'string', description: 'Integration branch (default main)' },
+      remote: {
+        type: 'object',
+        additionalProperties: false,
+        description: 'Remote repo details',
+        properties: {
+          url: { type: 'string', description: 'Clone/push URL, e.g. git@github.com:o/r.git or a local /path/repo.git' },
+          sshKeyEnv: { type: 'string', description: 'Env var name holding the SSH private key TEXT' },
+          platform: { type: 'string', enum: REMOTE_PLATFORMS },
+          apiTokenEnv: { type: 'string', description: 'Env var name for a platform API token (github)' },
+        },
+      },
+      bootstrap: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          enabled: { type: 'boolean' },
+          toolchain: { type: 'array', items: { type: 'string' } },
+          setupCommand: { type: 'string' },
+          verifyCommand: { type: 'string' },
+        },
+      },
+      gates: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          commands: { type: 'array', items: { type: 'string' }, description: 'Quality-gate commands, ran in order' },
+          requireCiGreen: { type: 'boolean', description: 'Reject approve unless CI is green (github only)' },
+          timeoutMinutes: { type: 'number' },
+        },
+      },
+      daemon: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          maxReviewRounds: { type: 'number' },
+          stuckMinutes: { type: 'number' },
+          pollIntervalSeconds: { type: 'number' },
+          maxDiffLines: { type: 'number' },
+          maxDiffFiles: { type: 'number' },
+          maxTaskHours: { type: 'number' },
+        },
+      },
+      escalation: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          webhookUrlEnv: { type: 'string' },
+          label: { type: 'string' },
+          pauseOnEscalation: { type: 'string', enum: PAUSE_ON_ESCALATION },
+        },
+      },
+      security: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          forbiddenPaths: { type: 'array', items: { type: 'string' } },
+          commandAllowlist: { type: 'array', items: { type: 'string' } },
+          pushRequiresGates: { type: 'boolean' },
+        },
+      },
+      learnings: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          enabled: { type: 'boolean' },
+          injectMaxCount: { type: 'number' },
+          injectCharBudget: { type: 'number' },
+          promoteAfterHits: { type: 'number' },
+          maxEntries: { type: 'number' },
+        },
+      },
+    },
+    async execute(args) {
+      const input = args as unknown as RuntimeConfig;
+      return service.setRuntimeConfig(input);
+    },
+    presentCall: present('Set runtime config'),
   });
 
   registerPublishingTool({

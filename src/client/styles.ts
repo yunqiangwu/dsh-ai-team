@@ -15,7 +15,7 @@ const CSS = `
 .dsh-ai-team__header:hover .dsh-ai-team__chevron { background: rgba(127,127,127,.15); }
 .dsh-ai-team--open .dsh-ai-team__chevron { transform: rotate(90deg); }
 .dsh-ai-team--open .dsh-ai-team__header { border-bottom: 1px solid rgba(127,127,127,.12); }
-.dsh-ai-team__body { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.dsh-ai-team__body { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 12px; max-height: min(62vh, 720px); min-height: 96px; overflow-y: auto; resize: vertical; }
 .dsh-ai-team__section-title { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .55; }
 .dsh-ai-team__lamp { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); font-weight: 600; white-space: nowrap; flex: none; }
 .dsh-ai-team__lamp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }

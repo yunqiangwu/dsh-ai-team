@@ -4,6 +4,13 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)；条目按 git 提交历史（Conventional Commits）归纳，feat / fix 优先。
 
+## [1.3.0] - 2026-08-30
+
+### 新增
+
+- **配置热改（免重启）**：服务端引入「基线 + 运行时覆盖」两层（`RuntimeConfig` / `mergeRuntimeConfig` / `runtimeConfigViewOf`），`AutopilotService` 的 `options` 改为可变并新增 `setRuntimeConfig` / `runtimeConfigView`。设置 → 插件 → 插件配置面板保存即热生效（经 `onChange` → `setRuntimeConfig` 投递，落进 `state.json` 的 `runtimeConfig` 跨重启保持），不再需要带 `--patch` 重启服务端；同时新增 `config_show`（看生效配置）与 `config_set`（自然语言改仓库地址、基分支、门命令等）两个 leader 可用的工具。说明：`remote.url` 对已克隆团队的 origin 不会自动改指，新 clone / 新团队才用新地址。
+- **看板面板可调大小**：看板主体高度默认不超过 `min(62vh, 720px)`、超出内部滚动，右下角拖拽手柄可手动改高度（`resize: vertical`），不再整屏遮挡。
+
 ## [1.2.0] - 2026-08-30
 
 ### 新增

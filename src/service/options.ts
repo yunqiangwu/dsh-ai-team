@@ -13,6 +13,139 @@ import type { LearningOptions } from '../learnings.js';
 import type { ProjectProfile } from '../profile.js';
 import type { PauseOnEscalation, QuestionnaireMode, RemotePlatform } from '../view.js';
 
+/**
+ * 运行时覆盖（runtime overrides）：一组「可在运行期热改」的配置项子集。
+ *
+ * 与 `AutopilotOptions` 的差异：完全是可选部分字段，且不含函数与内部字段
+ * （warn / fetchFn / tickSleepMs / stateDir / profile 的解析结果）。服务端把
+ * 它持久化进 state.json（`runtimeConfig`），启动时叠加在配置文件解析出的
+ * baseOptions 之上。面板设置与 leader 的 `config_set` 工具都走这条通道，从而
+ * 「改配置不用重启 dsh web」。
+ */
+export interface RuntimeConfig {
+  baseBranch?: string;
+  remote?: {
+    url?: string;
+    sshKeyEnv?: string;
+    platform?: RemotePlatform;
+    apiTokenEnv?: string;
+  };
+  bootstrap?: {
+    enabled?: boolean;
+    toolchain?: string[];
+    setupCommand?: string;
+    verifyCommand?: string;
+  };
+  gates?: {
+    commands?: string[];
+    requireCiGreen?: boolean;
+    timeoutMinutes?: number;
+  };
+  daemon?: {
+    maxReviewRounds?: number;
+    stuckMinutes?: number;
+    pollIntervalSeconds?: number;
+    maxDiffLines?: number;
+    maxDiffFiles?: number;
+    maxTaskHours?: number;
+  };
+  escalation?: {
+    webhookUrlEnv?: string;
+    label?: string;
+    pauseOnEscalation?: PauseOnEscalation;
+  };
+  security?: {
+    forbiddenPaths?: string[];
+    commandAllowlist?: string[];
+    pushRequiresGates?: boolean;
+  };
+  learnings?: {
+    enabled?: boolean;
+    injectMaxCount?: number;
+    injectCharBudget?: number;
+    promoteAfterHits?: number;
+    maxEntries?: number;
+  };
+}
+
+/** 运行时覆盖叠加在基线上（一层深合并：对象组并键、数组整体替换、标量取新值）。 */
+export function mergeRuntimeConfig<T extends AutopilotOptions>(base: T, overlay: RuntimeConfig): T {
+  const out = { ...base } as T;
+  for (const key of Object.keys(overlay) as (keyof RuntimeConfig)[]) {
+    const value = overlay[key];
+    if (value === undefined) continue;
+    const current = (base as unknown as Record<string, unknown>)[key];
+    if (
+      current !== null &&
+      typeof current === 'object' &&
+      !Array.isArray(current) &&
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
+      // 组内键同样是「undefined = 未覆盖」，逐键过滤后再并，避免把基线键冲成 undefined。
+      const defined = Object.fromEntries(
+        Object.entries(value as object).filter(([, entry]) => entry !== undefined),
+      );
+      (out as unknown as Record<string, unknown>)[key] = { ...(current as object), ...defined };
+    } else {
+      (out as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  return out;
+}
+
+/** 把生效选项投影成「运行时覆盖子集」（config_show / 持久化的形状）。 */
+export function runtimeConfigViewOf(options: AutopilotOptions): RuntimeConfig {
+  return {
+    baseBranch: options.baseBranch,
+    remote: {
+      url: options.remote.url,
+      sshKeyEnv: options.remote.sshKeyEnv,
+      platform: options.remote.platform,
+      apiTokenEnv: options.remote.apiTokenEnv,
+    },
+    bootstrap: {
+      enabled: options.bootstrap.enabled,
+      toolchain: options.bootstrap.toolchain,
+      setupCommand: options.bootstrap.setupCommand,
+      verifyCommand: options.bootstrap.verifyCommand,
+    },
+    gates: {
+      commands: options.gates.commands,
+      requireCiGreen: options.gates.requireCiGreen,
+      timeoutMinutes: options.gates.timeoutMinutes,
+    },
+    daemon: {
+      maxReviewRounds: options.daemon.maxReviewRounds,
+      stuckMinutes: options.daemon.stuckMinutes,
+      pollIntervalSeconds: options.daemon.pollIntervalSeconds,
+      maxDiffLines: options.daemon.maxDiffLines,
+      maxDiffFiles: options.daemon.maxDiffFiles,
+      maxTaskHours: options.daemon.maxTaskHours,
+    },
+    escalation: {
+      webhookUrlEnv: options.escalation.webhookUrlEnv,
+      label: options.escalation.label,
+      pauseOnEscalation: options.escalation.pauseOnEscalation,
+    },
+    security: {
+      forbiddenPaths: options.security.forbiddenPaths,
+      commandAllowlist: options.security.commandAllowlist,
+      pushRequiresGates: options.security.pushRequiresGates,
+    },
+    learnings: options.learnings !== undefined
+      ? {
+          enabled: options.learnings.enabled,
+          injectMaxCount: options.learnings.injectMaxCount,
+          injectCharBudget: options.learnings.injectCharBudget,
+          promoteAfterHits: options.learnings.promoteAfterHits,
+          maxEntries: options.learnings.maxEntries,
+        }
+      : undefined,
+  };
+}
+
 export interface AutopilotOptions {
   rootDir: string;
   stateDir?: string | undefined;

@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import type { QuestionnaireRecord } from '../questionnaire.js';
 import type { LearningRecord } from '../learnings.js';
+import type { RuntimeConfig } from './options.js';
 import type {
   CiStatus,
   DeployView,
@@ -272,6 +273,12 @@ export interface PersistedState {
    * （快照会进模型读得到的 session 日志）。
    */
   ticketTokens?: Record<string, string>;
+  /**
+   * 运行时配置覆盖（面板设置 / config_set 工具写入）。可选：老 state.json 没这个
+   * 字段，`load()` 用 `?? {}` 兜底 —— 它只在跨重启保持「热改过的东西」，投影与
+   * `stateVersion` 都不受影响（同 ticketTokens，内部记录字段而非视图字段）。
+   */
+  runtimeConfig?: RuntimeConfig;
   deploys: DeployView[];
   loopState: LoopState;
   tick: number;

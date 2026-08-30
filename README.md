@@ -313,6 +313,8 @@ Given/When/Then 验收标准……
 
 **知识回路**：`learning_record`（记一条坑） / `learning_list`（查台账与待升格清单） / `learning_promote`（人落文档后标记，或否掉一条）。
 
+**运行时配置（热改，免重启）**：`config_show`（看生效配置） / `config_set`（改生效配置 —— 仓库地址、基分支、门命令等，下次操作立即生效，不必重启 dsh web；`settings → 插件 → 插件配置` 面板保存的字段同样即时生效，并随 state.json 里的 `runtimeConfig` 跨重启保持）。
+
 **人工决策与文档先行**：`ask_human`（向人提问并拿到结构化答复；`interactive` 真的等到人答才返回） / `answer_questionnaire`（人在会话里作答，转述作答审批需带一次性码） / `doc_write`（写文档，只收 draft 区） / `doc_approve`（人把审批过的草稿升格进正式区，落盘前比对 sha256） / `contract_create`（建 `.tasks/*.md` 契约，写前校验 id / 依赖 / 成环 / 禁区 / 域数）。
 
 ### 团队阶段（phase）与依赖死锁
@@ -333,11 +335,11 @@ Given/When/Then 验收标准……
 
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、八列看板（含 needs-human、needs-clarification 与 cancelled，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、八列看板（含 needs-human、needs-clarification 与 cancelled，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。看板主体高度默认不超过 `min(62vh, 720px)`、超出内部滚动，右下角有拖拽手柄可手动改高度（`resize: vertical`）。
 
 > **面板内直接作答（M2）**：提交打到同源相对路径 `POST /autopilot/ticket/<id>/answer`，不需要外部浏览器、也不需要知道工单端口。漏必填项时**保留你已填的内容**并重述缺失项；成功后卡片等服务端推回来的新快照翻「已答复」，不做乐观更新。面板上**不再有跳外部的工单链接** —— 投影里的 `ticketUrl` 刻意不带凭据，从面板点过去必然 404，那是我们自己发布坏按钮；要在面板外作答请用邮件里的链接（带 token）或在会话里直接调 `answer_questionnaire`。
 
-另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片：绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段供编辑保存、写入用户设置层；服务端经 `installSettingsSection` 读到生效配置（无设置服务时回退 entry config）。命名空间在插件加载时注册，改动需**带 `--patch` 重启服务端**后生效。
+另在 **设置 → 插件 → 插件配置** 挂了一张 `autopilot` 卡片：绑定服务端 `ctx.settings.register` 注册的 `autopilot` 命名空间，暴露关键字段供编辑保存、写入用户设置层；服务端经 `installSettingsSection` 读到生效配置（无设置服务时回退 entry config）。字段保存后**即时热生效**（服务端把保存结果经 `setRuntimeConfig` 投递给运行中的 AutopilotService，落进 state.json 的 `runtimeConfig`），无需重启；`remote.url`、`baseBranch`、门命令等改完下一次操作就用新值。leader 也可在会话里用 `config_set` 直接改（见> 工具一览）。
 
 ## Agent 预设：Autopilot 团队（一键切换模式）
 
@@ -382,11 +384,12 @@ pnpm pack --dry-run   # 查看将打进 npm 包的文件清单
 - **原因**：CI 状态查询只有 github 适配；其它平台 `pr_sync` 恒置 `unknown`，而「从未验证视为未通过」会让这道门永远过不去。
 - **处置**：非 github 平台显式把 `gates.requireCiGreen` 设为 `false`，并知情接受「本地门是唯一自动门」；github 平台则先 `pr_sync` 让 CI 真跑一遍。
 
-### 设置卡片改了配置不生效
+### 设置卡片改了配置不生效（已修复：不需重启）
 
 - **症状**：设置 → 插件 → 插件配置里保存成功，行为没变。
-- **原因**：`autopilot` 设置命名空间在插件加载时注册，运行中的服务端读的还是装载时的那份。
-- **处置**：保存后带 `--patch` 重启服务端（本地调试同理：`pnpm dsh web --patch ./cordis.patch.yml`）。
+- **原因（旧版）**：`autopilot` 设置命名空间在插件加载时注册，运行中的服务端读的还是装载时的那份。改动需要带 `--patch` 重启服务端。
+- **现在**：保存即热生效（经 `setRuntimeConfig` 投递 + 落进 state.json 的 `runtimeConfig`），下次操作就用新值。
+- **提醒**：唯一仍需重启的场景是**首次加载该插件**（命名空间与工具注册发生在装载时），以及**改了会在 `create()` 才派生一次的东西**（如 `remote.url` 对已克隆团队的 origin 不会自动改指 —— 新团队/新 clone 才用新地址）。
 
 ### 任务被升级为 `task-stuck` 或 `budget-exceeded`
 
