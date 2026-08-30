@@ -126,6 +126,57 @@ describe('buildDescription: 预算与顺序', () => {
     });
     expect(out.length).toBeLessThanOrEqual(DESCRIPTION_TOTAL_LIMIT);
   });
+
+  it('injects the owning cycle context between the body and the lessons (CYC-4)', () => {
+    const profile = { ...defaultProfile(), ownership: [{ glob: 'server/', role: 'backend', rules: ['never drop a column'] }] };
+    const out = buildDescription({
+      raw: 'body',
+      touches: ['server/'],
+      cycle: { name: 'M1', goal: 'Ship auth v2', scope: ['server/auth/', 'client/auth/'] },
+      learnings: [learning()],
+      profile,
+      learningOptions: enabled,
+    });
+    expect(out).toContain('## 周期 M1');
+    expect(out).toContain('目标：Ship auth v2');
+    expect(out).toContain('范围：server/auth/、client/auth/');
+    // 顺序：正文 → 周期 → 已知教训 → 域所有权（末段恒为不可协商的硬规则）。
+    expect(out.indexOf('body')).toBeLessThan(out.indexOf('## 周期 M1'));
+    expect(out.indexOf('## 周期 M1')).toBeLessThan(out.indexOf('已知教训'));
+    expect(out.indexOf('已知教训')).toBeLessThan(out.indexOf('域所有权'));
+    expect(out.trimEnd().endsWith('never drop a column')).toBe(true);
+  });
+
+  it('keeps ownership and cycle context over lessons and body when everything overflows (CYC-4)', () => {
+    const longRule = 'r'.repeat(4_000);
+    const profile = { ...defaultProfile(), ownership: [{ glob: 'server/', role: 'backend', rules: [longRule] }] };
+    const out = buildDescription({
+      raw: 'b'.repeat(3_000),
+      touches: ['server/'],
+      cycle: { name: 'M2', goal: `g ${'c'.repeat(1_000)}`, scope: ['server/'] },
+      learnings: Array.from({ length: 5 }, (_unused, index) =>
+        learning({ id: `learn_${index}`, summary: `s${index} ${'m'.repeat(400)}` }),
+      ),
+      profile,
+      learningOptions: enabled,
+    });
+    // 所有权段完整存活；周期上下文比教训更接近"为什么"，预算倒排里排第二。
+    expect(out.trimEnd().endsWith(longRule)).toBe(true);
+    expect(out).toContain('## 周期 M2');
+    expect(out.length).toBeLessThanOrEqual(DESCRIPTION_TOTAL_LIMIT);
+  });
+
+  it('renders nothing for a cycle with empty goal and scope (CYC-4)', () => {
+    const out = buildDescription({
+      raw: 'body',
+      touches: [],
+      cycle: { name: 'M3', goal: '', scope: [] },
+      learnings: [],
+      profile: defaultProfile(),
+      learningOptions: undefined,
+    });
+    expect(out).toBe('body');
+  });
 });
 
 function team(overrides: Partial<TeamRecord> = {}): TeamRecord {

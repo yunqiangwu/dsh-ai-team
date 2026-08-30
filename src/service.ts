@@ -1829,7 +1829,7 @@ export class AutopilotService {
       title: input.title,
       branch,
       assigneeId: assignee.id,
-      description: this.buildDescription(team, rawDescription, contract?.touches ?? []),
+      description: this.buildDescription(team, rawDescription, contract?.touches ?? [], contract),
       now,
     });
     team.tasks.push(task);
@@ -2476,13 +2476,17 @@ export class AutopilotService {
    * 这是 task.description 的唯一生产者（assignTask 与 adoptPendingContract 共用），
    * 所以注入只需这一处即可覆盖工具驱动与循环驱动两条派发路径。
    */
-  private buildDescription(team: TeamRecord, raw: string, touches: readonly string[]): string {
+  private buildDescription(team: TeamRecord, raw: string, touches: readonly string[], contract: TaskContract | null): string {
+    // 契约带 `cycle` frontmatter → 注入所属周期的目标与范围（有界，受
+    // DESCRIPTION_TOTAL_LIMIT 约束）；无周期不注入 —— 单周期项目用户零概念。
+    const cycle = contract?.cycle === undefined ? undefined : cycleByName(team, contract.cycle);
     return buildDescription({
       raw,
       touches,
       learnings: team.learnings ?? [],
       profile: this.options.profile,
       learningOptions: this.learningOptions(),
+      ...(cycle === undefined ? {} : { cycle: { name: cycle.name, goal: cycle.goal, scope: cycle.scope } }),
     });
   }
 
@@ -3035,7 +3039,7 @@ export class AutopilotService {
       title: contract.title,
       branch: renderBranchName(this.options.profile.branchTemplate, contract.id, contract.title),
       assigneeId: leader.id,
-      description: this.buildDescription(team, contract.body, contract.touches),
+      description: this.buildDescription(team, contract.body, contract.touches, contract),
       now,
     }));
     report.events.push(`contract:${contract.id}`);
@@ -3104,7 +3108,7 @@ export class AutopilotService {
       // 之后别的任务被打回 / 升级才产生的 —— 只有"晚于教训、早于动工"的注入
       // 时机才真能避免重复踩坑。无对应契约（leader 手工建的任务）保持原样。
       if (contract !== undefined) {
-        task.description = this.buildDescription(team, contract.body, contract.touches);
+        task.description = this.buildDescription(team, contract.body, contract.touches, contract);
       }
       await this.refreshBranches(team);
       if (!team.branches.includes(task.branch)) {

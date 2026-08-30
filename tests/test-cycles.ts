@@ -457,4 +457,32 @@ describe('cycles: unattended advancement (CYC-3)', () => {
       await service.dispose();
     }
   }, 60_000);
+
+  it('CYC-4：派发的周期任务描述注入所属周期上下文', async () => {
+    const fixture = await makeFixture('cycle-context-inject');
+    const service = await AutopilotService.create(testOptions(fixture));
+    try {
+      const team = await seedTeam(service, {
+        name: 'cycles-team',
+        members: [{ role: 'developer' }, { role: 'reviewer' }],
+      });
+      await service.cyclePlan({
+        teamId: team.id,
+        cycleName: 'M1',
+        goal: 'Ship auth v2',
+        scope: ['server/auth/'],
+        contracts: [cycleContract('A-1', 'oauth login', { touches: ['server/auth/'] })],
+      });
+      await service.cycleApprove({ teamId: team.id, cycleName: 'M1' });
+      await service.tickOnce();
+      const task = service.teamView(team.id).tasks.find((t) => t.contractId === 'A-1')!;
+      expect(task.status).toBe('in_progress');
+      // 契约带 `cycle: M1` → 派发重建描述时注入周期目标与范围。
+      expect(task.description).toContain('## 周期 M1');
+      expect(task.description).toContain('目标：Ship auth v2');
+      expect(task.description).toContain('范围：server/auth/');
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
 });
