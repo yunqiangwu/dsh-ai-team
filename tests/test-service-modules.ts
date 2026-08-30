@@ -11,6 +11,13 @@ import { renderCompletionReport, renderCycleSummary } from '../src/service/repor
 import { budgetExceeded, reviewRoundsExceeded, taskStuck } from '../src/service/daemon.js';
 import { effectiveAnswers, withApprovalQuestion } from '../src/service/docflow.js';
 import { memberView as memberViewOf, cycleView as cycleViewOf, taskView as taskViewOf } from '../src/service/views.js';
+import {
+  atMemberLimit,
+  atTaskLimit,
+  canWriteCode,
+  exactlyOneLeader,
+  hasLeader,
+} from '../src/service/team-rules.js';
 import { clip, HELD_STATUSES, noteLines, oneLine, shortId } from '../src/service/state.js';
 import { defaultProfile } from '../src/profile.js';
 import { DEFAULT_LEARNINGS } from '../src/learnings.js';
@@ -655,5 +662,38 @@ describe('runtime config: service.setRuntimeConfig hot-applies and persists', ()
     expect(after.remote.url).toBe('/tmp/third.git');
     expect(after.remote.sshKeyEnv).toBe(before.remote.sshKeyEnv);
     await service.dispose();
+  });
+});
+
+const teamRuleMember = (role: string) => ({ role });
+
+describe('team rules: 团队 / 派发业务不变量', () => {
+  it('exactlyOneLeader: 有且仅有一个 leader 才通过', () => {
+    expect(exactlyOneLeader([teamRuleMember('leader')])).toBe(true);
+    expect(exactlyOneLeader([teamRuleMember('leader'), teamRuleMember('developer')])).toBe(true);
+    expect(exactlyOneLeader([])).toBe(false);
+    expect(exactlyOneLeader([teamRuleMember('leader'), teamRuleMember('leader')])).toBe(false);
+    expect(exactlyOneLeader([teamRuleMember('developer')])).toBe(false);
+  });
+
+  it('hasLeader: 只要出现过 leader 就为真', () => {
+    expect(hasLeader([teamRuleMember('leader')])).toBe(true);
+    expect(hasLeader([teamRuleMember('developer'), teamRuleMember('leader')])).toBe(true);
+    expect(hasLeader([teamRuleMember('developer')])).toBe(false);
+    expect(hasLeader([])).toBe(false);
+  });
+
+  it('atMemberLimit / atTaskLimit: 达到上限即真', () => {
+    expect(atMemberLimit([{}], 1)).toBe(true);
+    expect(atMemberLimit([{}], 2)).toBe(false);
+    expect(atTaskLimit([{}, {}], 2)).toBe(true);
+    expect(atTaskLimit([{}, {}], 3)).toBe(false);
+  });
+
+  it('canWriteCode: reviewer / operator 不能承担写代码任务', () => {
+    expect(canWriteCode('leader')).toBe(true);
+    expect(canWriteCode('developer')).toBe(true);
+    expect(canWriteCode('reviewer')).toBe(false);
+    expect(canWriteCode('operator')).toBe(false);
   });
 });

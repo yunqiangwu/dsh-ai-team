@@ -42,6 +42,7 @@ import { linkSharedCacheDirs } from './cache.js';
 import { runGates } from './gates.js';
 import { DeployCoordinator, isTasksOnlyChange } from './service/deploys.js';
 import { TeamStore } from './service/team-store.js';
+import { atMemberLimit, atTaskLimit, canWriteCode, exactlyOneLeader, hasLeader } from './service/team-rules.js';
 import { checkRunStatus, githubRepoSlug, upsertPullRequest } from './github.js';
 import { EscalationManager, type EscalationInput } from './escalate.js';
 import { Mailer, postHumanWebhook, renderEscalationMail } from './notification.js';
@@ -1713,7 +1714,7 @@ export class AutopilotService {
     };
     // 先入册再逐个加成员：addMember 依赖 team 已经在表里。
     this.teams.set(id, team);
-    if (requested.filter((member) => member.role === 'leader').length !== 1) {
+    if (!exactlyOneLeader(requested)) {
       this.teams.delete(id);
       throw new Error('a team needs exactly one leader member');
     }
@@ -1733,10 +1734,10 @@ export class AutopilotService {
     if (!isRole(input.role)) {
       throw new Error(`invalid role "${input.role}"; expected leader, developer, reviewer or operator`);
     }
-    if (team.members.length >= this.options.maxMembers) {
+    if (atMemberLimit(team.members, this.options.maxMembers)) {
       throw new Error(`team "${team.name}" already has the maximum of ${this.options.maxMembers} members`);
     }
-    if (input.role === 'leader' && team.members.some((member) => member.role === 'leader')) {
+    if (input.role === 'leader' && hasLeader(team.members)) {
       throw new Error(`team "${team.name}" already has a leader`);
     }
     const id = shortId('m');
@@ -1783,11 +1784,11 @@ export class AutopilotService {
     contractId?: string;
   }): Promise<TaskView> {
     const team = this.teamOf(input.teamId);
-    if (team.tasks.length >= this.options.maxTasks) {
+    if (atTaskLimit(team.tasks, this.options.maxTasks)) {
       throw new Error(`team "${team.name}" already has the maximum of ${this.options.maxTasks} tasks`);
     }
     const assignee = this.memberOf(team, input.assigneeId);
-    if (assignee.role === 'reviewer' || assignee.role === 'operator') {
+    if (!canWriteCode(assignee.role)) {
       throw new Error(`${assignee.role}s do not write code; assign the task to a developer`);
     }
     if (assignee.currentTaskId !== null) {
