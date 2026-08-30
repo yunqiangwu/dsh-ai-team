@@ -75,7 +75,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
           setupCommand: pnpm install
           verifyCommand: pnpm run typecheck
         gates:
-          commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
+          commands: [pnpm run typecheck, pnpm run lint, pnpm run build, pnpm run test]
           requireCiGreen: true
           timeoutMinutes: 30
         daemon:

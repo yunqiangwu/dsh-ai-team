@@ -4,6 +4,16 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)；条目按 git 提交历史（Conventional Commits）归纳，feat / fix 优先。
 
+## [1.2.0] - 2026-08-30
+
+### 新增
+
+- **无人值守 override（真实裸机试点实测）**：session 采用 `autopilot-team` preset 时（运行时切换与默认 preset 新建两个入口都覆盖），插件写入会话级 override——沙箱模式 `danger-full-access` + 审批策略 `never`。此前 leader 会话默认 `workspace-write` 只覆盖会话 cwd，写团队 rootDir 被拒后只能申请 sandbox 升权 → 弹人工审批窗，与「无人值守」定位直接冲突；子代理在委派边界继承父会话的显式 sandbox override，developer 一并放开。插件自有硬规则（gates 命令白名单、forbiddenPaths、push 门）不受影响，人仍可经面板会话级开关切回。
+
+### 修复
+
+- **默认 gates 顺序 build 在 test 前**：`DEFAULT_GATES` 原先 `…test, build`，而 test 可能依赖 build 产物（本仓库 smoke-cordis 读 `lib/index.js`），干净 worktree 上先 test 必红（试点实测、leader 直接点出）。改为与 AGENTS.md 一致的四件套顺序 typecheck → lint → build → test；README / PILOT.md / pilot.patch.yml 同步。
+
 ## [1.1.2] - 2026-08-30
 
 ### 修复

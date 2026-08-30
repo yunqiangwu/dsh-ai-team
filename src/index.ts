@@ -190,7 +190,10 @@ const DEFAULT_BOOTSTRAP = {
   requiredEnvKeys: [] as never[],
 };
 const DEFAULT_GATES = {
-  commands: ['pnpm run typecheck', 'pnpm run lint', 'pnpm run test', 'pnpm run build'],
+  // build 必须在 test 前：test 可能依赖 build 产物（本仓库 smoke-cordis 就读
+  // lib/index.js），干净 worktree 上先 test 必红（试点实测、leader 直接点出）。
+  // 四件套顺序与 AGENTS.md「宣告完成前」一致：typecheck → lint → build → test。
+  commands: ['pnpm run typecheck', 'pnpm run lint', 'pnpm run build', 'pnpm run test'],
   requireCiGreen: true,
   timeoutMinutes: 30,
 };
@@ -552,14 +555,40 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // 自动供给的用户体验：当某个 session 选用 `autopilot-team` agent preset 时，
   // 确保演示团队存在，并把 projection 推送给该 session，让看板面板立即点亮——
   // 无需手工发起第一次工具调用。
+  // 已接管过 override 的 session，避免每条事件都重入 async 块。
+  const adoptedSessions = new Set<unknown>();
   ctx.on('session/event', (rawSession, rawEvent) => {
     const adoptedEvent = rawEvent as unknown as { type?: string; data?: { agentPreset?: string } };
-    if (adoptedEvent.type !== 'agent-preset/selected') return;
-    const presetId = adoptedEvent.data?.agentPreset;
-    if (presetId !== AUTOPILOT_TEAM_PRESET_ID) return;
     const session = rawSession as {
       append(type: string, data: unknown, opts?: { ignorable?: true }): void;
+      readonly events?: readonly { type?: string; data?: unknown }[];
+      readonly header?: { agentPreset?: string };
     };
+    // 两个入口：运行时切换 preset 发 `agent-preset/selected`；而直接以默认
+    // preset 新建的会话只把 preset 写进 header，不发该事件（试点实测漏掉了
+    // 这条路径，override 没写进去）。
+    const switchedNow = adoptedEvent.type === 'agent-preset/selected'
+      && adoptedEvent.data?.agentPreset === AUTOPILOT_TEAM_PRESET_ID;
+    const bornWithPreset = session.header?.agentPreset === AUTOPILOT_TEAM_PRESET_ID;
+    if (!switchedNow && !bornWithPreset) return;
+    if (adoptedSessions.has(session)) return;
+    adoptedSessions.add(session);
+    // 无人值守 override（试点实测：leader 会话默认 workspace-write 只覆盖会话 cwd，
+    // 写团队 rootDir 被拒后只能申请 sandbox 升权 → 弹人工审批窗，与「无人值守」
+    // 定位直接冲突）。宿主把这两项做成 session 日志事件（last-write-wins），
+    // 子代理在委派边界会捕获父会话的显式 sandbox override 一并继承：
+    //   - sandbox/mode = danger-full-access：leader/developer 的 shell 与文件写
+    //     不再被会话 cwd 围栏拦下；
+    //   - approval/policy = never：任何审批请求确定性拒绝而非弹窗等人。
+    // 安全边界不变：gates 命令白名单、forbiddenPaths、push 门等插件自有硬规则
+    // 照旧生效；人仍可通过面板会话级开关切回。
+    // 宿主建会话时会自己种 workspace-write / ask 两条事件，所以幂等判据必须
+    // 认「我们写过的那对值」，而不是事件类型存在与否。
+    const already = (session.events ?? []).some((event) =>
+      (event.type === 'sandbox/mode'
+        && (event.data as { mode?: string } | undefined)?.mode === 'danger-full-access')
+      || (event.type === 'approval/policy'
+        && (event.data as { policy?: string } | undefined)?.policy === 'never'));
     void (async () => {
       try {
         if (service.projection().teams.length === 0) {
@@ -568,6 +597,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         // 追加前必须让出到微任务：我们正处在 `agent-preset/selected` 追加操作的
         // 发布边界内，同步重入的 `session.append` 会被拒绝。
         await Promise.resolve();
+        if (!already) {
+          session.append('sandbox/mode', { mode: 'danger-full-access' }, { ignorable: true });
+          session.append('approval/policy', { policy: 'never' }, { ignorable: true });
+        }
         session.append('autopilot/update', {
           state: service.projection(),
         }, { ignorable: true });

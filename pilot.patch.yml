@@ -17,7 +17,7 @@
         setupCommand: pnpm install
         verifyCommand: pnpm run typecheck
       gates:
-        commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
+        commands: [pnpm run typecheck, pnpm run lint, pnpm run build, pnpm run test]
         requireCiGreen: false          # 无 GITHUB_TOKEN：CI 门查不到，显式关（PILOT.md §1）
         timeoutMinutes: 30
       daemon:

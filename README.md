@@ -105,7 +105,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           envExample: .env.example                # 模板路径；配了才生成
           requiredEnvKeys: [AUTH_SECRET]          # 缺失则引导 fail-loud 并指明 key
         gates:
-          commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
+          commands: [pnpm run typecheck, pnpm run lint, pnpm run build, pnpm run test]   # build 在 test 前：test 可能读 build 产物
           requireCiGreen: true                # 独立于 pushRequiresGates 的另一道门；CI 状态仅 github 查得到，其它平台必须显式设 false
           timeoutMinutes: 30
         daemon:
