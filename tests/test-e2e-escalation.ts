@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AutopilotService } from '../src/service.js';
-import { gitTest, makeFixture, seedRemote, testOptions, commitInWorktree } from './helpers.js';
+import { makeFixture, seedRemote, testOptions, commitInWorktree } from './helpers.js';
 
 describe('e2e: escalation triage (forbidden-path -> resolve -> back to pending)', () => {
   it('forbidden diff raises needs-human + escalation; resolve returns it to pending', async () => {
