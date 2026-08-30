@@ -31,6 +31,15 @@ const CSS = `
 .dsh-ai-team__dot--working { background: #22c55e; }
 .dsh-ai-team__dot--reviewing { background: #3b82f6; }
 .dsh-ai-team__role { opacity: .55; font-size: 10px; }
+/* ── 周期区（CYC-5）：多周期团队一眼看到周期列表与每周期任务分组；活跃周期高亮 ── */
+.dsh-ai-team__cycles { display: flex; flex-direction: column; gap: 8px; }
+.dsh-ai-team__cycle { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid rgba(127,127,127,.2); border-radius: 8px; }
+.dsh-ai-team__cycle--active { border-color: rgba(59,130,246,.55); background: rgba(59,130,246,.06); }
+.dsh-ai-team__cycle-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dsh-ai-team__cycle-name { font-weight: 700; font-size: 12px; }
+.dsh-ai-team__cycle-progress { margin-left: auto; opacity: .7; font-size: 11px; }
+.dsh-ai-team__cycle-goal { margin: 2px 0 0; font-size: 11px; opacity: .65; }
+.dsh-ai-team__cycle-tasks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
 .dsh-ai-team__kanban { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
 .dsh-ai-team__column { flex: 0 0 150px; min-width: 140px; border: 1px solid rgba(127,127,127,.2); border-radius: 8px; padding: 6px; min-height: 30px; max-height: 360px; overflow-y: auto; }
 .dsh-ai-team__column-title { display: flex; justify-content: space-between; margin: 0 0 6px; font-size: 11px; opacity: .75; position: sticky; top: 0; background: inherit; }

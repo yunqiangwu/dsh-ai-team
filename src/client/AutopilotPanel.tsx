@@ -10,7 +10,7 @@
  */
 import { useState, useRef } from 'react';
 import type { SlotProps, Translator } from './contract.js';
-import type { AutopilotProjection, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
+import type { AutopilotProjection, CycleView, DeployView, EscalationView, LearningView, MemberView, QuestionnaireView, TaskView, TeamView } from '../view.js';
 import { DISPATCHABLE_PHASES, TASK_STATUSES, TICKET_ROUTE_PREFIX } from '../view.js';
 import { escalationFields, fieldsOfQuestions, normalizeOption, type TicketField } from '../formmodel.js';
 
@@ -583,6 +583,73 @@ function WaitingDecisions({ items, t }: { items: QuestionnaireView[]; t: Transla
   );
 }
 
+/** 任务状态 → 徽标颜色：已完成/废弃绿、活跃/待办琥珀、异常红。 */
+function taskBadgeKind(status: TaskView['status']): string {
+  if (status === 'done' || status === 'cancelled') return 'pass';
+  if (status === 'in_progress' || status === 'in_review' || status === 'pending') return 'pending';
+  return 'fail';
+}
+
+/**
+ * 周期区（CYC-5 / docs/design-cycles.md §2.1）：多周期团队一眼看到周期列表
+ * （name / status / 进度）、当前活跃周期高亮、每周期内的任务分组。`cycle.taskIds`
+ * 存的是契约 id，所以按 `task.contractId` 匹配团队任务。无周期记录的旧团队不渲染
+ * 这一节 —— 看板仍走下面的扁平视图，不回归。
+ */
+function CycleSection({ team, t }: { team: TeamView; t: Translator }) {
+  const cycles: readonly CycleView[] = team.cycles ?? [];
+  if (cycles.length === 0) return null;
+  return (
+    <section>
+      <h4 className="dsh-ai-team__section-title">{t('section.cycles')}</h4>
+      <div className="dsh-ai-team__cycles">
+        {cycles.map((cycle) => {
+          const cycleTasks = team.tasks.filter(
+            (task) => task.contractId !== null && cycle.taskIds.includes(task.contractId),
+          );
+          const finished = cycleTasks.filter(
+            (task) => task.status === 'done' || task.status === 'cancelled',
+          ).length;
+          return (
+            <div
+              key={cycle.id}
+              className={
+                cycle.status === 'in_progress'
+                  ? 'dsh-ai-team__cycle dsh-ai-team__cycle--active'
+                  : 'dsh-ai-team__cycle'
+              }
+            >
+              <div className="dsh-ai-team__cycle-head">
+                <span className="dsh-ai-team__cycle-name">{cycle.name}</span>
+                <span className="dsh-ai-team__badge">{t(`cycleStatus.${cycle.status}`)}</span>
+                {cycle.status === 'in_progress' ? (
+                  <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">{t('cycles.active')}</span>
+                ) : null}
+                <span className="dsh-ai-team__cycle-progress">
+                  {t('cycles.progress', { done: finished, total: cycle.taskIds.length })}
+                </span>
+              </div>
+              {cycle.goal !== '' ? <p className="dsh-ai-team__cycle-goal">{cycle.goal}</p> : null}
+              {cycleTasks.length > 0 ? (
+                <div className="dsh-ai-team__cycle-tasks">
+                  {cycleTasks.map((task) => (
+                    <span
+                      key={task.id}
+                      className={`dsh-ai-team__badge dsh-ai-team__badge--${taskBadgeKind(task.status)}`}
+                    >
+                      {task.title}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires: QuestionnaireView[]; t: Translator }) {
   return (
     <>
@@ -594,6 +661,7 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
           ))}
         </div>
       </section>
+      <CycleSection team={team} t={t} />
       <section>
         <h4 className="dsh-ai-team__section-title">{t('section.tasks')}</h4>
         <div className="dsh-ai-team__kanban">
