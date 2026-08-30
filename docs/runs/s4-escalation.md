@@ -31,7 +31,7 @@
 2. **人为触发受控升级**：`contract_create` S4-1 后用 `escalate` 工具生成升级 **`esc_mtg2dv8i_1`**（reason=`manual`，taskId=`task_18ff5568`），suggestion 写明「仅改 src/index.ts 与 tests/cli.test.ts，无 parser 改动、无新依赖、未触碰 LICENSE，确认后放行」。task 置 `needs-human`；升级直方图记 `manual: 1`。
 3. **loop 保持运行**：`pauseOnEscalation: task` —— 只有该 task 暂停，主循环继续跑（tick 行进），没有整单停顿。
 4. **面板「升级事件」内联表单作答**：打开升级卡片，在 `decision` 填「同意…予以放行，请把 S4-1 退回 pending 继续派发跑完门→审→合并→done」，`note` 补一句验证说明，点「提交答复」。**答案即时落盘为 `notification.submitted`（decision/note/submittedAt 均写入）**。
-   - ⚠️ 观察项：pilot 配置未开 `notification.autoResume`，故面板表单只回写答案，**不自动 resolve**（`resolvedAt` 仍 null、task 仍 `needs-human`）。这是 autoResume 栅的预期行为，不是缺陷——PILOT §6 本就将「对话调 escalation_resolve」列为等价的放行手段。
+   - ⚠️ 观察项：pilot 配置未开 `notification.autoResume`，故面板表单只回写答案，**不自动 resolve**（`resolvedAt` 仍 null、task 仍 `needs-human`）。这是 autoResume 开关的预期行为，不是缺陷——PILOT §6 本就将「对话调 escalation_resolve」列为等价的放行手段。
 5. **对话调 escalation_resolve 放行**：按 PILOT §6，向 leader 发跟进消息说明「面板已作答，但 autoResume 关着，请调 escalation_resolve`esc_mtg2dv8i_1` 放行」→ leader 调用 `escalation_resolve` → 升级 `resolved`（`resolvedAt` 置位）、S4-1 退回 `pending` 并**自动重新派发**。
 6. **S4-1 重走闭环**：dev-1 实现 `--doc-format` → 四道门全绿 → reviewer-1 `approve`（rev_b7d5aaa1）→ merge 进 main（`c68a764`）→ `done`。
 7. **收敛（tick 126）**：loop `completed`，四成员回 `idle`。S4 专属指标：dispatched +1（9）/ completed +1（9）/ gateRuns 9 / gateFailures 0 / escalations `{manual:1}`。`e0b3c0f` 为作答时写入 S4-1 契约的 `[human] decision` 注记。
