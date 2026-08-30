@@ -58,7 +58,7 @@ PILOT.md 的试点回答四个问题：任务能否无人介入跑完闭环、�
 
 - `docs/pilot-scenarios.md`（本文）：方案 + 场景清单。
 - `docs/runs/*.md`：每场景的「执行 + 运行记录」（随执行逐场景追加）。
-- 结束后的总结：各场景完成率、升级直方图、耗时分布，对照 PILOT.md §8 判定是否进下一级 / 是否需改契约模板或收紧配置。
+- 结束后的总结：各场景完成率、升级直方图、耗时分布，对照 PILOT.md §8 判定是否进下一级 / 是否需改契约模板或收紧配置。**已完成，见 [runs/_summary.md](runs/_summary.md)**（判定：四场景全部通过，可进下一级）。
 
 ## 5. 执行顺序与停止条件
 
@@ -66,7 +66,7 @@ PILOT.md 的试点回答四个问题：任务能否无人介入跑完闭环、�
 - 停止条件（命中即停回上一级，PILOT.md §0）：`rollback-failed`；同一原因升级 ≥3 次；耗时普遍贴近 `maxTaskHours`。
 - 每场景结束即时落盘记录；全部结束后汇总 `docs/runs/_summary.md`。
 
-> **进度**：S1 已完成（2026-08-30，见 [runs/s1-gfm-template.md](runs/s1-gfm-template.md)）——MD2HTML-1..4 走通无升级闭环；S2 已完成（见 [runs/s2-parallel-lock.md](runs/s2-parallel-lock.md)）——一次拆 2 契约、并行派发、域锁零冲突、0 升级。下一步 S3（人工决策 + 问卷复核闭环）。
+> **进度**：S1 已完成（2026-08-30，见 [runs/s1-gfm-template.md](runs/s1-gfm-template.md)）——MD2HTML-1..4 走通无升级闭环；S2 已完成（见 [runs/s2-parallel-lock.md](runs/s2-parallel-lock.md)）——一次拆 2 契约、并行派发、域锁零冲突、0 升级；S3 已完成（见 [runs/s3-human-decision.md](runs/s3-human-decision.md)）——`ask_human` 问卷→人拍板→答案回写 `[decision]`→拆 S3-1/S3-2→派发→门禁→评审→合并，完成率 100%、0 意外升级，1 次预期内人工拍板；**S4 已完成**（见 [runs/s4-escalation.md](runs/s4-escalation.md)）——人为触发的 `manual` 升级→面板作答+`escalation_resolve` 放行→S4-1 自动重走闭环，完成率 100%。四场景全部完成，汇总见 [runs/_summary.md](runs/_summary.md)。
 
 ### 5.1 运行期观测与已知坑
 
@@ -81,4 +81,4 @@ PILOT.md 的试点回答四个问题：任务能否无人介入跑完闭环、�
 - [x] 场景清单是否齐（增删？）——面向已确认，按期执行
 - [x] 是否继续用现 `demo` 团队——是，复用存量团队（S1/S2 已验证累积式开发）
 - [x] S4 的人为触发口径是否可接受——是，备注「人为触发」不污染学习记录
-- [ ] （可选）运行期「面板刷新滞后 / data 损坏自愈」是否作为 P2 跟进项，试点结束后再定夺处理
+- [x] （可选）运行期「面板刷新滞后 / data 损坏自愈」是否作为 P2 跟进项——已定夺：面板刷新滞后已修根因（见 §5.1），data 损坏自愈本次已实测复用；两顶随试点记录在 [runs/_summary.md](runs/_summary.md) 的运行期发现，不单独立项

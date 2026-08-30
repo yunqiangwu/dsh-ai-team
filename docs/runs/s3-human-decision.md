@@ -1,6 +1,6 @@
 # S3 运行记录：人工决策 + 问卷复核闭环
 
-> 状态：**执行中**。
+> 状态：**已完成**（2026-08-31，loop `completed`，tick 92）。
 > 所属：文档见 [../pilot-scenarios.md](../pilot-scenarios.md)（S3）。
 > 目标：喂入一个需人拍板的产品决策，验证 `ask_human` 生成问卷 → 浏览器/工单作答 → 答案回写 [decision] → leader 按决策继续拆契约 → 派发 → 门禁 → 评审 → 合并的「人在环」闭环（L1）。
 
@@ -30,7 +30,9 @@
 7. 组长按决策继续拆契约：S3-1（`src/sanitizer.ts` 净化器核心 + `tests/sanitizer.test.ts` 单测）、S3-2（接入 parser/CLI + `tests/html-sanitize.test.ts` 集成测试）。
 8. **contract_create 首次被拒后自纠（跨域上限）**：S3-2 的 touches 起先含 4 个路径（src/parser.ts, src/index.ts, tests/html-sanitize.test.ts, tests/cli.test.ts）超过跨域上限 `crossDomainThreshold=3` → 组长自查后将新增集成测试全部收敛进 `tests/html-sanitize.test.ts`，touches 减为 3 个，重新提交成功（**合理自纠，未升级**）。
 9. **契约创建并派发**：`task_42a4ab60`(S3-1, src/sanitizer.ts+tests/sanitizer.test.ts, in_progress, dev-1 working) + `task_afb05f2d`(S3-2, src/parser.ts+src/index.ts+tests/html-sanitize.test.ts, pending)。loop `running`（tick 75）。S3-2 pending 因依赖 S3-1 完成后再派发（净化器核心为先）。
-10. （执行中：S3-1 开发 → 门禁 → 评审 → 合并 → 派发 S3-2 …）
+10. **S3-1 独立闭环**：dev-1 交付净化器核心 → 四道门全绿（73/73 tests）→ reviewer-1 approve → merge 进 main（commit `bfde979`）。`task_42a4ab60` → done。
+11. **S3-2 解除依赖后闭环**：S3-1 合并后 daemon 派发 S3-2 → 接入 parser/CLI（`HtmlOptions.sanitize` / `--allow-html` / `--html-config`）→ 四道门全绿（83/83 tests，含原 73 例无回归）→ reviewer-1 approve → merge 进 main（commit `2270228`）。`task_afb05f2d` → done。
+12. **收敛（tick 92）**：loop `completed`，四成员回 `idle`，两任务 `done`，S3 专属 metrics：dispatched 2 / completed 2 / gateRuns 2 / gateFailures 0 / reviewRounds 0 / escalations 0。内置决策代码 `src/sanitizer.ts` + `tests/sanitizer.test.ts` + `tests/html-sanitize.test.ts` 均已合入 main，默认行为零回归。
 
 ## 观察发现（待复核）
 
@@ -41,12 +43,25 @@
 
 ## 指标
 
-（待 completion 更新）
+S3 专属（本次场景内）：
+
+- dispatched 2 / completed 2 / reviewRounds 0 / gateRuns 2 / gateFailures 0 / deploys 0 / rollbacks 0 / escalations 0
+- 涉及契约：`task_42a4ab60`（S3-1，净化器核心）、`task_afb05f2d`（S3-2，接入 parser/CLI）
+- 耗时：S3-1 ≈ 8.6min、S3-2 ≈ 13min（后一段含等待 S3-1 合并解除依赖），问卷创建到全部合并 ≈ 17min，远低于 `maxTaskHours=2h`
+- 累计（跨全部场景）见 completion.md：dispatched 7 / completed 8 / gateRuns 8 / gateFailures 0 / escalations {}
 
 ## 升级或人工介入
 
-（待填）
+- **1 次预期内的人工拍板**（场景本身要求）：`ask_human` 问卷 `qn_mtg16hsp_1` 由人作答 `direction=support / enabled_mode=optin`（source=ticket），答案回写 `[decision]`。
+- **0 次意外升级**（metrics `escalations: {}`）：本场景出一个需人决策的产品方向属 S4 之外的特意引入，未产生任何升级记录。
+- 三处 leader 自纠（补 defaultValue / 收敛跨域 touches / 复核 [decision] 落点）均由模型在环内自行消化，无需人工介入。
 
 ## 复盘
 
-（场景跑完后对照 PILOT.md §8 判定）
+对照 PILOT.md §8 收尾判定（S3）：
+- **人工决策闭环**：`ask_human` 生成问卷 → 浏览器表单作答 → 答案回写 `[decision]` → leader 按决策拆契约 → 派发→门禁→评审→合并 → ✅
+- **答案回写生效**：组长读到 `direction=support / enabled_mode=optin` 后据此把能力做成**可选开关、默认关闭**（`--allow-html`），默认行为零回归（原 73 例全部保留通过）→ ✅
+- **完成率**：S3 专属 2/2 = 100% ≥ 80%，无同因反复升级 → ✅
+- **域锁/依赖**：S3-2 显式 `depends_on: S3-1`，净化器核心先并入 main 后再派发接入任务，无并发踩踏 → ✅
+- **已知（非阻塞，待复核）**： (`[decision]` 回写 `sectionMatched: false` 落点不精确，P2 体验项)；跨域上限 `crossDomainThreshold` 把本可合并的集成测试收敛为单文件，是护栏的正常拦阻而非缺陷。
+- 判定：S3（人工决策 + 问卷复核）完成率 100%、0 升级 → **进 S4**。
