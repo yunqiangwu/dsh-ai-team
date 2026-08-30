@@ -6,6 +6,7 @@
 | INT-2 | M1 能问能写：问卷实体与五个新工具 | done | - | INT-1 | src/, tests/ |
 | INT-3 | M2 卡片：面板内作答与安全加固 | done | - | INT-2 | src/, tests/ |
 | INT-4 | M3 重规划：cancelled / 优先级 / 分级变更与在途任务处置 | done | - | INT-1 | src/, tests/, README.md |
+| L0-1 | 新增 docs/pilot-l0-smoke.md 裸机试点环境信息文档 | pending | leader | - | docs/ |
 | PIL-1 | README 补「故障排查」章节 | done | - | - | README.md |
 | PIL-2 | 生成 CHANGELOG.md | done | - | - | CHANGELOG.md |
 | TECH-1 | webhook 投递合并：升级与问卷收敛到 postHumanWebhook | done | - | - | src/, tests/, docs/ |
