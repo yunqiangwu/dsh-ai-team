@@ -23,9 +23,17 @@ export const AUTOPILOT_KEY_FIELDS: KeyField[] = [
   { path: 'baseBranch', label: 'config.baseBranch', kind: 'text' },
   { path: 'bootstrap.enabled', label: 'config.bootstrapEnabled', kind: 'boolean' },
   { path: 'gates.commands', label: 'config.gatesCommands', hint: 'gatesCommandsHint', kind: 'list' },
+  { path: 'gates.requireCiGreen', label: 'config.requireCiGreen', kind: 'boolean' },
+  { path: 'gates.timeoutMinutes', label: 'config.gateTimeoutMinutes', kind: 'number' },
   { path: 'daemon.maxReviewRounds', label: 'config.maxReviewRounds', kind: 'number' },
   { path: 'daemon.stuckMinutes', label: 'config.stuckMinutes', kind: 'number' },
+  { path: 'daemon.pollIntervalSeconds', label: 'config.pollIntervalSeconds', kind: 'number' },
   { path: 'daemon.maxDiffLines', label: 'config.maxDiffLines', hint: 'maxDiffLinesHint', kind: 'number' },
+  { path: 'daemon.maxTaskHours', label: 'config.maxTaskHours', kind: 'number' },
+  { path: 'questionnaire.timeoutMinutes', label: 'config.questionnaireTimeoutMinutes', kind: 'number' },
+  { path: 'replan.maxPerHour', label: 'config.maxReplanPerHour', kind: 'number' },
+  { path: 'security.pushRequiresGates', label: 'config.pushRequiresGates', kind: 'boolean' },
+  { path: 'deploy.enabled', label: 'config.deployEnabled', kind: 'boolean' },
   { path: 'learnings.enabled', label: 'config.learningsEnabled', hint: 'learningsEnabledHint', kind: 'boolean' },
 ];
 
@@ -78,6 +86,11 @@ function fromText(kind: KeyField['kind'], text: string): unknown {
   return text;
 }
 
+/** 数字字段草稿是否非法：非空且解析不出有限数（P2-3 即时校验，不静默保存）。 */
+function invalidNumber(field: KeyField, text: string): boolean {
+  return field.kind === 'number' && text !== '' && !Number.isFinite(Number(text));
+}
+
 /**
  * 卡片本体。props 来自 slot 的 `inject()`：一个绑定了 locale 的 `t`
  * 以及该 namespace 的 scope。草稿写入先在本地暂存，点保存时才提交
@@ -99,10 +112,16 @@ export function AutopilotSettingsCard({
   const snapshot = useSyncExternalStore(subscribeScope, () => scope.getSnapshot());
   const { status, value, user, writable } = snapshot;
   const [drafts, setDrafts] = useState<Record<string, string | null>>({});
+  const [showFull, setShowFull] = useState(false);
 
   if (status !== 'ready') return null;
 
   const staged = Object.keys(drafts).length > 0;
+  // 任一数字草稿非法就整体禁存：不静默保存一个字符串进数字字段（P2-3）。
+  const hasInvalid = AUTOPILOT_KEY_FIELDS.some((field) => {
+    const draft = drafts[field.path];
+    return draft !== undefined && draft !== null && invalidNumber(field, draft);
+  });
 
   function setDraft(field: string, text: string | null) {
     setDrafts((previous) => ({ ...previous, [field]: text }));
@@ -132,6 +151,7 @@ export function AutopilotSettingsCard({
         const current = toText(field.kind, at(value, field.path));
         const shown = staged && field.path in drafts ? (drafts[field.path] ?? '') : current;
         const overridden = isOverridden(user, field.path);
+        const invalid = staged && field.path in drafts && drafts[field.path] !== null && invalidNumber(field, drafts[field.path] ?? '');
         return (
           <label key={field.path} className="dsh-ai-team__config-field" data-field={field.path}>
             <span className="dsh-ai-team__config-label">
@@ -155,14 +175,16 @@ export function AutopilotSettingsCard({
               />
             ) : (
               <input
-                className="dsh-ai-team__config-input"
+                className={`dsh-ai-team__config-input${invalid ? ' dsh-ai-team__config-input--invalid' : ''}`}
                 type={field.kind === 'number' ? 'number' : 'text'}
                 value={shown}
                 disabled={!writable}
+                aria-invalid={invalid}
                 onChange={(event) => setDraft(field.path, event.target.value)}
               />
             )}
             {field.hint !== undefined ? <span className="dsh-ai-team__config-hint">{t(field.hint)}</span> : null}
+            {invalid ? <span className="dsh-ai-team__config-error">{t('config.invalidNumber')}</span> : null}
             {staged && field.path in drafts ? (
               <button
                 type="button"
@@ -184,11 +206,17 @@ export function AutopilotSettingsCard({
           </label>
         );
       })}
+      <div className="dsh-ai-team__config-full">
+        <button type="button" className="dsh-ai-team__config-reset" onClick={() => setShowFull((v) => !v)}>
+          {showFull ? t('config.hideFull') : t('config.viewFull')}
+        </button>
+        {showFull ? <pre className="dsh-ai-team__config-json">{JSON.stringify(value, null, 2)}</pre> : null}
+      </div>
       <div className="dsh-ai-team__config-actions">
         <button type="button" disabled={!staged} onClick={discard}>
           {t('config.discard')}
         </button>
-        <button type="button" disabled={!staged || !writable} onClick={save}>
+        <button type="button" disabled={!staged || !writable || hasInvalid} onClick={save}>
           {t('config.save')}
         </button>
       </div>

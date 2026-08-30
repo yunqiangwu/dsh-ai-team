@@ -97,6 +97,10 @@ const CSS = `
 .dsh-ai-team__config-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .dsh-ai-team__config-overridden { font-style: normal; font-size: 11px; color: #eab308; font-weight: 500; }
 .dsh-ai-team__config-input { font: inherit; padding: 6px 10px; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; background: transparent; color: inherit; }
+.dsh-ai-team__config-input--invalid { border-color: #ef4444; }
+.dsh-ai-team__config-error { font-size: 11px; color: #ef4444; }
+.dsh-ai-team__config-full { display: flex; flex-direction: column; gap: 6px; }
+.dsh-ai-team__config-json { margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; border: 1px solid rgba(127,127,127,.25); border-radius: 8px; background: rgba(127,127,127,.08); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .dsh-ai-team__config-area { resize: vertical; }
 .dsh-ai-team__config-hint { font-size: 11px; opacity: .5; }
 .dsh-ai-team__config-reset { align-self: flex-start; font: inherit; font-size: 11px; cursor: pointer; border: none; background: none; color: #3b82f6; padding: 0; }
