@@ -68,8 +68,6 @@ export interface RuntimeConfig {
   };
   cycles?: {
     roadmapPath?: string;
-    requireApproval?: boolean;
-    autoAdvance?: boolean;
   };
 }
 
@@ -150,8 +148,6 @@ export function runtimeConfigViewOf(options: AutopilotOptions): RuntimeConfig {
       : undefined,
     cycles: {
       roadmapPath: options.cycles.roadmapPath,
-      requireApproval: options.cycles.requireApproval,
-      autoAdvance: options.cycles.autoAdvance,
     },
   };
 }
@@ -317,16 +313,13 @@ export interface AutopilotOptions {
    */
   learnings?: LearningOptions | undefined;
   /**
-   * 多周期开发的配置（docs/design-cycles.md §8）。
+   * 迭代周期开发的配置（docs/design-cycles.md §8）。
    * `roadmapPath` 走既有 draft→accept 审批链（doc_write / doc_approve），正式区才有
-   * 资格被周期规划引用；`requireApproval` 决定周期从 planned → in_progress 是否要人
-   * 点头（false = 无人值守自动开工）；`autoAdvance` 决定周期验收后是否自动推进到
-   * 下一期（归 CYC-3 使用）。
+   * 资格被周期规划引用。v1 的 `requireApproval` / `autoAdvance` 已收敛为周期级
+   * `checkpoint` 字段（组长 AI 决策）—— 开工恒机械，边界请示按周期声明。
    */
   cycles: {
     roadmapPath: string;
-    requireApproval: boolean;
-    autoAdvance: boolean;
   };
   /** 测试钩子：缩短循环中的 sleep/退避时长。 */
   tickSleepMs?: number | undefined;

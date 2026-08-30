@@ -254,6 +254,12 @@ export interface CycleRecord {
   scope: string[];
   /** 本周期任务契约 id。 */
   taskIds: string[];
+  /**
+   * 边界检查点（docs/design-cycles.md §3.1 / §6.3）：本周期验收通过后是否请用户
+   * 确认「继续 / 结束」再推进。组长 `cycle_plan` 时按风险自主声明，缺省 false（全自动）。
+   * 内部决策字段，不进视图（不改 stateVersion）。
+   */
+  checkpoint?: boolean | undefined;
   startedAt?: number | undefined;
   completedAt?: number | undefined;
   createdAt: number;

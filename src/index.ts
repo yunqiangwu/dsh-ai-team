@@ -133,15 +133,13 @@ export interface Config {
    */
   learnings?: LearningOptions | undefined;
   /**
-   * 多周期开发（docs/design-cycles.md §8）：`roadmapPath` 是长期路线图文档路径
-   * （draft→accept 审批链，正式区才有资格被周期规划引用）；`requireApproval` 决定
-   * 周期开工是否要人点头（false = 无人值守自动开工）；`autoAdvance` 决定周期验收后
-   * 是否自动推进到下一期。
+   * 迭代周期开发（docs/design-cycles.md §8）：`roadmapPath` 是长期路线图文档路径
+   * （draft→accept 审批链，正式区才有资格被周期规划引用）。项目规模与边界请示由
+   * 组长 AI 自主判断 —— 小型项目单周期不建周期记录；大型项目由组长起草 roadmap
+   * 逐期推进；边界检查点收敛为周期级 `checkpoint` 字段，不再是用户配置。
    */
   cycles: {
     roadmapPath: string;
-    requireApproval: boolean;
-    autoAdvance: boolean;
   };
   /**
    * 提问通道（见 docs/design-interaction.md §3）：`interactive` 让 `ask_human`
@@ -288,7 +286,7 @@ const DEFAULT_SECURITY = {
 const DEFAULT_QUESTIONNAIRE = { mode: 'interactive' as const, timeoutMinutes: 60 };
 const DEFAULT_REPLAN = { maxPerHour: 10 };
 const DEFAULT_DOCS = { draftDir: 'docs/drafts', formalDir: 'docs' };
-const DEFAULT_CYCLES = { roadmapPath: 'docs/ROADMAP.md', requireApproval: false, autoAdvance: true };
+const DEFAULT_CYCLES = { roadmapPath: 'docs/ROADMAP.md' };
 const DEFAULT_PROFILE = {
   preset: '',
   branchTemplate: '',
@@ -456,10 +454,8 @@ export const Config: z<Config> = z.object({
   cycles: z
     .object({
       roadmapPath: z.string().default(DEFAULT_CYCLES.roadmapPath),
-      // requireApproval / autoAdvance 默认值即无人值守直通；行为变更（需要人点头 /
-      // 周期边界等人确认）必须显式开启。
-      requireApproval: z.boolean().default(DEFAULT_CYCLES.requireApproval),
-      autoAdvance: z.boolean().default(DEFAULT_CYCLES.autoAdvance),
+      // v1 的 requireApproval / autoAdvance 已收敛为周期级 checkpoint 字段（组长 AI
+      // 决策）；老配置携带这两字段时读取侧忽略（§8 向后兼容，不报错）。
     })
     .default({ ...DEFAULT_CYCLES }),
 

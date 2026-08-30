@@ -1050,7 +1050,9 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       'done. Contract validation reuses contract_create\'s pre-write checks (id / dangling ' +
       'depends_on / cycle / forbidden / domain count); one invalid contract refuses the whole ' +
       'batch. The cycle stays `planned` until cycle_approve starts it, so its tasks are NOT ' +
-      'dispatched yet (§5.3).',
+      'dispatched yet (§5.3). Decide `checkpoint` yourself: set it true ONLY when this cycle\'s ' +
+      'boundary needs a human confirm before advancing (directional choice, cross-domain merge, ' +
+      'external dependency, cost change); default false = fully unattended (§7).',
     parameters: {
       teamId: { type: 'string', required: true },
       cycleName: { type: 'string', required: true, description: 'Roadmap section of the next cycle, e.g. "M2"' },
@@ -1060,6 +1062,12 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
         items: { type: 'string' },
         description: 'Path-level scope of this cycle (from the roadmap)',
       },
+      checkpoint: {
+        type: 'boolean',
+        description:
+          'Boundary checkpoint: ask the human "continue / finish" after this cycle\'s tasks all pass. ' +
+          'Default false (fully unattended). Set true only for high-risk boundaries.',
+      },
       contracts: {
         type: 'array',
         required: true,
@@ -1068,7 +1076,14 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
       },
     },
     async execute(args) {
-      const input = args as { teamId: string; cycleName: string; goal: string; scope: string[]; contracts: ContractDraft[] };
+      const input = args as {
+        teamId: string;
+        cycleName: string;
+        goal: string;
+        scope: string[];
+        checkpoint?: boolean;
+        contracts: ContractDraft[];
+      };
       const result = await service.cyclePlan(input);
       return result;
     },
@@ -1079,19 +1094,17 @@ export function registerAutopilotTools(ctx: Context, service: AutopilotService):
     name: 'cycle_approve',
     description:
       'Start a planned cycle (docs/design-cycles.md §5.2): moves it from `planned` to ' +
-      '`in_progress`, which is what makes its contracts dispatchable. With ' +
-      'cycles.requireApproval false (default, unattended) it starts immediately. With ' +
-      'requireApproval true it opens an approval questionnaire (kind "cycle", same one-time ' +
-      'code gate as document approval) and does NOT start until a human approves — a model ' +
-      'cannot approve its own cycle start, so an in-session relay must carry the code from ' +
-      'the ticket/email.',
+      '`in_progress`, which is what makes its contracts dispatchable. This is a mechanical ' +
+      'action — there is no approval step anymore (the human already approved the project at ' +
+      'kickoff; the old requireApproval config was removed). Boundary confirmation, when ' +
+      'needed, is the cycle\'s `checkpoint` field decided at cycle_plan time, and happens at ' +
+      'the END of a cycle, not its start.',
     parameters: {
       teamId: { type: 'string', required: true },
       cycleName: { type: 'string', required: true, description: 'The planned cycle to start, e.g. "M2"' },
-      mode: { type: 'string', enum: QUESTIONNAIRE_MODES, description: 'Overrides questionnaire.mode for the approval ticket' },
     },
     async execute(args) {
-      const input = args as { teamId: string; cycleName: string; mode?: (typeof QUESTIONNAIRE_MODES)[number] };
+      const input = args as { teamId: string; cycleName: string };
       const result = await service.cycleApprove(input);
       return result;
     },

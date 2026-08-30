@@ -29,24 +29,24 @@ export function budgetExceeded(task: TaskRecord, maxTaskHours: number, now: numb
 export type CycleAdvanceAction =
   /** 直通：下一期已 planned → 机械推进（唯一全程无人值守的路径）。 */
   | { kind: 'direct'; next: CycleRecord }
-  /** 等规划：autoAdvance 且下一期未预排 → 当前置 done，落问卷请人规划，绝不静默空转。 */
+  /** 等规划：checkpoint 未设且下一期未预排 → 当前置 done，落问卷请人规划，绝不静默空转。 */
   | { kind: 'wait-plan' }
-  /** 人工检查点：autoAdvance=false → 周期停在 in_review，落问卷等人点头后才推进。 */
+  /** 检查点：该周期 checkpoint=true（组长声明边界要请用户确认）→ 停在 in_review 等点头。 */
   | { kind: 'checkpoint'; next: CycleRecord | null };
 
 /**
  * 「周期完成但下一期未排/未批」既不误伤卡死检测、也不无限静默（§6.4）的纯判据：
- * 给定周期列表与 `autoAdvance` 配置，决定当前刚验收通过的周期该走哪条路。
- * 状态迁移与落问卷的副作用留在 service.ts，这里是唯一的分流判据。
+ * 给定周期列表与刚验收通过的周期（`current`，status 为 in_review），按该周期的
+ * `checkpoint` 字段决定走哪条路。状态迁移与落问卷的副作用留在 service.ts，
+ * 这里是唯一的分流判据 —— 「边界是否请示」是组长每期的 AI 决策（checkpoint 字段），
+ * 不是用户的全局开关（v1 的 `autoAdvance` 配置已移除）。
  */
 export function cycleAdvancePlan(
   cycles: readonly CycleRecord[],
-  autoAdvance: boolean,
+  current: CycleRecord,
 ): CycleAdvanceAction {
   const next = cycles.find((cycle) => cycle.status === 'planned');
-  if (autoAdvance) {
-    if (next !== undefined) return { kind: 'direct', next };
-    return { kind: 'wait-plan' };
-  }
-  return { kind: 'checkpoint', next: next ?? null };
+  if (current.checkpoint === true) return { kind: 'checkpoint', next: next ?? null };
+  if (next !== undefined) return { kind: 'direct', next };
+  return { kind: 'wait-plan' };
 }

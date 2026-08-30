@@ -88,10 +88,11 @@ export type CycleStatus = (typeof CYCLE_STATUSES)[number];
  * `needs-human`、进升级直方图、并被 captureLearning 记成一条教训（见
  * docs/design-interaction.md §3.1）。
  *
- * `cycle`：周期开工审批（docs/design-cycles.md §5.2）。`cycles.requireApproval: true`
- * 时，`cycle_approve` 落一张 `cycle` 问卷等人批「开工 / 不开工」，批了才 `planned →
- * in_progress`；与 `approval` 刻意分开 —— 后者钉的是文档 sha256、走 `doc_approve`
- * 升格，周期开工不涉及任何文档字节。
+ * `cycle`：周期边界推进问卷（docs/design-cycles.md §6.3）。周期验收通过后，
+ * `checkpoint` 周期停在 `in_review` 等人点「继续 / 结束」，或等规划周期置 `done`
+ * 后请人确认「roadmap 还有下一期吗」。与 `approval` 刻意分开 —— 后者钉的是文档
+ * sha256、走 `doc_approve` 升格；周期推进不涉及任何文档字节，开工审批已随
+ * `requireApproval` 移除（§8），开工恒机械。
  */
 export const QUESTIONNAIRE_KINDS = ['intake', 'approval', 'replan', 'cycle'] as const;
 export type QuestionnaireKind = (typeof QUESTIONNAIRE_KINDS)[number];

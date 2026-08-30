@@ -821,7 +821,8 @@ export class AutopilotService {
     }
     // §8-10：审批不能由模型自己伪造。工单 POST 本身就是人的动作；经会话转述的
     // 批准必须带上只出现在工单页 / 邮件里的一次性码。approval（文档升格）与
-    // cycle（周期开工）同此门：requireApproval 的周期开工也是「人拍板」的决策。
+    // cycle（周期边界推进问卷）同此门：推进问卷是「人拍板」的决策，模型不能自答。
+    // 周期开工审批已随 `requireApproval` 移除（docs/design-cycles.md §8）—— 开工恒机械。
     if (
       (before.kind === 'approval' || before.kind === 'cycle') &&
       source === 'tool' &&
@@ -885,21 +886,15 @@ export class AutopilotService {
       return;
     }
     if (record.kind === 'cycle') {
-      // 一张 cycle 问卷可能指两件事，按被指周期的状态分流（docs/design-cycles.md §5.2 / §6.3）：
-      // - planned  → 开工审批：批了才 planned → in_progress；拒了保持 planned 不派发。
-      // - in_review → 人工检查点（autoAdvance=false）：批了才 done，并启动已预排的下一期。
-      // - done      → 等规划（autoAdvance=true 且未预排）：人答「roadmap 已无下一期」→ 结束项目。
-      // cycle_approve / 推进问卷都只落卷、批之前不落盘，所以这里才是唯一的迁移点。
+      // 一张 cycle 问卷按被指周期的状态分流（docs/design-cycles.md §6.3）：
+      // - in_review → 检查点（checkpoint=true）：批了才 done，并启动已预排的下一期。
+      // - done      → 等规划（checkpoint 未设且未预排）：人答「roadmap 已无下一期」→ 结束项目。
+      // 开工审批已随 `requireApproval` 移除 —— 周期开工恒机械，不再有 planned 问卷。
       this.questionnaires.consumeApprovalCode(record.id);
       const cycleName = record.cycleName ?? null;
       const cycle = cycleName === null ? undefined : cycleByName(team, cycleName);
       if (cycle === undefined) return;
-      if (cycle.status === 'planned') {
-        if (record.answers[APPROVAL_QUESTION]?.value === 'approve') {
-          cycle.status = 'in_progress';
-          cycle.startedAt = Date.now();
-        }
-      } else if (cycle.status === 'in_review') {
+      if (cycle.status === 'in_review') {
         if (record.answers['advance']?.value === 'approve') {
           cycle.status = 'done';
           cycle.completedAt = Date.now();
@@ -1058,6 +1053,11 @@ export class AutopilotService {
     goal: string;
     scope: string[];
     contracts: ContractDraft[];
+    /**
+     * 边界检查点（docs/design-cycles.md §5.2）：声明本周期验收通过后要请用户
+     * 确认「继续 / 结束」再推进。组长按风险自主决定，缺省 false（全自动）。
+     */
+    checkpoint?: boolean;
   }): Promise<{ cycle: CycleRecord; created: { id: string; path: string }[] }> {
     const team = this.teamOf(input.teamId);
     const name = input.cycleName.trim();
@@ -1075,15 +1075,14 @@ export class AutopilotService {
       goal: input.goal,
       scope: input.scope,
       taskIds: created.map((item) => item.id),
+      ...(input.checkpoint === true ? { checkpoint: true } : {}),
       createdAt: Date.now(),
     };
     team.cycles = [...(team.cycles ?? []), cycle];
-    // 「规划下一期后自动继续」（§6.3 wait-plan 的落点）：上一周期已 done、没有活跃周期，
-    // 且无人值守（autoAdvance && 不要求开工审批）→ 机械地开工，人/组长下一轮 cycle_plan
-    // 后自动继续。首批规划（没有 done 周期）保持 planned —— 那是 cycle_approve 的职责。
+    // 「规划下一期后自动继续」（§6.3 wait-plan 的落点）：上一周期已 done、没有活跃周期
+    // → 机械地开工，人/组长下一轮 cycle_plan 后自动继续。首批规划（没有 done 周期）
+    // 保持 planned —— 那是 cycle_approve 的职责。checkpoint 只约束验收边界，不拦开工。
     const canAutoStart =
-      this.options.cycles.autoAdvance &&
-      !this.options.cycles.requireApproval &&
       (team.cycles ?? []).some((c) => c.status === 'done') &&
       !(team.cycles ?? []).some((c) => c.status === 'in_progress');
     if (canAutoStart) {
@@ -1107,56 +1106,23 @@ export class AutopilotService {
 
   /**
    * `cycle_approve` 的后端（docs/design-cycles.md §5.2）：周期开工。
-   * `cycles.requireApproval: false`（默认，无人值守）→ 机械地把 `planned → in_progress`，
-   * 不惊动人；`true` → 落一张 `kind: 'cycle'` 问卷（复用 approval 的批/不批题与一次性
-   * 码门），人批之前**不落盘** —— 状态迁移发生在 `afterAnswered` 里，没有任何工具能直达
-   * 「自己批自己开工」。
+   * 机械地把 `planned → in_progress` —— 开工审批不再是配置（kickoff 时用户已批过
+   * 项目），v1 的 `requireApproval` 已移除（§8）。边界要不要请用户确认由周期级
+   * `checkpoint` 字段管（§6.3 验收边界，与开工无关）。
    */
   async cycleApprove(input: {
     teamId: string;
     cycleName: string;
-    mode?: QuestionnaireMode;
-    timeoutMinutes?: number;
-  }): Promise<{ cycle: CycleRecord; status: CycleStatus; questionnaire?: QuestionnaireView }> {
+  }): Promise<{ cycle: CycleRecord; status: CycleStatus }> {
     const team = this.teamOf(input.teamId);
     const name = input.cycleName.trim();
     const cycle = cycleByName(team, name);
     if (cycle === undefined) throw new Error(`no planned cycle named "${name}"; run cycle_plan first`);
     if (cycle.status !== 'planned') return { cycle, status: cycle.status };
-    if (!this.options.cycles.requireApproval) {
-      cycle.status = 'in_progress';
-      cycle.startedAt = Date.now();
-      this.changed(team.id);
-      return { cycle, status: 'in_progress' };
-    }
-    // 需要人批：先落问卷。批之前周期保持 planned，其契约因此不被 dispatch（§5.3）。
-    const record = this.questionnaires.create({
-      teamId: team.id,
-      kind: 'cycle',
-      title: `批准开工周期 ${name}？`,
-      mode: input.mode ?? this.options.questionnaire.mode,
-      questions: withApprovalQuestion([
-        {
-          name: 'cycle_context',
-          label: `周期 ${name} 目标：${cycle.goal}；范围：${cycle.scope.join(', ')}`,
-          type: 'text',
-          required: false,
-          options: [],
-          defaultValue: '',
-        },
-      ]),
-      cycleName: name,
-      taskId: null,
-      timeoutMs: 0,
-      approvalCode: newApprovalCode(),
-    });
-    const delivery = await this.notifyQuestionnaire(record);
-    this.questionnaires.markDelivery(record.id, delivery);
+    cycle.status = 'in_progress';
+    cycle.startedAt = Date.now();
     this.changed(team.id);
-    // 「正在等人」这一帧必须现在就出去（与 ask_human 相同的理由：interactive 的
-    // publish 要等 await 结束才跑得动）。
-    this.snapshotPublisher?.();
-    return { cycle, status: 'planned', questionnaire: questionnaireViewOf(record) };
+    return { cycle, status: 'in_progress' };
   }
 
   /** 内部阶段推进（不经过 `autopilot_phase` 那个裸开关）。 */
@@ -3387,7 +3353,7 @@ export class AutopilotService {
 
   /** 周期验收通过后的三岔口推进（§6.3）：状态迁移与落问卷在这里，分流判据在 daemon.ts。 */
   private async advanceCycle(team: TeamRecord, cycle: CycleRecord, report: TickReport): Promise<void> {
-    const action = cycleAdvancePlan(team.cycles ?? [], this.options.cycles.autoAdvance);
+    const action = cycleAdvancePlan(team.cycles ?? [], cycle);
     if (action.kind === 'direct') {
       // 直通（唯一全程无人值守的路径）：下一期已预排 → 机械地 done + 下一期开工。
       cycle.status = 'done';
@@ -3399,79 +3365,85 @@ export class AutopilotService {
       return;
     }
     if (action.kind === 'wait-plan') {
-      // 等规划：autoAdvance 但下一期未预排 → 当前置 done，落问卷请人规划，绝不静默空转。
+      // 等规划：checkpoint 未设且下一期未预排 → 当前置 done，落问卷请人规划，绝不静默空转。
       cycle.status = 'done';
       report.events.push(`cycle-done:${cycle.name}`);
       await this.writeCompletionArtifact(team);
-      await this.openAdvanceQuestionnaire(team, cycle);
+      await this.openAdvanceQuestionnaire(team, cycle, 'wait-plan');
       return;
     }
-    // 人工检查点：autoAdvance=false → 周期停在 in_review，落问卷等人点头后才 done。
+    // 检查点：该周期 checkpoint=true（组长声明边界要请用户确认）→ 停在 in_review 等点头。
     report.events.push(`cycle-waiting:${cycle.name}`);
     await this.writeCompletionArtifact(team);
-    await this.openAdvanceQuestionnaire(team, cycle);
+    await this.openAdvanceQuestionnaire(team, cycle, 'checkpoint');
   }
 
   /**
    * 落周期边界的推进问卷（§6.3 wait-plan / checkpoint 共用，async 模式挂 open）：
    * 它是「周期完成但还没走完」的可见证据 —— 不产生升级、不捕获教训（问卷语义），
    * 但 `checkStuck` / 完成判定看到它就不会把等待误判成卡死或提前停机。
+   * `wait-plan` 指周期已 done 等组长规划下一期；`checkpoint` 指周期停在 in_review 等人点头。
    */
-  private async openAdvanceQuestionnaire(team: TeamRecord, cycle: CycleRecord): Promise<void> {
-    const autoAdvance = this.options.cycles.autoAdvance;
-    const questions: Question[] = autoAdvance
-      ? [
-          {
-            name: 'roadmap_done',
-            label: `周期 ${cycle.name}（${cycle.goal}）的所有任务已完成。roadmap 还有下一期吗？`,
-            type: 'select',
-            options: [
-              {
-                value: 'continue',
-                label: '还有下一期：我这就用 cycle_plan 规划',
-                impact: '排好下一期后自动开工继续（无人值守直通）',
-                recommended: false,
-              },
-              {
-                value: 'finish',
-                label: 'roadmap 已无下一期，结束项目',
-                impact: '写入完成报告并停机',
-                recommended: false,
-              },
-            ],
-            required: true,
-            defaultValue: 'continue',
-          },
-        ]
-      : [
-          {
-            name: 'advance',
-            label: `周期 ${cycle.name}（${cycle.goal}）验收通过。批准推进到下一周期吗？`,
-            type: 'select',
-            options: [
-              {
-                value: 'approve',
-                label: '批准：周期完成并推进',
-                impact: '周期置 done；下一期已预排则自动开工',
-                recommended: false,
-              },
-              {
-                value: 'hold',
-                label: '暂缓：保持等待',
-                impact: '周期停在 in_review，稍后再决',
-                recommended: false,
-              },
-            ],
-            required: true,
-            defaultValue: 'hold',
-          },
-        ];
+  private async openAdvanceQuestionnaire(
+    team: TeamRecord,
+    cycle: CycleRecord,
+    kind: 'wait-plan' | 'checkpoint',
+  ): Promise<void> {
+    const questions: Question[] =
+      kind === 'wait-plan'
+        ? [
+            {
+              name: 'roadmap_done',
+              label: `周期 ${cycle.name}（${cycle.goal}）的所有任务已完成。roadmap 还有下一期吗？`,
+              type: 'select',
+              options: [
+                {
+                  value: 'continue',
+                  label: '还有下一期：我这就用 cycle_plan 规划',
+                  impact: '排好下一期后自动开工继续（无人值守直通）',
+                  recommended: false,
+                },
+                {
+                  value: 'finish',
+                  label: 'roadmap 已无下一期，结束项目',
+                  impact: '写入完成报告并停机',
+                  recommended: false,
+                },
+              ],
+              required: true,
+              defaultValue: 'continue',
+            },
+          ]
+        : [
+            {
+              name: 'advance',
+              label: `周期 ${cycle.name}（${cycle.goal}）验收通过。批准推进到下一周期吗？`,
+              type: 'select',
+              options: [
+                {
+                  value: 'approve',
+                  label: '批准：周期完成并推进',
+                  impact: '周期置 done；下一期已预排则自动开工',
+                  recommended: false,
+                },
+                {
+                  value: 'hold',
+                  label: '暂缓：保持等待',
+                  impact: '周期停在 in_review，稍后再决',
+                  recommended: false,
+                },
+              ],
+              required: true,
+              defaultValue: 'hold',
+            },
+          ];
     const record = this.questionnaires.create({
       teamId: team.id,
       kind: 'cycle',
-      title: autoAdvance
-        ? `周期 ${cycle.name} 已完成，请规划下一周期（或结束项目）`
-        : `周期 ${cycle.name} 验收通过，批准推进到下一周期吗？`,
+      title:
+        kind === 'wait-plan'
+          ? `周期 ${cycle.name} 已完成，请规划下一周期（或结束项目）`
+          : `周期 ${cycle.name} 验收通过，批准推进到下一周期吗？`,
       mode: 'async',
       questions,
       cycleName: cycle.name,
@@ -3484,7 +3456,7 @@ export class AutopilotService {
     this.changed(team.id);
   }
 
-  /** 挂着 open 的周期推进问卷：cycle 已 done 却还等规划/等点头 = 项目还没走完。 */
+  /** 挂着 open 的周期推进问卷：等规划（cycle 已 done）＝项目还没走完，不能提前 completed。 */
   private hasOpenAdvanceQuestionnaire(team: TeamRecord): boolean {
     return this.questionnaires.open.some(
       (record) =>
