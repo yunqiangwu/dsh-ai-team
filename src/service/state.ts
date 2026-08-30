@@ -235,7 +235,7 @@ export function emptyTeamMetrics(): TeamMetrics {
 export const teamPhase = (team: Pick<TeamRecord, 'phase'>): TeamPhase => team.phase ?? 'developing';
 
 /** 按名取周期记录（"M1" → CycleRecord）；没有该周期返回 undefined。 */
-export const cycleByName = (team: Pick<TeamRecord, 'cycles'>, name: string | null): CycleRecord | undefined =>
+export const cycleByName = (team: Pick<TeamRecord, 'cycles'>, name: string | null | undefined): CycleRecord | undefined =>
   (team.cycles ?? []).find((cycle) => cycle.name === name);
 
 /**

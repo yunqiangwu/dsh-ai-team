@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildDescription, CONTRACT_BODY_LIMIT, DESCRIPTION_TOTAL_LIMIT } from '../src/service/description.js';
-import { renderCompletionReport } from '../src/service/report.js';
+import { renderCompletionReport, renderCycleSummary } from '../src/service/report.js';
 import { budgetExceeded, reviewRoundsExceeded, taskStuck } from '../src/service/daemon.js';
 import { effectiveAnswers, withApprovalQuestion } from '../src/service/docflow.js';
 import { memberView as memberViewOf, cycleView as cycleViewOf, taskView as taskViewOf } from '../src/service/views.js';
@@ -277,6 +277,41 @@ describe('renderCompletionReport', () => {
   it('omits the run metrics section for pre-metrics teams', () => {
     const out = renderCompletionReport({ ...base, team: team(), deploys: [], promoteAfterHits: undefined });
     expect(out).not.toContain('run metrics');
+  });
+
+  it('renderCycleSummary 汇总单周期的任务完成情况', () => {
+    const cycle = { id: 'cycle_1', name: 'M1', status: 'in_review', goal: 'ship auth', scope: ['server/auth/'], taskIds: ['A-1', 'A-2'], createdAt: 1 };
+    const out = renderCycleSummary(
+      team({
+        tasks: [
+          taskRecord({ contractId: 'A-1', title: 'oauth', status: 'done' }),
+          taskRecord({ contractId: 'A-2', title: 'token refresh', status: 'cancelled' }),
+          taskRecord({ contractId: 'A-3', title: 'outside cycle', status: 'done' }), // 不归本周期 → 不列
+        ],
+      }),
+      cycle,
+    );
+    expect(out).toContain('### cycle M1 — ship auth');
+    expect(out).toContain('- status: in_review');
+    expect(out).toContain('- tasks: 2/2 done or cancelled');
+    expect(out).toContain('- A-1 oauth — done');
+    expect(out).toContain('- A-2 token refresh — cancelled');
+    expect(out).not.toContain('A-3');
+    // 未验收的周期没有完成时间戳，也不渲染那一行。
+    expect(out).not.toContain('completed at');
+  });
+
+  it('renderCompletionReport 把各周期小结并进按周期汇总段', () => {
+    const cycle = { id: 'cycle_1', name: 'M1', status: 'done', goal: 'ship auth', scope: [], taskIds: ['A-1'], createdAt: 1, completedAt: 1_700_000_000_500 };
+    const out = renderCompletionReport({
+      ...base,
+      team: team({ cycles: [cycle], tasks: [taskRecord({ contractId: 'A-1', title: 'oauth', status: 'done' })] }),
+      deploys: [],
+      promoteAfterHits: undefined,
+    });
+    expect(out).toContain('## cycles');
+    expect(out).toContain('### cycle M1 — ship auth');
+    expect(out).toContain('- completed at:');
   });
 });
 

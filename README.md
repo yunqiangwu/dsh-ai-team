@@ -206,7 +206,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
 6. **卡死与预算**：任务 `stuckMinutes` 无 git 活动 → escalate（空闲失控）；派发后超过 `daemon.maxTaskHours`（默认关闭）仍未完成 → 升级 `budget-exceeded`（活跃空转）。插件看不见成员 agent 的 token 消耗，墙钟预算是唯一可靠的烧钱护栏。
 7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
-8. **空转保护**：连续无事件拍降频轮询（最多 4×）；所有任务 done 或 **cancelled**（废弃是处置结果，不挡收尾）→ 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待升格清单**）并停机等待。
+8. **空转保护与完成判定**：连续无事件拍降频轮询（最多 4×）。完成判定按周期语义（见「多周期开发」一节）：团队无周期记录时，所有任务 done 或 **cancelled**（废弃是处置结果，不挡收尾）→ 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待升格清单**）并停机等待；有周期记录时，当前活跃周期任务全 done/cancelled → 周期置 `in_review` 并生成周期小结（并入 completion.md 的 `## cycles` 段），随后按 `autoAdvance` 与下一期就绪度推进（直通 / 等规划 / 人工检查点），只有 roadmap 走完且当前周期已 done 才真正 `completed` 停机。
 
 **升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 前置依赖永远等不到（`blocked-dependency`：前置看板上不存在、已 needs-human 或已 cancelled）/ 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
 
@@ -245,6 +245,7 @@ Given/When/Then 验收标准……
 
 - **周期实体**：每个周期一张 `CycleRecord`（挂在团队上），含目标（goal）、范围（scope）、任务清单与状态（`planned → in_progress → in_review → done`）；契约 frontmatter 用 `cycle: M1` 声明归属，无该字段的契约视为「未排期」，行为不变。
 - **增量规划**：只拆当前要做的下一期，新周期契约状态为 `planned`，未来周期的契约保持 pending、不被 `dispatch` 提前派出；当前周期任务全部完成后触发周期验收，验收通过推进到下一期，直到 roadmap 走完才真正 `completed` 停机。
+- **周期验收门**：当前活跃周期（`in_progress`）的任务全 done/cancelled 时，周期置 `in_review` 并生成该周期完成小结，并入 `<stateDir>/completion.md` 的 `## cycles` 段（每周期一段）；周期不 done，项目就 **不** 提前 `completed`。
 - **无人值守直通**：下一期已由组长预排好（契约已在盘上）时，插件机械地把 `planned → in_progress` 并继续派发——唯一全程无人值守的路径；未预排时落一张问卷等人规划，绝不静默空转。
 - **周期边界**：是否要人点头由 `cycles.requireApproval`（开工审批）与 `cycles.autoAdvance`（周期验收后自动推进）配置决定，默认无人值守自动推进；`cycle_plan` 永远只拆当前要做的那个周期。
 

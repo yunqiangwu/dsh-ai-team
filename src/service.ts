@@ -151,7 +151,7 @@ import {
   reviewView as reviewViewOf,
   taskView as taskViewOf,
 } from './service/views.js';
-import { budgetExceeded, reviewRoundsExceeded, taskStuck } from './service/daemon.js';
+import { budgetExceeded, cycleAdvancePlan, reviewRoundsExceeded, taskStuck } from './service/daemon.js';
 import {
   APPROVAL_QUESTION,
   assertBindingWritable,
@@ -885,16 +885,30 @@ export class AutopilotService {
       return;
     }
     if (record.kind === 'cycle') {
-      // 周期开工审批（docs/design-cycles.md §5.2）：批准 → planned → in_progress。
-      // cycle_approve 只落问卷、批之前不落盘，所以这里才是唯一的迁移点；拒绝
-      // （或无人应答走 defaultValue=reject）则周期保持 planned，契约继续不被派发。
+      // 一张 cycle 问卷可能指两件事，按被指周期的状态分流（docs/design-cycles.md §5.2 / §6.3）：
+      // - planned  → 开工审批：批了才 planned → in_progress；拒了保持 planned 不派发。
+      // - in_review → 人工检查点（autoAdvance=false）：批了才 done，并启动已预排的下一期。
+      // - done      → 等规划（autoAdvance=true 且未预排）：人答「roadmap 已无下一期」→ 结束项目。
+      // cycle_approve / 推进问卷都只落卷、批之前不落盘，所以这里才是唯一的迁移点。
       this.questionnaires.consumeApprovalCode(record.id);
       const cycleName = record.cycleName ?? null;
-      if (record.answers[APPROVAL_QUESTION]?.value === 'approve' && cycleName !== null) {
-        const cycle = cycleByName(team, cycleName);
-        if (cycle !== undefined && cycle.status === 'planned') {
+      const cycle = cycleName === null ? undefined : cycleByName(team, cycleName);
+      if (cycle === undefined) return;
+      if (cycle.status === 'planned') {
+        if (record.answers[APPROVAL_QUESTION]?.value === 'approve') {
           cycle.status = 'in_progress';
           cycle.startedAt = Date.now();
+        }
+      } else if (cycle.status === 'in_review') {
+        if (record.answers['advance']?.value === 'approve') {
+          cycle.status = 'done';
+          cycle.completedAt = Date.now();
+          this.startNextPlannedCycle(team);
+        }
+      } else if (cycle.status === 'done') {
+        if (record.answers['roadmap_done']?.value === 'finish') {
+          this.loopState = 'completed';
+          await this.writeCompletionArtifact(team);
         }
       }
       return;
@@ -1064,6 +1078,29 @@ export class AutopilotService {
       createdAt: Date.now(),
     };
     team.cycles = [...(team.cycles ?? []), cycle];
+    // 「规划下一期后自动继续」（§6.3 wait-plan 的落点）：上一周期已 done、没有活跃周期，
+    // 且无人值守（autoAdvance && 不要求开工审批）→ 机械地开工，人/组长下一轮 cycle_plan
+    // 后自动继续。首批规划（没有 done 周期）保持 planned —— 那是 cycle_approve 的职责。
+    const canAutoStart =
+      this.options.cycles.autoAdvance &&
+      !this.options.cycles.requireApproval &&
+      (team.cycles ?? []).some((c) => c.status === 'done') &&
+      !(team.cycles ?? []).some((c) => c.status === 'in_progress');
+    if (canAutoStart) {
+      cycle.status = 'in_progress';
+      cycle.startedAt = Date.now();
+      // 续接成功：取消上一周期遗留的「请规划下一期」问卷 —— 它已被这期 cycle_plan 满足。
+      for (const record of this.questionnaires.open) {
+        if (
+          record.teamId === team.id &&
+          record.kind === 'cycle' &&
+          record.cycleName !== null &&
+          cycleByName(team, record.cycleName)?.status === 'done'
+        ) {
+          this.questionnaires.cancel(record.id);
+        }
+      }
+    }
     this.changed(team.id);
     return { cycle, created };
   }
@@ -3309,14 +3346,176 @@ export class AutopilotService {
     report.events.push(`deploy:${view.id}:${view.status}`);
   }
 
-  /** 全部任务收尾 → 写完成报告并把循环置为 completed。废弃的任务不挡完成（§6.1：它已被重规划处置）。 */
+  /**
+   * 完成语义（docs/design-cycles.md §6）：**有周期记录 → 按当前周期的任务子集判完成**，
+   * 不再等全部任务 —— 一个周期完成 ≠ 项目完成；只有 roadmap 真正走完才 `completed`。
+   * 无周期记录 → 维持现状（全部任务 done/cancelled → completed，废弃不挡完成）。
+   */
   private async checkCompletion(team: TeamRecord, report: TickReport): Promise<void> {
+    const cycles = team.cycles ?? [];
+    if (cycles.length === 0) {
+      await this.finishTeamIfAllDone(team, report);
+      return;
+    }
+    // 周期验收门（§6.2）：当前活跃周期任务全 done/cancelled → in_review + 小结 + 推进。
+    const active = cycles.find((cycle) => cycle.status === 'in_progress');
+    if (active !== undefined) {
+      const tasks = this.cycleTasks(team, active);
+      // 空任务周期不验收（也该不出现在盘上）—— 长度 0 的 every 恒真，会凭空推进。
+      if (tasks.length > 0 && tasks.every((task) => task.status === 'done' || task.status === 'cancelled')) {
+        active.status = 'in_review';
+        active.completedAt = Date.now();
+        report.events.push(`cycle-in-review:${active.name}`);
+        await this.advanceCycle(team, active, report);
+      }
+      return;
+    }
+    // 无活跃周期：所有周期都 done 且没有「等规划 / 等点头」的推进问卷挂着，才算走完
+    // （§6.5）。wait-plan 分支会把周期置 done 再落问卷 —— 那张 open 问卷就是「roadmap
+    // 还没走完」的证据，不能因为周期全 done 就把项目提前停掉。
+    if (cycles.every((cycle) => cycle.status === 'done') && !this.hasOpenAdvanceQuestionnaire(team)) {
+      await this.finishTeamIfAllDone(team, report);
+    }
+  }
+
+  /** 周期内任务（按契约 id 归属）；contractId 为 null 的手工任务不计入周期。 */
+  private cycleTasks(team: TeamRecord, cycle: CycleRecord): TaskRecord[] {
+    return team.tasks.filter(
+      (task) => task.contractId !== null && cycle.taskIds.includes(task.contractId),
+    );
+  }
+
+  /** 周期验收通过后的三岔口推进（§6.3）：状态迁移与落问卷在这里，分流判据在 daemon.ts。 */
+  private async advanceCycle(team: TeamRecord, cycle: CycleRecord, report: TickReport): Promise<void> {
+    const action = cycleAdvancePlan(team.cycles ?? [], this.options.cycles.autoAdvance);
+    if (action.kind === 'direct') {
+      // 直通（唯一全程无人值守的路径）：下一期已预排 → 机械地 done + 下一期开工。
+      cycle.status = 'done';
+      action.next.status = 'in_progress';
+      action.next.startedAt = Date.now();
+      report.events.push(`cycle-done:${cycle.name}`);
+      report.events.push(`cycle-started:${action.next.name}`);
+      await this.writeCompletionArtifact(team);
+      return;
+    }
+    if (action.kind === 'wait-plan') {
+      // 等规划：autoAdvance 但下一期未预排 → 当前置 done，落问卷请人规划，绝不静默空转。
+      cycle.status = 'done';
+      report.events.push(`cycle-done:${cycle.name}`);
+      await this.writeCompletionArtifact(team);
+      await this.openAdvanceQuestionnaire(team, cycle);
+      return;
+    }
+    // 人工检查点：autoAdvance=false → 周期停在 in_review，落问卷等人点头后才 done。
+    report.events.push(`cycle-waiting:${cycle.name}`);
+    await this.writeCompletionArtifact(team);
+    await this.openAdvanceQuestionnaire(team, cycle);
+  }
+
+  /**
+   * 落周期边界的推进问卷（§6.3 wait-plan / checkpoint 共用，async 模式挂 open）：
+   * 它是「周期完成但还没走完」的可见证据 —— 不产生升级、不捕获教训（问卷语义），
+   * 但 `checkStuck` / 完成判定看到它就不会把等待误判成卡死或提前停机。
+   */
+  private async openAdvanceQuestionnaire(team: TeamRecord, cycle: CycleRecord): Promise<void> {
+    const autoAdvance = this.options.cycles.autoAdvance;
+    const questions: Question[] = autoAdvance
+      ? [
+          {
+            name: 'roadmap_done',
+            label: `周期 ${cycle.name}（${cycle.goal}）的所有任务已完成。roadmap 还有下一期吗？`,
+            type: 'select',
+            options: [
+              {
+                value: 'continue',
+                label: '还有下一期：我这就用 cycle_plan 规划',
+                impact: '排好下一期后自动开工继续（无人值守直通）',
+                recommended: false,
+              },
+              {
+                value: 'finish',
+                label: 'roadmap 已无下一期，结束项目',
+                impact: '写入完成报告并停机',
+                recommended: false,
+              },
+            ],
+            required: true,
+            defaultValue: 'continue',
+          },
+        ]
+      : [
+          {
+            name: 'advance',
+            label: `周期 ${cycle.name}（${cycle.goal}）验收通过。批准推进到下一周期吗？`,
+            type: 'select',
+            options: [
+              {
+                value: 'approve',
+                label: '批准：周期完成并推进',
+                impact: '周期置 done；下一期已预排则自动开工',
+                recommended: false,
+              },
+              {
+                value: 'hold',
+                label: '暂缓：保持等待',
+                impact: '周期停在 in_review，稍后再决',
+                recommended: false,
+              },
+            ],
+            required: true,
+            defaultValue: 'hold',
+          },
+        ];
+    const record = this.questionnaires.create({
+      teamId: team.id,
+      kind: 'cycle',
+      title: autoAdvance
+        ? `周期 ${cycle.name} 已完成，请规划下一周期（或结束项目）`
+        : `周期 ${cycle.name} 验收通过，批准推进到下一周期吗？`,
+      mode: 'async',
+      questions,
+      cycleName: cycle.name,
+      taskId: null,
+      timeoutMs: 0,
+      approvalCode: null,
+    });
+    const delivery = await this.notifyQuestionnaire(record);
+    this.questionnaires.markDelivery(record.id, delivery);
+    this.changed(team.id);
+  }
+
+  /** 挂着 open 的周期推进问卷：cycle 已 done 却还等规划/等点头 = 项目还没走完。 */
+  private hasOpenAdvanceQuestionnaire(team: TeamRecord): boolean {
+    return this.questionnaires.open.some(
+      (record) =>
+        record.teamId === team.id &&
+        record.kind === 'cycle' &&
+        record.cycleName !== null &&
+        cycleByName(team, record.cycleName)?.status === 'done',
+    );
+  }
+
+  /** 启动已预排的下一期（如果有）：推进审批点头与 cycle_plan 续接共用。 */
+  private startNextPlannedCycle(team: TeamRecord): void {
+    const next = (team.cycles ?? []).find((cycle) => cycle.status === 'planned');
+    if (next === undefined) return;
+    next.status = 'in_progress';
+    next.startedAt = Date.now();
+    this.changed(team.id);
+  }
+
+  /** 全部任务收尾 → 写完成报告并把循环置为 completed。废弃的任务不挡完成（§6.1：它已被重规划处置）。 */
+  private async finishTeamIfAllDone(team: TeamRecord, report: TickReport): Promise<void> {
     if (team.tasks.length === 0) return;
     if (!team.tasks.every((task) => task.status === 'done' || task.status === 'cancelled')) return;
     report.completed = true;
     report.events.push('completed');
     this.loopState = 'completed';
-    // 渲染是纯函数（见 service/report.ts）；这里只保留有副作用的部分。
+    await this.writeCompletionArtifact(team);
+  }
+
+  /** 渲染是纯函数（见 service/report.ts）；这里只保留有副作用的部分 —— 写 completion.md。 */
+  private async writeCompletionArtifact(team: TeamRecord): Promise<void> {
     const summary = renderCompletionReport({
       team,
       deploys: this.deploys,

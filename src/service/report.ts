@@ -8,7 +8,7 @@
  * 任何决策，所以只列候选、不代笔改文档（落 AGENTS.md / docs/ 由 leader 另起一次 docs-only 变更）。
  */
 import type { DeployView } from '../view.js';
-import type { TaskRecord, TeamRecord } from './state.js';
+import type { CycleRecord, TaskRecord, TeamRecord } from './state.js';
 
 export interface CompletionReportInput {
   team: TeamRecord;
@@ -26,6 +26,26 @@ function formatDuration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/**
+ * 单周期完成小结（docs/design-cycles.md §6.2）：周期验收通过时生成，并入
+ * completion.md 的「按周期汇总段」。纯函数 —— 周期是否走完不影响任何决策。
+ */
+export function renderCycleSummary(team: TeamRecord, cycle: CycleRecord): string {
+  const tasks = team.tasks.filter(
+    (task): task is TaskRecord & { contractId: string } =>
+      task.contractId !== null && cycle.taskIds.includes(task.contractId),
+  );
+  const settled = tasks.filter((task) => task.status === 'done' || task.status === 'cancelled').length;
+  return [
+    `### cycle ${cycle.name} — ${cycle.goal}`,
+    ``,
+    `- status: ${cycle.status}`,
+    `- tasks: ${settled}/${tasks.length} done or cancelled`,
+    ...(cycle.completedAt === undefined ? [] : [`- completed at: ${new Date(cycle.completedAt).toISOString()}`]),
+    ...tasks.map((task) => `  - ${task.contractId} ${task.title} — ${task.status}`),
+  ].join('\n');
+}
+
 /** 渲染 `<stateDir>/completion.md` 的完整内容。 */
 export function renderCompletionReport(input: CompletionReportInput): string {
   const { team, deploys, promoteAfterHits, finishedAt } = input;
@@ -36,6 +56,7 @@ export function renderCompletionReport(input: CompletionReportInput): string {
       ? []
       : learnings.filter((learning) => !learning.promoted && learning.hits >= promoteAfterHits);
   const histogram = Object.entries(metrics?.escalations ?? {}).toSorted(([, a], [, b]) => b - a);
+  const cycles = team.cycles ?? [];
   const timedTasks = team.tasks.filter(
     (task): task is TaskRecord & { dispatchedAt: number; completedAt: number } =>
       task.dispatchedAt !== undefined && task.completedAt !== undefined,
@@ -49,6 +70,10 @@ export function renderCompletionReport(input: CompletionReportInput): string {
     `## tasks`,
     ...team.tasks.map((task) => `- ${task.contractId ?? task.id} ${task.title} — ${task.status}`),
     ``,
+    // 按周期汇总段（§6.2）：每个周期一段小结，由 renderCycleSummary 渲染。
+    ...(cycles.length === 0
+      ? []
+      : [`## cycles`, ``, ...cycles.flatMap((cycle) => renderCycleSummary(team, cycle).split('\n')), ``]),
     ...(metrics === undefined
       ? []
       : [

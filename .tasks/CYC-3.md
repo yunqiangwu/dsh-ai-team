@@ -1,7 +1,7 @@
 ---
 id: CYC-3
 title: 无人值守推进：按周期完成 / 验收门 / 自动规划下一期
-status: pending
+status: done
 priority: 6
 depends_on: [CYC-1, CYC-2]
 touches:
