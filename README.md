@@ -330,6 +330,8 @@ Given/When/Then 验收标准……
 
 **人工决策与文档先行**：`ask_human`（向人提问并拿到结构化答复；`interactive` 真的等到人答才返回） / `answer_questionnaire`（人在会话里作答，转述作答审批需带一次性码） / `doc_write`（写文档，只收 draft 区） / `doc_approve`（人把审批过的草稿升格进正式区，落盘前比对 sha256） / `contract_create`（建 `.tasks/*.md` 契约，写前校验 id / 依赖 / 成环 / 禁区 / 域数）。
 
+**迭代周期**：`cycle_plan`（按 roadmap 拆下一期：建周期记录 + 批量契约，写前校验同 `contract_create`；可选 `checkpoint` 声明该期边界要不要请人确认） / `cycle_approve`（周期开工：`planned → in_progress`，机械动作无审批环节）。两者都是 AI 团队（组长）内部工具，用户只需在边界被问到时回「继续 / 结束」。
+
 ### 团队阶段（phase）与依赖死锁
 
 `autopilot_phase` 不带 `phase` 参数时读当前阶段，带参数时切换。阶段是与运行状态灯**正交**的另一维度，表示团队走到流程的哪一步：
