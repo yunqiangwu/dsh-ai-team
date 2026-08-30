@@ -1236,6 +1236,59 @@ describe('unattended: 团队阶段、依赖死锁与带外快照（INT-1）', ()
     }
   }, 60_000);
 
+  it('assignTask 接管已被收养的 pending 契约：复用任务点名为指定开发者，而非报 already-on-board', async () => {
+    const { service, teamId, cleanup } = await serviceWithContracts('assign-takeover', [
+      { id: 'TA-1', title: 'whitelist core', touches: ['server/core/'] },
+    ]);
+    try {
+      // intake 阶段：契约被收养为 pending（以 leader 名义占位），dispatch 不派发 → dev 全 idle。
+      service.setPhase({ teamId, phase: 'intake' });
+      await service.tickOnce();
+      const before = service.teamView(teamId);
+      const boardTask = before.tasks.find((task) => task.contractId === 'TA-1')!;
+      expect(boardTask.status).toBe('pending');
+      const dev = before.members.find((member) => member.role === 'developer')!;
+      expect(dev.status).toBe('idle');
+
+      // 组长点名派发同一张契约：应"接管"那张待办任务（复用、不新建、不报错）。
+      const assigned = await service.assignTask({
+        teamId, title: 'whitelist core', assigneeId: dev.id, contractId: 'TA-1',
+      });
+      const after = service.teamView(teamId);
+      const taken = after.tasks.find((task) => task.contractId === 'TA-1')!;
+      expect(taken.id).toBe(boardTask.id);            // 复用同一张任务，未新建
+      expect(taken.status).toBe('in_progress');
+      expect(taken.assigneeId).toBe(dev.id);
+      expect(assigned.assigneeId).toBe(dev.id);
+      expect(after.members.find((member) => member.id === dev.id)?.status).toBe('working');
+      expect(after.metrics.dispatched).toBe(before.metrics.dispatched + 1);
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
+  it('assignTask 对已被真正负责的契约给出可操作提示而非裸报错', async () => {
+    const { service, teamId, cleanup } = await serviceWithContracts('assign-owned', [
+      { id: 'OW-1', title: 'owned work', touches: ['server/core/'] },
+    ]);
+    try {
+      service.setPhase({ teamId, phase: 'developing' });
+      await service.tickOnce(); // 派发给某 dev → in_progress
+      const view = service.teamView(teamId);
+      const owned = view.tasks.find((task) => task.contractId === 'OW-1')!;
+      expect(owned.status).toBe('in_progress');
+      const owner = view.members.find((member) => member.id === owned.assigneeId)!;
+      const otherDev = view.members.find(
+        (member) => member.role === 'developer' && member.id !== owner.id,
+      )!;
+      await expect(
+        service.assignTask({ teamId, title: 'dup', assigneeId: otherDev.id, contractId: 'OW-1' }),
+      ).rejects.toThrow(/is already in_progress on the board and is being handled by/);
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
   it('replanning 与 developing 同样可派发：两个阶段走的是同一条派发路径', async () => {
     const { service, teamId, cleanup } = await serviceWithContracts('phase-replan', [
       { id: 'R-1', title: 'first', touches: ['alpha/'] },

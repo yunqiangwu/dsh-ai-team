@@ -1802,8 +1802,21 @@ export class AutopilotService {
       if (contract.status !== 'pending') {
         throw new Error(`task contract "${contract.id}" is ${contract.status}; only pending contracts can be assigned`);
       }
-      if (team.tasks.some((task) => task.contractId === contract?.id && task.status !== 'done')) {
-        throw new Error(`task contract "${contract.id}" is already on the board`);
+      const boardTask = team.tasks.find((task) => task.contractId === contract?.id && task.status !== 'done');
+      if (boardTask !== undefined) {
+        // 契约已经被 daemon 收养到看板上（adoptPendingContract 会以 leader 名义挂一张 pending
+        // 占位任务，等 dispatch 派给真实开发者）。这里组长点名派发同一张契约时，若它尚未被
+        // 真正接手（pending 占位），就**接管**给它点名的开发者，而不是报「already on the
+        // board」硬错误——否则「daemon 已收养 + 组长点名派发」必定相撞，只剩卡死。
+        if (boardTask.status === 'pending') {
+          return this.takeOverPendingTask(team, boardTask, assignee, contract);
+        }
+        // 已被真正负责 / 卡住：给出可操作的处置指引，而不是一句摸不着头脑的报错。
+        const ownerName = this.memberOf(team, boardTask.assigneeId).name;
+        throw new Error(
+          `task contract "${contract.id}" is already ${boardTask.status} on the board and is being handled by ${ownerName}; ` +
+            `to reassign it, first revoke/abort it via task_replan (or resolve its blockage), then assign again — or pick a different contract`,
+        );
       }
     }
     const id = shortId('task');
@@ -1848,6 +1861,39 @@ export class AutopilotService {
       await this.updateContractStatus(team, task, 'in_progress', assignee.name);
       task.status = 'in_progress';
     }
+    await this.refreshBranches(team);
+    this.changed(team.id);
+    return this.taskView(team, task);
+  }
+
+  /**
+   * 组长点名接管一张「尚未真正派发」的占位任务：daemon 的 adoptPendingContract 以
+   * leader 名义把契约挂成 pending，真正的责任人在 dispatch 时才落到开发者头上。
+   * 这里组长手动 assignTask 同一张契约时，若它还是 pending 占位，就复用它、点名为
+   * 指定开发者接手（而不是新建一张并报「already on the board」）。副作用与 dispatch
+   * 保持一致：建分支 → 检出工作区 → 成员与任务状态 → 回写契约状态。
+   */
+  private async takeOverPendingTask(
+    team: TeamRecord,
+    task: TaskRecord,
+    assignee: MemberRecord,
+    contract: TaskContract,
+  ): Promise<TaskView> {
+    await this.refreshBranches(team);
+    if (!team.branches.includes(task.branch)) {
+      await createBranch(team.repoPath, task.branch, team.baseBranch);
+    }
+    await checkout(assignee.workspacePath, task.branch);
+    task.assigneeId = assignee.id;
+    task.description = this.buildDescription(team, contract.body, contract.touches, contract);
+    assignee.branch = task.branch;
+    assignee.status = 'working';
+    assignee.currentTaskId = task.id;
+    task.status = 'in_progress';
+    task.dispatchedAt = Date.now();
+    this.teamMetrics(team).dispatched += 1;
+    this.touchTask(task);
+    await this.updateContractStatus(team, task, 'in_progress', assignee.name);
     await this.refreshBranches(team);
     this.changed(team.id);
     return this.taskView(team, task);
