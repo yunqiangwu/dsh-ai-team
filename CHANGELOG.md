@@ -16,6 +16,7 @@
 - **知识回路 `learnings`**：评审打回与升级自动沉淀为教训，按域相关性注入后续任务描述；待升格清单交人落文档。
 - **每任务墙钟预算**（`daemon.maxTaskHours`，超时升级 `budget-exceeded`）与团队运行指标聚合。
 - **域锁推迟可见化（TECH-2）**：`touches` 被在途任务锁定的派发候选保持 `pending` 并记 `deferred-domain-lock:<taskId>` 事件，派发继续走锁外候选——高优先级任务等域锁不再静默，也不误报升级。
+- **正式区 drift 检测（TECH-3）**：`accepted` 文档被手改后由守护循环每拍比对 sha256 检出，整体退回 draft 区重批（新哈希、version 递增、同一次提交两侧）并重开 approval 问卷——`approvedBy` 不再对被改过的正文说谎。
 - **文档体系**：操作者 runbook `PILOT.md`、交互流程设计文档 `docs/design-interaction.md`（M0–M3 规格与实施记录）。
 
 ### 变更

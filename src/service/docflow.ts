@@ -16,6 +16,7 @@ import {
   assertRepoRelative,
   bumpVersion,
   defaultFormalPath,
+  draftPathOfFormal,
   hashBody,
   insertSectionNotes,
   isDraftPath,
@@ -383,17 +384,81 @@ export async function promoteDrafts(
   return { promoted, phase: teamPhase(team), approvedBy };
 }
 
-/** 比对失败后重开的那份审批问卷（§4.2 + §11-2）：新码、新快照。 */
+/**
+ * 正式区的 drift 检测（TECH-3 / §11-2）：`accepted` 文档的正文与批准时钉住的
+ * sha256 不符即为漂移。判定口径是「集成检出里的字节与批准哈希不符」，不关心
+ * 改动怎么进来的 —— 人直接编辑检出、或经远端合入都一样命中。
+ */
+export async function findAcceptedDrift(deps: DocFlowDeps, team: TeamRecord): Promise<DocEntry[]> {
+  const formalDir = assertRepoRelative(deps.docs.formalDir, 'docs.formalDir');
+  const entries = await listDocs(repoFile(team.repoPath, formalDir), formalDir);
+  return entries.filter(
+    (entry) => entry.doc.meta.status === 'accepted' && entry.doc.meta.sha256 !== hashBody(entry.doc.body),
+  );
+}
+
+/**
+ * drift 退回重批（TECH-3 / §11-2）：被改动的正式文档整体退回 draft 区同相对
+ * 路径并钉住新哈希（`pending-approval`，不是 `draft` —— 退回就是为了重批，
+ * 直接落待批态，人拿新码来批不会撞 `nothing pending approval`），正式区删除，
+ * 两侧同一次提交；随即重开一张 approval 问卷。
+ *
+ * 幂等免费：退回后正式区已无该文档，下一拍扫描不再命中。
+ */
+export async function revertAcceptedDrift(
+  deps: DocFlowDeps,
+  team: TeamRecord,
+  drifted: DocEntry[],
+): Promise<{ reverted: string[]; questionnaireId: string }> {
+  const { relative: draftDir } = draftRoot(deps, team);
+  const formalDir = assertRepoRelative(deps.docs.formalDir, 'docs.formalDir');
+  const reverted: string[] = [];
+  for (const entry of drifted) {
+    const draftRelative = draftPathOfFormal(entry.path, draftDir, formalDir);
+    await writeDoc(
+      repoFile(team.repoPath, draftRelative),
+      {
+        path: draftRelative,
+        status: 'pending-approval',
+        // 重批落回正式区时 formal 侧已删，version 就是这里给的值 —— 递增一格，
+        // git 历史读起来才是「这份文档改过一版」，而不是原地覆盖 1.0。
+        version: bumpVersion(entry.doc.meta.version),
+        sha256: hashBody(entry.doc.body),
+        approvedBy: null,
+        approvedAt: null,
+      },
+      entry.doc.body,
+    );
+    await rm(entry.absolutePath, { force: true });
+    reverted.push(entry.path);
+  }
+  await commitDocs(deps, team, `docs: accepted doc drifted, reverted to drafts (${oneLine(reverted.join(', '))})`);
+  const paths = reverted.join(', ');
+  const questionnaireId = await reopenApprovalQuestionnaire(
+    deps,
+    team,
+    null,
+    paths,
+    `重开审批：${paths} 在批准后被改动`,
+  );
+  return { reverted, questionnaireId };
+}
+
+/**
+ * 比对失败 / drift 退回后重开的那份审批问卷（§4.2 + §11-2）：新码、新快照。
+ * `stale` 为 null 表示没有对应的旧问卷（TECH-3 的 drift 退回场景）。
+ */
 export async function reopenApprovalQuestionnaire(
   deps: DocFlowDeps,
   team: TeamRecord,
   stale: QuestionnaireRecord | null,
   driftedPaths: string,
+  title = `重开审批：${driftedPaths} 在上一码发出后被改动`,
 ): Promise<string> {
   const record = deps.questionnaires.create({
     teamId: team.id,
     kind: 'approval',
-    title: `重开审批：${driftedPaths} 在上一码发出后被改动`,
+    title,
     mode: stale?.mode ?? 'async',
     questions: withApprovalQuestion(stale === null ? [] : stale.questions.filter((q) => q.name !== APPROVAL_QUESTION)),
     binding: stale?.binding ?? null,

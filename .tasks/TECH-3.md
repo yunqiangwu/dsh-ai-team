@@ -1,7 +1,7 @@
 ---
 id: TECH-3
 title: sha256 审批链失效重批：accepted 文档被手改的检测与退回重批
-status: pending
+status: done
 touches:
   - src/
   - tests/
@@ -26,9 +26,9 @@ sha256 审批链的承诺是「正式区只放人批过的字节，`approvedBy`/
 **检测在 daemon tick，响应用既有审批链原地重走**：
 
 1. 每拍扫描正式区（`docs.formalDir`）：`status: accepted` 且 `hashBody(body) !== meta.sha256` 即 drift。判定口径是「集成检出里的字节与批准哈希不符」，不关心改动怎么进来的（人直接编辑检出、或经远端合入都一样命中）。
-2. drift 的文档**整体退回 draft 区**：内容写到 draft 区同相对路径（`status: 'draft'`、按新正文重算哈希）、正式区删除、`commitDocs` 一次提交两侧（与 `promoteDrafts` 逆向对称）。
-3. 随即 `stampForApproval` + 重开一张 approval 问卷（题面含 decision 题，title 写明哪份文档在批准后被改动），投递走既有 `notifyQuestionnaire`。
-4. 此后全是既有链路：人批 approve → `promoteDrafts` 升格，同路径二次批自动 `bumpVersion`（先例已在）；reject → `resetDraftsToEditable` 停在 draft 区。
+2. drift 的文档**整体退回 draft 区**：内容写到 draft 区同相对路径、正式区删除、`commitDocs` 一次提交两侧（与 `promoteDrafts` 逆向对称）。退回态直接是 `pending-approval` 并按新正文重算哈希——不是 `draft`：退回就是为了重批，直接落待批态，人拿新码来批不会撞 `nothing pending approval`（该死锁在 `promoteDrafts` 注释里已有先例）。version 先递增一格（1.0 → 1.1），`approvedBy`/`approvedAt` 清空——谎言不留档。
+3. 随即重开一张 approval 问卷（题面含 decision 题，title 写明哪份文档在批准后被改动），投递走既有 `notifyQuestionnaire`。不调 `stampForApproval`：它会把 draft 区**其它**草稿也扫进审批包，还带 intake 阶段副作用——退回谁就重批谁。
+4. 此后全是既有链路：人批 approve → `promoteDrafts` 升格（formal 侧已删，version 用退回时递增过的值）；reject → `resetDraftsToEditable` 停在 draft 区。
 5. **幂等免费**：退回后正式区已无该文档，下一拍扫描不再命中，不会重复发问卷。
 
 一句话：**正式区只放人批过的字节；批过的字节变了 → 回 draft 重批**。「失效」= 退出正式区，「重批」= 走同一条审批链。不造追认（ratify）新问卷类型、不动 `afterAnswered`、不动 phase。
@@ -45,7 +45,7 @@ sha256 审批链的承诺是「正式区只放人批过的字节，`approvedBy`/
 
 - **Given** 正式区一份 `accepted` 文档（含 `approvedBy`/`sha256`），人直接编辑其正文（frontmatter 的 sha256 保持旧值）
 - **When** 守护循环跑一拍 `tickOnce`
-- **Then** 该文档出现在 draft 区同相对路径，`status: 'draft'`、`sha256` 为新正文的哈希；正式区该文件已删除；两侧改动落在**同一次** git 提交里
+- **Then** 该文档出现在 draft 区同相对路径，`status: 'pending-approval'`、`sha256` 为新正文的哈希、version 递增一格（`1.0 → 1.1`）；正式区该文件已删除；两侧改动落在**同一次** git 提交里
 - **And** 存在一张 open 的 approval 问卷，title 指名该文档路径与「批准后被改动」，且已走 `notifyQuestionnaire` 投递
 - **And** 被改文档的旧 `approvedBy` 记录不再随正式区存在——谎言不留档
 

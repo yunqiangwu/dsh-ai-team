@@ -680,6 +680,69 @@ describe('questionnaire: draft → accepted 审批链（场景五、七）', () 
     }
   }, 60_000);
 
+  it('TECH-3：accepted 文档被手改 → tick 检出、退回 draft 重批、幂等、不误伤', async () => {
+    const ctx = await makeCtx('tech3-drift');
+    try {
+      // 先走完正常链路，把一份草稿升格进正式区。
+      const first = await stampBundle(ctx, { 'docs/drafts/prd.md': PRD_BODY });
+      await ctx.service.docApprove({ teamId: ctx.teamId, code: first.code });
+      const formalPath = join(ctx.repoPath, 'docs/prd.md');
+      const accepted = parseDoc('docs/prd.md', await readFile(formalPath, 'utf8'));
+      expect(accepted.meta.status).toBe('accepted');
+      expect(accepted.meta.version).toBe('1.0');
+
+      // 场景五（前半）：哈希一致的正式文档跑一拍 → 静默，无退回事件、不产生新问卷
+      // （原审批问卷码已废但状态仍 open，属正常等待，不算「新开」）。
+      const openBefore = ctx.service.questionnaires.open.length;
+      const quiet = await ctx.service.tickOnce();
+      expect(quiet.events.filter((event) => event.startsWith('doc-drift-reverted'))).toHaveLength(0);
+      expect(ctx.service.questionnaires.open).toHaveLength(openBefore);
+      expect(parseDoc('docs/prd.md', await readFile(formalPath, 'utf8')).meta.status).toBe('accepted');
+
+      // 人直接手改正式区正文：frontmatter 的 sha256 还是旧值，正文已经变了。
+      await writeFile(formalPath, renderDoc(accepted.meta, `${accepted.body}\n批准之后手改的一行。\n`), 'utf8');
+
+      // 场景二：一拍检出并退回重批。
+      const tick = await ctx.service.tickOnce();
+      expect(tick.events).toContain('doc-drift-reverted:docs/prd.md');
+      expect(await readText(formalPath)).toBeNull();
+      const draft = parseDoc('docs/drafts/prd.md', await readFile(join(ctx.repoPath, 'docs/drafts/prd.md'), 'utf8'));
+      expect(draft.meta.status).toBe('pending-approval');
+      expect(draft.meta.sha256).toBe(hashBody(draft.body));
+      expect(draft.body).toContain('批准之后手改的一行');
+      // 重开的那张按 title 定位：open 里可能还躺着码已作废的原审批问卷。
+      const reopened = ctx.service.questionnaires.open.find((record) => record.title.includes('批准后被改动'));
+      expect(reopened?.kind).toBe('approval');
+      expect(reopened?.approvalCode).not.toBeNull();
+      expect(reopened?.title).toContain('docs/prd.md');
+      expect(gitTest(['log', '--format=%s', 'main'], ctx.repoPath))
+        .toContain('docs: accepted doc drifted, reverted to drafts (docs/prd.md)');
+      // 退回是文档守门，不是任务故障：不升级、不动 phase
+      // （第一拍已把 scaffolding 自动推进到 developing，drift 不回拉阶段）。
+      expect(ctx.service.escalations.all).toHaveLength(0);
+      expect(ctx.service.teamView(ctx.teamId).phase).toBe('developing');
+
+      // 场景四：幂等 —— 退回后正式区已无该文档，下一拍不再命中、不再开新问卷
+      // （open 数停留在「原审批问卷 + 重开问卷」两张）。
+      const openAfterRevert = ctx.service.questionnaires.open.length;
+      const again = await ctx.service.tickOnce();
+      expect(again.events.filter((event) => event.startsWith('doc-drift-reverted'))).toHaveLength(0);
+      expect(ctx.service.questionnaires.open).toHaveLength(openAfterRevert);
+
+      // 场景三：重批 approve 走既有升格链，version 递增、手改内容随之进正式区。
+      const result = await ctx.service.docApprove({ teamId: ctx.teamId, code: reopened!.approvalCode! });
+      expect(result.promoted[0]?.formal).toBe('docs/prd.md');
+      expect(result.promoted[0]?.version).toBe('1.1');
+      expect(parseDoc('docs/prd.md', await readFile(formalPath, 'utf8')).body).toContain('批准之后手改的一行');
+
+      // 场景五（后半）：升格回正式区后哈希重新一致，再跑一拍依旧静默。
+      const settled = await ctx.service.tickOnce();
+      expect(settled.events.filter((event) => event.startsWith('doc-drift-reverted'))).toHaveLength(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  }, 60_000);
+
   it('不批准：草稿退回可编辑、阶段回 intake，正式区不动', async () => {
     const ctx = await makeCtx('reject');
     try {

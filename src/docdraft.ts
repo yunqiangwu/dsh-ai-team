@@ -217,6 +217,13 @@ export function defaultFormalPath(draftPath: string, draftDir: string, formalDir
   return join(formalDir.replace(/\/+$/, ''), relative).replace(/\\/g, '/');
 }
 
+/** `defaultFormalPath` 的逆向：`docs/prd.md` → `docs/drafts/prd.md`（drift 退回用）。 */
+export function draftPathOfFormal(formalPath: string, draftDir: string, formalDir: string): string {
+  const dir = formalDir.replace(/\/+$/, '');
+  const relative = formalPath.startsWith(`${dir}/`) ? formalPath.slice(dir.length + 1) : formalPath;
+  return `${draftDir.replace(/\/+$/, '')}/${relative}`.replace(/\\/g, '/');
+}
+
 /** 版本号递增：`1.0 → 1.1`，`1.9 → 2.0`。解析不了就退回原值（绝不静默变成 1.0）。 */
 export function bumpVersion(version: string): string {
   const match = /^(\d+)\.(\d+)$/.exec(version.trim());

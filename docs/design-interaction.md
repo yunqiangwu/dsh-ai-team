@@ -264,6 +264,6 @@ M2 之前 `SlotProps` 只有 `{ sessionId?, useProjection, t }`，**面板发不
 ## 11. 未决问题
 
 1. `async` 模式下"人回一句继续"能否被宿主接管？需要 `dsh-agent` / workflow 层的写入口，本插件不依赖它们，且引入会破坏架构铁律 1（核心与 cordis 解耦）。建议宿主提供，插件不越界。
-2. `sha256` 审批链在用户直接手改文档时如何失效并重批——倾向：升格时比对失败即重开 questionnaire。
+2. ~~`sha256` 审批链在用户直接手改文档时如何失效并重批~~ 已决并落代码（[`TECH-3`](../.tasks/TECH-3.md)）：升格窗口内的手改走「比对失败 → 作废码 → 重开问卷」（既有）；`accepted` 之后的正式区手改由守护循环每拍扫描（`findAcceptedDrift`），命中即整体退回 draft 区（`pending-approval` + 新哈希 + version 递增）、正式区删除、同一次提交，并重开 approval 问卷原地重批——正式区只放人批过的字节，批过的字节变了就回 draft 重批。不防对抗性伪造（正文连 frontmatter 哈希一起改），与工单 token 同一威胁模型。
 3. ~~优先级与域锁冲突时的调度策略~~ 已决并落代码（[`TECH-2`](../.tasks/TECH-2.md)）：**域锁推迟但不空转、跳过可见**——被锁候选保持 `pending` 并记 `deferred-domain-lock:<taskId>` 事件，派发继续走锁外的下一候选（吞吐优先，不引入严格优先级模式），口径见 §6.2 末段。
 4. 多团队并行时 phase 是否提升为 team 级——本文已按 team 级设计，但要确认与 `activeTeamId` 的渲染假设一致。

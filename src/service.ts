@@ -154,9 +154,11 @@ import {
   docApprove as docApproveFlow,
   docWrite as docWriteFlow,
   effectiveAnswers,
+  findAcceptedDrift,
   promoteDrafts,
   questionnaireResult,
   resetDraftsToEditable,
+  revertAcceptedDrift,
   stampForApproval,
   withApprovalQuestion,
   writeBackAnswers,
@@ -2755,6 +2757,7 @@ export class AutopilotService {
         this.reportedRejectedContracts.add(item.path);
         report.events.push(`contract-rejected:${item.path}`);
       }
+      await this.checkAcceptedDrift(team, report);
       await this.syncContracts(team, contracts, report);
       await this.dispatch(team, report, contracts, signal);
       await this.checkReviewRounds(team, report);
@@ -2765,6 +2768,19 @@ export class AutopilotService {
     }
     this.changed();
     return report;
+  }
+
+  /**
+   * TECH-3（§11-2）：正式区文档被人手改（正文与批准时钉住的 sha256 不符）→
+   * 整体退回 draft 区重批。这是文档真相的守门人，不是任务故障：不升级、
+   * 不进直方图、不动 phase —— 在途任务照跑，要重批的是文档，不是团队阶段。
+   */
+  private async checkAcceptedDrift(team: TeamRecord, report: TickReport): Promise<void> {
+    const drifted = await findAcceptedDrift(this.docflow, team);
+    if (drifted.length === 0) return;
+    const { reverted } = await revertAcceptedDrift(this.docflow, team, drifted);
+    for (const path of reverted) report.events.push(`doc-drift-reverted:${path}`);
+    this.changed(team.id);
   }
 
   /** 把仓库里的任务契约同步到看板；分诊挂起态的契约。 */
