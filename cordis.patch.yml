@@ -36,7 +36,7 @@
             - pnpm run lint
             - pnpm run test
             - pnpm run build
-          requireCiGreen: true
+          requireCiGreen: false       # generic 自建远端无远端 CI：必须 false，否则「从未验证」会永久阻塞 approve/本地合并。切回 github 再置 true
           timeoutMinutes: 30
         daemon:
           maxReviewRounds: 3

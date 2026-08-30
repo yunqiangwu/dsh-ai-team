@@ -17,17 +17,16 @@
 | --- | --- | --- |
 | L0 | 文档 / 任务单类改动 | clone、派发、门、审查、合并全闭环；不碰禁区 |
 | L1 | 单点 bug（单文件，带复现测试） | 质量门真实拦截；升级通知链路可达 |
-| L2 | 跨文件特性（≤ 3 文件、≤ 2 域） | 域锁、并行派发、PR upsert |
+| L2 | 跨文件特性（≤ 3 文件、≤ 2 域） | 域锁、并行派发、push 自建远端 |
 
 **停止条件**（命中即停，回到上一级）：出现 `rollback-failed`；同一原因升级 ≥ 3 次；burning 速率明显超出预期（耗时行普遍贴着 `maxTaskHours`）。
 
 ## 1. 前置清单
 
 - [ ] Linux VPS 一台，Node ≥ 22.19，插件跑在**普通用户**下（bootstrap 走 rootless 安装）。
-- [ ] 平台能力先对齐预期：**PR 创建与 CI 状态查询只实现了 github**（其它平台 `pr_sync` 退化为纯推送、看板无 PR/CI 徽标）。
-  - GitHub 私有仓：`platform: github` + `requireCiGreen: true`，全功能。
-  - 私有 Gitea（+ act-runner）：`platform: generic`，`requireCiGreen` 必须**显式置 false**——插件查不到 Gitea 的 CI，留着它会让「从未验证视为未通过」永久阻塞 approve。act-runner 照常跑 CI，只是红绿不作为插件门；workflow 放 `.gitea/workflows/`（Gitea 只认这个路径）。SSH 非 22 端口时 `remote.url` 写全 `ssh://git@host:PORT/owner/repo.git`。
-  - cnb/gitlab 同属 generic 语义。
+- [ ] 平台能力先对齐预期：本项目用**自建 git 远端**，`platform: generic` —— **不做 PR、不查远端 CI**（PR 创建与 CI 状态查询只有 github 平台实现了；generic 下 `pr_sync` 退化为纯推送、看板无 PR/CI 徽标）。
+  - 自建远端（Gitea / GitLab / 裸 git）：`platform: generic`，`requireCiGreen` 必须**显式置 false**——插件查不到自建远端的 CI，留着它会让「从未验证视为未通过」永久阻塞 approve。`remote.url` 写自建仓库地址；若自建有 CI（如 Gitea act-runner），照常跑，只是红绿不作为插件门；workflow 放 `.gitea/workflows/`（Gitea 只认这个路径）。SSH 非 22 端口时 `remote.url` 写全 `ssh://git@host:PORT/owner/repo.git`。
+  - github（仅当你仍用它时可选）：`platform: github` + `requireCiGreen: true`，才走 PR / 远端 CI 全功能。
 - [ ] 禁区只剩默认 `LICENSE`（2026-08-29 变更）：`.github/` 与 `AGENTS.md` 技术上 AI 团队改得了，但**不要**把它们写进业务契约的 `touches`——改 CI（含 Gitea 的 workflow）等于改把关自己的考卷，改 `AGENTS.md` 属 docs-only 变更；两者都该单独成一次变更并留人复核。
 
 **密钥与环境变量**——全部只配环境变量名，值绝不进任何 yml。注意区分两类 env：下面的表是 **dsh 进程本身**的环境变量（systemd `EnvironmentFile=` 或等效私有 env 文件注入）；`bootstrap.envFile` 是给**目标仓库应用**生成 .env，两回事。
@@ -35,7 +34,7 @@
 | 变量 | 用途 | 必需性 |
 | --- | --- | --- |
 | `AUTOPILOT_GIT_KEY` | deploy key 私钥 / https token，对目标仓库可读写 | 必需 |
-| `GITHUB_TOKEN` | `remote.apiTokenEnv`：PR 与 CI 状态查询 | github 平台必需 |
+| `GITHUB_TOKEN` | `remote.apiTokenEnv`：PR 与 CI 状态查询 | 仅 github 平台必需；自建远端（generic）免配 |
 | `AUTOPILOT_WEBHOOK` | `escalation.webhookUrlEnv`：升级即时通知 | 强烈建议 |
 | `AUTOPILOT_SMTP_USER` / `_PASS` / `_FROM` | 人工确认邮件（notification） | 开 notification 时必需 |
 
@@ -63,10 +62,10 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
         rootDir: .dsh-ai-team
         baseBranch: main
         remote:
-          url: /tmp/mock-git-repo/mdtohtml.git   # 换成你的 fork
+          url: /tmp/mock-git-repo/mdtohtml.git   # 换成你的自建远端（generic），本地 merge 后 push 到这里
           sshKeyEnv: AUTOPILOT_GIT_KEY
-          platform: github
-          apiTokenEnv: GITHUB_TOKEN
+          platform: generic
+          # apiTokenEnv: 仅 github 建 PR/查 CI 时需要；自建远端免配
         bootstrap:
           enabled: true
           toolchain: [git, bun, pnpm]
@@ -76,7 +75,7 @@ printenv | grep -E '^(AUTOPILOT_|GITHUB_TOKEN)' | cut -d= -f1
           verifyCommand: pnpm run typecheck
         gates:
           commands: [pnpm run typecheck, pnpm run lint, pnpm run build, pnpm run test]
-          requireCiGreen: true
+          requireCiGreen: false            # 自建远端无远端 CI，必须显式置 false；本地合并不依赖 CI
           timeoutMinutes: 30
         daemon:
           maxReviewRounds: 3

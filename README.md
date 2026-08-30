@@ -28,12 +28,12 @@ pnpm add dsh-ai-team
 - 四角色团队（leader / developer / reviewer / operator），每成员一个 git worktree（共享 object store），任务看板 + `task/<id>` 分支。
 - `.tasks/*.md` 任务契约（frontmatter 真相源 + `_board.md` 自动生成），`contract_create` 写前校验，`task_clarify` 契约含糊退回 leader（不消耗返工轮次）。
 - 团队阶段（phase）：`intake → 文档待批准 → 脚手架 → 开发 ⇄ 重排`，非派发阶段不把任务交出去。
-- 客观质量门：`gates_run` 全绿才可 approve/push；远端 CI 绿才可合并；改动体量门（`maxDiffLines`/`maxDiffFiles`）。
+- 客观质量门：`gates_run` 全绿才可 approve 并**本地合入 base**；改动体量门（`maxDiffLines`/`maxDiffFiles`）；不做远端 PR / 不依赖远端 CI。
 - 无人值守主循环：崩溃恢复、依赖/域锁派发、依赖死锁（`blocked-dependency`）、卡死检测、空转降频、完成报告。
 - 知识回路：自动捕获评审打回与升级 → 注入后续任务描述 → `learnings.md` 台账（落 stateDir，不入库）；升格进项目文档由人裁决。
 - 升级机制：`needs-human` 打标 + 任务单留言 + webhook 通知 + 粒度化暂停；人工确认走邮件 + 问卷工单，答复自动回写。
 - 部署闭环：健康检查（指数退避）+ 自动回滚（纯 `.tasks/` 提交不触发部署）。
-- 远程 git：clone / push / PR（`GIT_SSH_COMMAND` 注入密钥）；session 事件 + 投影 + Web 看板。
+- 远程 git：clone / push（`GIT_SSH_COMMAND` 注入密钥）；session 事件 + 投影 + Web 看板。
 - 安全硬规则：密钥只引用不落盘、命令白名单、forbiddenPaths、push 安全、文档草稿人批（见「安全模型」）。
 
 ## 快速开始
@@ -90,10 +90,10 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
         maxMembers: 8
         maxTasks: 512
         remote:
-          url: git@github.com:org/repo.git   # 可为空仓库
-          sshKeyEnv: AUTOPILOT_GIT_KEY       # 环境变量名（变量装 SSH 私钥**内容**，不是路径）；禁止直接传密钥值
-          platform: github                    # github | cnb | gitlab | generic
-          apiTokenEnv: GITHUB_TOKEN           # PR/CI API token 的环境变量名
+          url: git@repo.example.com:org/repo.git  # 自建 git 远端（可为空仓库；后续本地 merge 后 push 到这里）
+          sshKeyEnv: AUTOPILOT_GIT_KEY            # 环境变量名（变量装 SSH 私钥**内容**，不是路径）；禁止直接传密钥值
+          platform: generic                       # generic | cnb | gitlab | github；generic 纯 clone/push、不建 PR/不查 CI
+          # apiTokenEnv: GITHUB_TOKEN             # 仅 github 建 PR / 查远端 CI 需要；自建远端（generic 等）免配
         bootstrap:
           enabled: true
           toolchain: [git, bun, pnpm, node]       # bun rootless 装到 ~/.bun；node rootless 装到 ~/.node
@@ -106,7 +106,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
           requiredEnvKeys: [AUTH_SECRET]          # 缺失则引导 fail-loud 并指明 key
         gates:
           commands: [pnpm run typecheck, pnpm run lint, pnpm run build, pnpm run test]   # build 在 test 前：test 可能读 build 产物
-          requireCiGreen: true                # 独立于 pushRequiresGates 的另一道门；CI 状态仅 github 查得到，其它平台必须显式设 false
+          requireCiGreen: false               # 独立于 pushRequiresGates 的另一道门；CI 状态仅 github 平台查得到，自建远端无远端 CI 必须显式设 false
           timeoutMinutes: 30
         daemon:
           maxReviewRounds: 3                  # 返工上限，超过升级
@@ -181,15 +181,15 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 | --- | --- | --- |
 | `preset` | `default` | `default`（历史行为）或 `agentdeploy`（AgentDeploy 约定） |
 | `branchTemplate` | `task/{id}` | 分支名模板；`{id}`=任务号、`{slug}`=标题 kebab-case |
-| `prTitleTemplate` | `[{id}] {title}` | PR 标题模板；`{id}`/`{title}`/`{scope}` |
-| `prBodyTemplate` | `关联任务单…` | PR 正文模板；`{id}`/`{title}`/`{touches}`/`{scope}`/`{assignment}` |
-| `mergeStrategy` | `no-ff` | `no-ff`/`merge`/**`squash`**（squash 保 main 线性，可独立 revert） |
-| `gates` | `[]`→`gates.commands` | 每条 `{command, when?, role?}`；`when` 按任务 `touches` 前缀条件触发；`role:'ci'` 只由远端 CI 强制 |
-| `forbidden` | `[]`→`security.forbiddenPaths` | `{path, mode}`；`block`=命中即拒并升级，`needs-approval`/`high-conflict`=命中暂缓 push、等 owner/人工确认后单独 PR |
+| `prTitleTemplate` | `[{id}] {title}` | PR 标题模板；`{id}`/`{title}`/`{scope}`（**仅 github 平台建 PR 时用到**；自建远端本地合并不建 PR，忽略） |
+| `prBodyTemplate` | `关联任务单…` | PR 正文模板；`{id}`/`{title}`/`{touches}`/`{scope}`/`{assignment}`（同上，仅 github 建 PR 用） |
+| `mergeStrategy` | `no-ff` | 本地合入 base 的策略：`no-ff`/`merge`/**`squash`**（squash 保 main 线性，可独立 revert） |
+| `gates` | `[]`→`gates.commands` | 每条 `{command, when?, role?}`；`when` 按任务 `touches` 前缀条件触发；`role:'ci'` 只由远端 CI 强制（自建远端无远端 CI，该角色不强制） |
+| `forbidden` | `[]`→`security.forbiddenPaths` | `{path, mode}`；`block`=命中即拒并升级，`needs-approval`/`high-conflict`=命中暂缓 push、等 owner/人工确认后单独合并提交 |
 | `ownership` | `[]` | `{glob, role}` 路径→域 owner 映射（域专精路由预留） |
 | `crossDomainThreshold` | `3` | 触碰 > N 个不同域即升级 |
 
-**为 AgentDeploy 开箱：`preset: agentdeploy`** 会一并得到 `agent/<id>-<slug>` 分支、`feat(scope): [id] desc` PR 标题、squash 合并，以及一组**域条件 + CI-only** 的门（`db:check-parity` 只在碰 `server/db/`、`validate:docs` 只在碰 `.tasks/` 或 `docs/`、`pnpm audit` 标 `role:'ci'` 所以本地不红、重门 `build`/`test:e2e` 只在碰源码目录）——见 [`src/profile.ts`](src/profile.ts) 的 `agentdeployProfile`。
+**为 AgentDeploy 开箱：`preset: agentdeploy`** 会一并得到 `agent/<id>-<slug>` 分支、`feat(scope): [id] desc` PR 标题（同样仅 github 建 PR 时用）、squash 合并，以及一组**域条件 + CI-only** 的门（`db:check-parity` 只在碰 `server/db/`、`validate:docs` 只在碰 `.tasks/` 或 `docs/`、`pnpm audit` 标 `role:'ci'` 所以本地不红、重门 `build`/`test:e2e` 只在碰源码目录）——见 [`src/profile.ts`](src/profile.ts) 的 `agentdeployProfile`。⚠️ 自建远端（generic）下 `role:'ci'` 的门因无远端 CI 不强制，本地合并只认 `gates.commands` 全绿。
 
 > **域专精路由**：`ownership` 命中的任务优先派给 `specialization` 匹配的 developer（`team_add_member` 可传 `specialization`），并把匹配的域硬规则注入任务描述；契约的 `forbidden` frontmatter 原位保序回写、不重排，避免触发项目严格的 `validate:docs`。
 
@@ -200,10 +200,10 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
 1. **恢复检查**：读 state.json + heartbeat 重建内存态。三件固定事：崩溃时仍 `in_progress` 的任务**状态与接手者都不动**（抢回会把同一任务分支二次派发），交由同拍卡死检测收敛；持久化为 `running` 的循环一律降为 `paused`，等 `autopilot_resume`；state.json 解析失败先改名留存为 `state.json.corrupt-<时间戳>` 再空启动，不覆盖唯一一份历史。
 2. **分诊挂起态**：`needs-human` 与 `needs-clarification` 都属"等人/等 leader 动一下"；人工把任务单状态改回 `pending`（或调用 `escalation_resolve`、leader 用 `task_update` 带 `note` 回答）→ 任务回到待派发，关联升级标记 resolved。
 3. **派发**：先看**团队阶段**——`intake`/`kickoff_pending_approval`/`scaffolding` 不派发（契约仍照采纳、门照跑，只是不把任务交出去），`developing`/`replanning` 才继续。然后 `depends_on` 全部 done 且 `status=pending` 的任务按 **`priority` 降序稳定排序**（依赖条件相同的任务之间大者先派，同权重保持插入顺序；前置没满足的任务永远排在后面）逐个检查：先做跨域与**契约自洽校验**（`touches ∩ forbidden = ∅`，违规即升级 `forbidden-paths` 并跳过），再过域锁（`in_progress`/`in_review` 任务 `touches` 目录交集为空）→ 派给空闲 developer，并在**这一刻**按最新契约正文与最新教训重建任务描述（知识要在工作开始的那一刻最新鲜）。
-4. **审查闸门**：reviewer 调 `code_review` approve 前四道闸门必须全过——本地门绿、CI 绿且真验证过、改动体量门、禁区 diff（语义见「安全模型」3/4，配 `maxDiff*` 时超限升级 `change-too-large`）——都过了才按画像策略合入 base；合并冲突拒绝并保持 `in_review`。
+4. **审查闸门**：reviewer 调 `code_review` approve 前三道门必须全过——本地门绿、改动体量门、禁区 diff（语义见「安全模型」3/4，配 `maxDiff*` 时超限升级 `change-too-large`）——都过了才按画像策略**本地合入 base** 并 push 到自建远端（不做 PR、不依赖远端 CI）；合并冲突拒绝并保持 `in_review`。
 5. **返工与澄清**：`request_changes` 的意见会写进任务单 `.tasks/<id>.md` 并捕获成教训；轮次 ≥ `maxReviewRounds` → escalate。若问题出在契约本身，developer 走 `task_clarify` 退回 leader——不消耗返工轮次、不产生升级。
 6. **卡死与预算**：任务 `stuckMinutes` 无 git 活动 → escalate（空闲失控）；派发后超过 `daemon.maxTaskHours`（默认关闭）仍未完成 → 升级 `budget-exceeded`（活跃空转）。插件看不见成员 agent 的 token 消耗，墙钟预算是唯一可靠的烧钱护栏。
-7. **部署**：base 有合并且 `deploy.enabled` 且 CI 绿 → `deploy_run`；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
+7. **部署**：base 有本地合并且 `deploy.enabled` → `deploy_run`（自建远端无远端 CI，以本地门绿为准）；base 仅前进在 `.tasks/` 提交上时跳过（`skipTasksOnlyCommits`，默认开）；健康检查 3 次失败自动 `rollbackCommand` 并升级 —— 回滚命令自身也非零时记 `rollback-failed`（线上既没升上去也没退回来，需立刻救火），不与 `rolled-back` 混为一谈。
 8. **空转保护与完成判定**：连续无事件拍降频轮询（最多 4×）。完成判定按周期语义（见「迭代周期开发」一节）：团队无周期记录时，所有任务 done 或 **cancelled**（废弃是处置结果，不挡收尾）→ 写 `<stateDir>/completion.md` 完成报告（含本轮教训与**待升格清单**）并停机等待；有周期记录时，当前活跃周期任务全 done/cancelled → 周期置 `in_review` 并生成周期小结（并入 completion.md 的 `## cycles` 段），随后按该周期 `checkpoint`（组长声明）与下一期就绪度推进（直通 / 检查点 / 等规划），只有 roadmap 走完且当前周期已 done 才真正 `completed` 停机。
 
 **升级触发条件**（任一命中即 escalate，禁止自行绕过）：需求矛盾 / 跨 3+ 域改动 / 需新增付费依赖或密钥 / 非本任务导致的门红 / 触及 forbiddenPaths / 返工超限 / 改动体量过大 / 前置依赖永远等不到（`blocked-dependency`：前置看板上不存在、已 needs-human 或已 cancelled）/ 任务卡死 / 超出任务墙钟预算 / 部署连续失败 / 引导失败。契约含糊不在其中——那走 `task_clarify`。
@@ -230,12 +230,12 @@ Given/When/Then 验收标准……
 ```
 
 - `task_assign` 传 `contractId` 时校验任务单存在且状态为 `pending`，title/depends_on/touches 以任务单为准。
-- `forbidden` 不只是给人看的注释：派发期会拿它和 `touches` 求交（两个方向都算，`touches: [app/]` 命中 `forbidden: [app/server/]` 同样违规），违规立刻升级，而不是白跑一轮门和评审才被 CI 拦下。
+- `forbidden` 不只是给人看的注释：派发期会拿它和 `touches` 求交（两个方向都算，`touches: [app/]` 命中 `forbidden: [app/server/]` 同样违规），违规立刻升级，而不是白跑一轮门和评审才被门拦下。
 - 每次状态变更回写 frontmatter 并重新生成 `.tasks/_board.md`（自动生成，勿手改），改动以插件身份提交在 base 分支，保持集成检出干净。
 - **一个坏文件不拖垮整块看板**：契约逐文件解析，某个 `.md` frontmatter 写坏了只跳过它并上报一次 `contract-rejected`（同一文件不重复报，否则每拍都产生事件、空转降频永远生效不了），其余契约照常采纳。
 - **评审与澄清都留痕在任务单里**：`request_changes` 的意见、`task_clarify` 的提问、leader 的 `clarify-answer` 都以带时间戳的留言追加进正文 —— 换人接手或换场会话，接得上上下文。
 - `<stateDir>/learnings.md` 同为生成物（程序全量重写），见下节。
-- developer 的 DoD：质量门全绿 + 每条验收标准的验证证据写入 PR 描述。
+- developer 的 DoD：质量门全绿 + 每条验收标准的验证证据写入审查留言 / 任务单 `.tasks/<id>.md`（本地合并，不建 PR）。
 
 ## 迭代周期开发与无人值守闭环（AI 自主判断规模）
 
@@ -313,8 +313,8 @@ Given/When/Then 验收标准……
 
 1. **密钥只引用不落盘**：Config 只存环境变量名，运行时读 `process.env`；门输出、部署输出、webhook 负载、升级记录统一过 `SecretRedactor` 脱敏。
 2. **命令白名单**：gates / bootstrap / deploy 的每个 shell 片段首 token 必须**精确命中** `commandAllowlist`；命令替换 `$( )` 与反引号**整条拒绝**（不做拆分放行的假象），重定向与 glob 放行（不启动新进程）；`bootstrap.systemPackages` 逐包名校验。清单含 `sh` / `node` / `ssh` / `docker` 时这道等价于没开（`node -e` 即任意执行）——定位是**防误配 + 留审计痕迹**，不防已被注入的模型。判据与实现锚点（`splitSegments` / `hasHiddenExecutable` 等）见 AGENTS.md「安全硬规则」。
-3. **forbiddenPaths**：派发期查 `touches ∩ 契约自声明禁区`，落地前查分支实际 diff——`pr_sync` 推送、approve 合并、`team_branch` 手工合并三条路径共用同一道闸门，触及即拒并升级，ref 解析不出来同样拒绝（不静默放行）。默认禁区 2026-08-29 起只剩 `LICENSE`。⚠️ 代价：AI 团队改得了 `.github/` 里的 CI workflow，`requireCiGreen` 的考卷和答卷落在同一支笔下面——需要硬保证的项目自己把 `.github/` 配回 `security.forbiddenPaths`。
-4. **门不过不合并**：`pushRequiresGates=true` 时门未绿禁 push 与 approve；`requireCiGreen` 是另一道独立的门（不被前者短路），CI 非绿或从未验证（未 `pr_sync`）都禁 approve——CI 状态仅 github 平台查得到；配了 `daemon.maxDiff*` 时体量超限也拒。
+3. **forbiddenPaths**：派发期查 `touches ∩ 契约自声明禁区`，落地前查分支实际 diff——approve 后的本地合并、push 自建远端（`team_branch`/成员分支）、手工合并三条路径共用同一道闸门，触及即拒并升级，ref 解析不出来同样拒绝（不静默放行）。默认禁区 2026-08-29 起只剩 `LICENSE`。⚠️ 代价：AI 团队改得了 `.github/` 里的 CI workflow，`requireCiGreen` 的考卷和答卷落在同一支笔下面——需要硬保证的项目自己把 `.github/` 配回 `security.forbiddenPaths`（**自建远端无 `.github/` CI workflow，此项在 generic 模式下天然不适用**）。
+4. **门不过不合并**：`pushRequiresGates=true` 时门未绿禁 push 与 approve——本地合入 base / push 自建远端都受这道门约束；`requireCiGreen` 是只对 github 平台生效的另一道独立门（非 github / 自建远端无 CI 可查，**必须显式置 `false`**，否则「从未验证视为未通过」会永久阻塞 approve）；配了 `daemon.maxDiff*` 时体量超限也拒。
 5. **破坏性 git 禁止**：不 force-push 共享分支（任务/成员分支仅限 `--force-with-lease`）、不 reset 共享分支、不删 base 分支；可变 git 操作的分支名一律过 `assertSafeRef`（不得以 `-` 开头、不得含空格或 `..`），否则一个 `-D` 就能把「删分支」拼进 argv。
 6. **文档改动只有「草稿 → 人批」一条路**：`doc_write` 只收 `docs.draftDir` 里的 `.md`；`doc_approve` 拒绝任何带 `actorId`（模型身份）的调用，会话里转述的批准必须带只出现在工单页/邮件里的一次性码，落盘前比对每份草稿的 `sha256`——正文变过一个字就拒绝升格、作废审批码、重开问卷（防「批 A 合 B」）。审批**解锁不了禁区**：命中 `security.forbiddenPaths` 升格直接失败，`LICENSE` 不因任何答复而被改；`learning_promote` 只翻台账标记，落文档仍是独立的审批链变更。
 
@@ -322,7 +322,7 @@ Given/When/Then 验收标准……
 
 **团队与协作**：`team_create` / `team_add_member` / `team_list` / `team_status` / `team_branch` / `task_assign` / `task_update`（推进状态与**调 priority**） / `task_cancel`（废弃未派发的任务） / `task_replan`（在途任务三种处置） / `task_clarify` / `code_review`。
 
-**无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_phase`（读/切团队阶段，见下）/ `autopilot_status` / `gates_run` / `pr_sync` / `escalate` / `escalation_resolve` / `deploy_run`。
+**无人值守与交付**：`autopilot_init` / `autopilot_run` / `autopilot_pause` / `autopilot_resume` / `autopilot_phase`（读/切团队阶段，见下）/ `autopilot_status` / `gates_run` / `escalate` / `escalation_resolve` / `deploy_run`；`pr_sync` 仅 github 平台用于建 PR / 查远端 CI，自建远端（generic）本地合并不用。
 
 **知识回路**：`learning_record`（记一条坑） / `learning_list`（查台账与待升格清单） / `learning_promote`（人落文档后标记，或否掉一条）。
 
@@ -350,7 +350,7 @@ Given/When/Then 验收标准……
 
 ## Web 面板
 
-在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、八列看板（含 needs-human、needs-clarification 与 cancelled，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。看板主体高度默认不超过 `min(62vh, 720px)`、超出内部滚动，右下角有拖拽手柄可手动改高度（`resize: vertical`）。
+在 `conversation.input.dock` 插槽渲染：运行状态灯（running/paused/escalated/completed/stopped）+ **阶段徽标**（非派发阶段用「等待」配色，标题栏另挂一个「N 项等你决策」的琥珀计数）、八列看板（含 needs-human、needs-clarification 与 cancelled，挂着未答问卷的任务额外标一个**等人回答**）、质量门徽标与 CI 徽标（CI 徽标仅 github 平台有数据，自建远端 generic 下无）、**等你决策**（未答问卷直接内联成表单）、**升级事件流**（未解除的升级同样内联一张 decision + note 表单）、问卷流水（只留历史：`已答复` / `已答复，等组长继续` / `已超时` / `已取消`）、部署历史、**已知教训**（按被印证次数排序，含已升格标记）、**卡住的任务**（前置无法满足的依赖）。数据流沿用 session 事件（`autopilot/update` 全量快照）+ 投影（last-write-wins），不引入 RPC。看板主体高度默认不超过 `min(62vh, 720px)`、超出内部滚动，右下角有拖拽手柄可手动改高度（`resize: vertical`）。
 
 > **面板内直接作答（M2）**：提交打到同源相对路径 `POST /autopilot/ticket/<id>/answer`，不需要外部浏览器、也不需要知道工单端口。漏必填项时**保留你已填的内容**并重述缺失项；成功后卡片等服务端推回来的新快照翻「已答复」，不做乐观更新。面板上**不再有跳外部的工单链接** —— 投影里的 `ticketUrl` 刻意不带凭据，从面板点过去必然 404，那是我们自己发布坏按钮；要在面板外作答请用邮件里的链接（带 token）或在会话里直接调 `answer_questionnaire`。
 
@@ -396,8 +396,8 @@ pnpm pack --dry-run   # 查看将打进 npm 包的文件清单
 ### 非 github 平台 approve 永远被拒：`requireCiGreen is on but CI was never checked`
 
 - **症状**：`code_review` approve 总是被拒，提示 CI 从未验证。
-- **原因**：CI 状态查询只有 github 适配；其它平台 `pr_sync` 恒置 `unknown`，而「从未验证视为未通过」会让这道门永远过不去。
-- **处置**：非 github 平台显式把 `gates.requireCiGreen` 设为 `false`，并知情接受「本地门是唯一自动门」；github 平台则先 `pr_sync` 让 CI 真跑一遍。
+- **原因**：CI 状态查询只有 github 适配；其它平台（generic 自建远端等）`pr_sync` 恒置 `unknown`，而「从未验证视为未通过」会让这道门永远过不去。
+- **处置**：自建远端模式显式把 `gates.requireCiGreen` 设为 `false`，并知情接受「本地门是唯一自动门」；本地合并后 push 到自建远端，全程不依赖远端 CI。若日后切回 github 平台，才需要先 `pr_sync` 让 CI 真跑一遍。
 
 ### 设置卡片改了配置不生效（已修复：不需重启）
 
