@@ -40,9 +40,9 @@ const CSS = `
 .dsh-ai-team__cycle-progress { margin-left: auto; opacity: .7; font-size: 11px; }
 .dsh-ai-team__cycle-goal { margin: 2px 0 0; font-size: 11px; opacity: .65; }
 .dsh-ai-team__cycle-tasks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
-.dsh-ai-team__kanban { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
-.dsh-ai-team__column { flex: 0 0 150px; min-width: 140px; border: 1px solid rgba(127,127,127,.2); border-radius: 8px; padding: 6px; min-height: 30px; max-height: 360px; overflow-y: auto; }
-.dsh-ai-team__column-title { display: flex; justify-content: space-between; margin: 0 0 6px; font-size: 11px; opacity: .75; position: sticky; top: 0; background: inherit; }
+.dsh-ai-team__kanban { columns: 200px; column-gap: 10px; }
+.dsh-ai-team__column { break-inside: avoid; page-break-inside: avoid; margin-bottom: 10px; border: 1px solid rgba(127,127,127,.2); border-radius: 8px; padding: 6px; }
+.dsh-ai-team__column-title { display: flex; justify-content: space-between; margin: 0 0 6px; font-size: 11px; opacity: .75; }
 .dsh-ai-team__card { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; border-radius: 6px; background: rgba(127,127,127,.12); margin-bottom: 6px; }
 .dsh-ai-team__card-title { font-weight: 600; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dsh-ai-team__card-meta { display: flex; gap: 6px; flex-wrap: wrap; opacity: .7; font-size: 10px; }

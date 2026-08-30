@@ -2900,6 +2900,11 @@ export class AutopilotService {
       try {
         const report = await this.tickOnce(signal);
         idleTicks = report.events.length === 0 ? idleTicks + 1 : 0;
+        // 无人值守循环的自动派发/审查状态变更只写了 state.json（tickOnce → changed），
+        // 而会话投影只在工具调用与问卷/答卷等带外路径推送 —— 面板靠事件折叠，于是运行中
+        // 的 in_progress / in_review 中间态会滞拍。这里在「真有变更」的拍把最新投影推一帧，
+        // 让面板与 state.json 对齐；空闲退避期无变更就不推，避免给 session 灌水。
+        if (report.events.length > 0) this.snapshotPublisher?.();
       } catch (error) {
         if (signal.aborted) break;
         await this.escalateTask({

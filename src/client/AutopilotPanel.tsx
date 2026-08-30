@@ -651,6 +651,12 @@ function CycleSection({ team, t }: { team: TeamView; t: Translator }) {
 }
 
 function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires: QuestionnaireView[]; t: Translator }) {
+  // 容器瀑布流：保留按状态分组（开发中 / 待处理 / 已完成 …），每组是一个容器，
+  // 容器自身以紧凑瀑布流排布（见 styles .dsh-ai-team__kanban：多列、高度自适应、
+  // 无每列内部滚动），让有内容的容器撑开、空容器不占大片空白。
+  const openStandalone = questionnaires.filter(
+    (item) => item.status === 'open' && item.taskId === null,
+  );
   return (
     <>
       <section>
@@ -679,26 +685,23 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
               </div>
             );
           })}
-          {/* 等你决策：开放式问卷（含未绑定任务的「无人值守决策」）也在看板上可见。
-              已绑定任务的问卷会在其任务卡上显示「等人回答」徽标，这里只补无绑定的那些，
-              避免同一份决策在两处重复呈现。 */}
+          {/* 等你决策：开放式问卷（含未绑定任务的「无人值守决策」）也作为一个容器并入瀑布流。
+              已绑定任务的问卷会在其任务卡上显示「等人回答」徽标，这里只补无绑定的那些。 */}
           <div className="dsh-ai-team__column dsh-ai-team__column--awaiting">
             <h5 className="dsh-ai-team__column-title">
               <span>{t('section.awaiting')}</span>
-              <span>{questionnaires.filter((item) => item.status === 'open').length}</span>
+              <span>{openStandalone.length}</span>
             </h5>
-            {questionnaires
-              .filter((item) => item.status === 'open' && item.taskId === null)
-              .map((item) => (
-                <div key={item.id} className="dsh-ai-team__card" title={item.title}>
-                  <span className="dsh-ai-team__card-title">{item.title}</span>
-                  <span className="dsh-ai-team__card-meta">
-                    <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">
-                      {t('questionnaire.onTask')}
-                    </span>
+            {openStandalone.map((item) => (
+              <div key={item.id} className="dsh-ai-team__card" title={item.title}>
+                <span className="dsh-ai-team__card-title">{item.title}</span>
+                <span className="dsh-ai-team__card-meta">
+                  <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">
+                    {t('questionnaire.onTask')}
                   </span>
-                </div>
-              ))}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       </section>
