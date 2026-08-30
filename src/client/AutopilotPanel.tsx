@@ -554,7 +554,9 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
   const team = teams.find((candidate) => candidate.id === projection.activeTeamId) ?? teams[0];
   if (team === undefined) return null;
   const busy = team.members.filter((member) => member.status !== 'idle').length;
-  const openTasks = team.tasks.filter((task) => task.status !== 'done').length;
+  // 头部「进行中」必须与看板「进行中」列一致，而不是统计未完成数（后者含待办，
+  // 会与实际在写的任务对不上）。in_progress 才是真正在跑的任务。
+  const inProgress = team.tasks.filter((task) => task.status === 'in_progress').length;
   const dispatchable = DISPATCHABLE_PHASES.includes(team.phase);
   const questionnaires = projection.questionnaires.filter((item) => item.teamId === team.id);
   const awaiting = questionnaires.filter((item) => item.status === 'open').length;
@@ -590,7 +592,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
           {t('panel.summary', {
             members: team.members.length,
             busy,
-            tasks: openTasks,
+            tasks: inProgress,
             escalations: escalations.filter((escalation) => escalation.resolvedAt === null).length,
           })}
         </span>

@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)；条目按 git 提交历史（Conventional Commits）归纳，feat / fix 优先。
 
+## [1.3.1] - 2026-08-30
+
+### 修复
+
+- **看板头部「进行中任务」计数与看板对不上**：`AutopilotPanel` 的 summary 原先统计「未完成任务数」（含待办），与看板「进行中」列不一致，导致「0 忙碌」时仍显示「N 个进行中任务」。改为统计真正的 `in_progress` 任务数，zh 文案保持「进行中任务」、en 同步为「in progress」。
+
 ## [1.3.0] - 2026-08-30
 
 ### 新增

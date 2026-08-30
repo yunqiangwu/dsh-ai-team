@@ -1,0 +1,18 @@
+{
+  "name": "@dsh-ai-team/llm-mock",
+  "version": "0.1.0",
+  "description": "A deterministic OpenAI-compatible LLM mock for repeatable dsh-ai-team e2e runs (no token cost).",
+  "type": "module",
+  "main": "src/server.mjs",
+  "bin": {
+    "llm-mock": "src/server.mjs"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "license": "MIT"
+}

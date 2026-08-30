@@ -125,7 +125,7 @@ export const zh = {
 
 export const en: Record<keyof typeof zh, string> = {
   'panel.title': 'Autopilot: {team}',
-  'panel.summary': '{members} members ({busy} busy) · {tasks} open tasks · {escalations} open escalations',
+  'panel.summary': '{members} members ({busy} busy) · {tasks} in progress · {escalations} open escalations',
   'section.members': 'Members & workspaces',
   'section.tasks': 'Task board',
   'section.escalations': 'Escalations',
