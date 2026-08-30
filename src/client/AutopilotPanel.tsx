@@ -1048,6 +1048,40 @@ function PhaseGuide({ phase, t }: { phase: TeamView['phase']; t: Translator }) {
 }
 
 /**
+ * 完成态总结（P2-5）：loop completed 时把交付摘要直接摆出来 —— 任务收尾数、
+ * 周期完成数、返工/门/部署指标与沉淀教训，一眼看清这一轮交出了什么。
+ * 数据全部来自已有 projection，不改 schema / stateVersion。
+ */
+function CompletionSummary({ team, t }: { team: TeamView; t: Translator }) {
+  const metrics = team.metrics;
+  const total = team.tasks.length;
+  const done = team.tasks.filter((task) => task.status === 'done').length;
+  const cancelled = team.tasks.filter((task) => task.status === 'cancelled').length;
+  const cycles = team.cycles ?? [];
+  const cyclesDone = cycles.filter((cycle) => cycle.status === 'done').length;
+  return (
+    <div className="dsh-ai-team__summary-card" role="status">
+      <div className="dsh-ai-team__summary-head">
+        <span className="dsh-ai-team__badge dsh-ai-team__badge--pass">{t('loop.completed')}</span>
+        <span className="dsh-ai-team__summary-title">{t('completion.title')}</span>
+      </div>
+      <div className="dsh-ai-team__summary-meta">
+        <span>{t('completion.tasks', { done, cancelled, total })}</span>
+        {cycles.length > 0 ? (
+          <span>{t('completion.cycles', { done: cyclesDone, total: cycles.length })}</span>
+        ) : null}
+        <span>{t('metrics.reviewRounds', { reviewRounds: metrics.reviewRounds })}</span>
+        <span>{t('metrics.gates', { gateRuns: metrics.gateRuns, gateFailures: metrics.gateFailures })}</span>
+        <span>{t('metrics.deploys', { deploys: metrics.deploys, rollbacks: metrics.rollbacks })}</span>
+        {team.learnings.length > 0 ? (
+          <span>{t('completion.learnings', { count: team.learnings.length })}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
  * 面板本体。在团队存在之前不渲染任何内容，
  * 以便普通会话保持清爽。
  */
@@ -1112,6 +1146,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       {open ? (
         <div className="dsh-ai-team__body">
           <PhaseGuide phase={team.phase} t={t} />
+          {projection.loopState === 'completed' ? <CompletionSummary team={team} t={t} /> : null}
           <StatsStrip
             team={team}
             blocked={projection.blocked}

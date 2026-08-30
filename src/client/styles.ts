@@ -126,6 +126,11 @@ const CSS = `
 .dsh-ai-team__guide { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid rgba(234,179,8,.45); border-left: 3px solid #eab308; background: rgba(234,179,8,.08); border-radius: 8px; }
 .dsh-ai-team__guide-label { font-weight: 600; font-size: 11px; color: #eab308; }
 .dsh-ai-team__guide-hint { font-size: 12px; opacity: .9; }
+/* ── 完成态总结（P2-5）：loop completed 时把交付摘要摆出来 ── */
+.dsh-ai-team__summary-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid rgba(34,197,94,.45); border-left: 3px solid #22c55e; background: rgba(34,197,94,.08); border-radius: 8px; }
+.dsh-ai-team__summary-head { display: flex; align-items: center; gap: 8px; }
+.dsh-ai-team__summary-title { font-weight: 600; font-size: 12px; }
+.dsh-ai-team__summary-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; opacity: .85; }
 /* ── 等你决策：可最小化的浮动弹窗（默认收起，右下角小胶囊；点开浮窗作答） ── */
 .dsh-ai-team__floating { position: absolute; right: 8px; bottom: 8px; z-index: 40; max-width: 420px; border: 1px solid rgba(234,179,8,.5); border-radius: 10px; background: rgba(20,20,20,.92); color: #eef1f6; box-shadow: 0 10px 28px rgba(0,0,0,.5); }
 .dsh-ai-team__floating-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
