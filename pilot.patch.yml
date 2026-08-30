@@ -1,47 +1,41 @@
-# L0 试点首跑配置（目标仓库 = 私有 Gitea + act-runner）。
-# 字段语义见 README「配置」；操作顺序见 PILOT.md。密钥一律环境变量名，值绝不写进本文件。
-#
-# 平台事实（service.ts:1560）：PR 创建与 CI 状态查询只实现了 github；
-# Gitea 用 generic → pr_sync 退化为纯推送、看板无 PR/CI 徽标，审查靠本地门 + reviewer。
-# act-runner 照常跑 CI，但插件看不见红绿 —— 所以 requireCiGreen 必须为 false，
-# 否则「从未验证视为未通过」会永久阻塞 approve。
+# 首跑试点 patch（dogfood：拿 dsh-ai-team 仓库自己当目标仓库）。
+# 与 PILOT.md §2 模板的差异只有一处：本机没有 GITHUB_TOKEN，
+# 走 generic 语义（pr_sync 纯推送、requireCiGreen 显式关——本地四件套门照跑）。
 - insert:
-    - id: autopilot
-      name: dsh-ai-team
-      config:
-        rootDir: .dsh-ai-team
-        baseBranch: main
-        remote:
-          # Gitea SSH 地址。非 22 端口必须写全 ssh:// 形式（短形式带不了端口），按需改：
-          #   ssh://git@git.example.local:2222/owner/repo.git
-          url: ssh://git@git.example.local/owner/repo.git
-          sshKeyEnv: AUTOPILOT_GIT_KEY   # Gitea 仓库设置 → 部署密钥，勾选「可写」
-          platform: generic              # 无 gitea 选项；generic = 纯 git 语义，最诚实
-        bootstrap:
-          enabled: false            # 目标仓库没有 setup/verify 脚本时保持关闭
-        gates:
-          commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
-          requireCiGreen: false     # 非 github 平台必须显式关（见文件头说明）
-          timeoutMinutes: 30
-        daemon:
-          maxReviewRounds: 3
-          stuckMinutes: 45
-          pollIntervalSeconds: 30
-          maxTaskHours: 2           # 墙钟预算：试点必开（成本护栏）
-          maxDiffLines: 800         # 体量门：试点建议开（浅审是静默失败）
-          maxDiffFiles: 30
-        escalation:
-          label: needs-human
-          pauseOnEscalation: task
-          webhookUrlEnv: AUTOPILOT_WEBHOOK
-        deploy:
-          enabled: false            # 首跑不部署；部署在 L2 通过后单独验证
-        security:
-          forbiddenPaths: ['LICENSE']
-          # Gitea Actions 的 workflow 请放 .gitea/workflows/（Gitea 只认这个路径）。
-          # 注意 .github/ 已不在默认禁区里：AI 团队改得了那里的 workflow，
-          # 而 CI 正是 requireCiGreen 把关自己的地方 —— 这类改动必须单独成变更并人复核。
-          commandAllowlist: [pnpm]  # gates 只跑 pnpm 脚本 → 白名单收到最小；勿放 sh/node/docker
-          pushRequiresGates: true
-        learnings:
-          enabled: true
+  - id: autopilot
+    name: dsh-ai-team
+    config:
+      rootDir: .dsh-ai-team
+      baseBranch: main
+      remote:
+        url: git@github.com:yunqiangwu/dsh-ai-team.git
+        sshKeyEnv: AUTOPILOT_GIT_KEY
+        platform: generic
+      bootstrap:
+        enabled: true
+        toolchain: [git, bun, pnpm]   # 本机已齐 → 只探测不安装
+        setupCommand: pnpm install
+        verifyCommand: pnpm run typecheck
+      gates:
+        commands: [pnpm run typecheck, pnpm run lint, pnpm run test, pnpm run build]
+        requireCiGreen: false          # 无 GITHUB_TOKEN：CI 门查不到，显式关（PILOT.md §1）
+        timeoutMinutes: 30
+      daemon:
+        maxReviewRounds: 3
+        stuckMinutes: 45
+        pollIntervalSeconds: 30
+        maxTaskHours: 2
+        maxDiffLines: 800
+        maxDiffFiles: 30
+      escalation:
+        label: needs-human
+        pauseOnEscalation: task
+        webhookUrlEnv: AUTOPILOT_WEBHOOK
+      deploy:
+        enabled: false
+      security:
+        forbiddenPaths: ['LICENSE']
+        commandAllowlist: [pnpm]
+        pushRequiresGates: true
+      learnings:
+        enabled: true
