@@ -1,7 +1,7 @@
 ---
 id: CYC-7
 title: AI 自主决策与配置收敛：checkpoint / 组长规模判断
-status: pending
+status: done
 priority: 6
 depends_on: [CYC-2, CYC-3]
 touches:
