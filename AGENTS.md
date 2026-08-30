@@ -26,6 +26,7 @@ AGENTS.md           本文件：AI 代理仓库指南（架构铁律、开发纪
 PILOT.md            操作者 runbook：首次真实环境无人值守怎么跑、看什么、出事怎么办
 docs/               其余文档一律在此，见「文档规范」
   design-interaction.md  「需求采集 → 文档先行 → 并行开发 → 重规划」交互流程规格（M0–M3 已实施）
+  refactor-p1-service-split.md  service.ts / tools.ts 拆分进展纪要：可容器化域 vs 应留驻的高耦合编排（P1，生效中）
 src/
   index.ts        插件入口：四导出 name/inject/Config/apply，ctx.provide('autopilot')
   service.ts      AutopilotService —— 状态机宿主与全部编排（纯逻辑请落到 service/，别塞这里）
