@@ -332,7 +332,7 @@ function EscalationFeed({ escalations, t }: { escalations: EscalationView[]; t: 
             {/* 投影里的 ticketUrl 刻意不带凭据，独立端口无 token 一律 404 ——
                 所以这里不再放链接，直接把分诊表单内联进来（同源路由作答）。 */}
             {escalation.resolvedAt === null ? (
-              <AnswerForm ticketId={escalation.id} fields={escalationFields()} t={t} />
+              <AnswerForm ticketId={escalation.id} fields={escalationFields(t)} t={t} />
             ) : null}
           </div>
         );

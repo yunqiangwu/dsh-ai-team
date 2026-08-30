@@ -85,22 +85,25 @@ export function fieldsOfQuestions(questions: readonly Question[]): TicketField[]
 /**
  * 升级分诊表单的两个字段。与问卷不同，它不从题目映射而来 —— 一张升级工单永远问
  * 同两件事（怎么处置、有什么要补充的），所以服务端工单页与面板内联卡片共用这份
- * 常量，而不是各写一遍。
+ * 常量，而不是各写一遍。面板侧传 `t` 渲染本地化文案；服务端工单页整体中文，
+ * 不传时回退中文。
  */
-export function escalationFields(): TicketField[] {
+export type FieldTranslator = (key: string, params?: Record<string, string | number>) => string;
+
+export function escalationFields(t?: FieldTranslator): TicketField[] {
   return [
     {
       name: 'decision',
-      label: '请确认如何处理该问题（填写你的决策）',
+      label: t ? t('escalation.decisionLabel') : '请确认如何处理该问题（填写你的决策）',
       type: 'textarea',
       required: true,
-      placeholder: '例如：同意该方案 / 更换密钥 / 变更需求……',
+      placeholder: t ? t('escalation.decisionPlaceholder') : '例如：同意该方案 / 更换密钥 / 变更需求……',
     },
     {
       name: 'note',
-      label: '补充说明（可选；密钥请通过环境变量提供，勿直接粘贴）',
+      label: t ? t('escalation.noteLabel') : '补充说明（可选；密钥请通过环境变量提供，勿直接粘贴）',
       type: 'text',
-      placeholder: '任何需要 AI 团队知道的上下文',
+      placeholder: t ? t('escalation.notePlaceholder') : '任何需要 AI 团队知道的上下文',
     },
   ];
 }
