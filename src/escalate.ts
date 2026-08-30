@@ -6,7 +6,8 @@
  * —— 投递状态本身就是记录上的数据。
  */
 import type { EscalationReason, EscalationView, EscalationNotification } from './view.js';
-import { resolveOptionalEnvRef, SecretRedactor } from './secrets.js';
+import { SecretRedactor } from './secrets.js';
+import { postHumanWebhook } from './notification.js';
 
 export interface EscalationInput {
   taskId: string | null;
@@ -92,7 +93,15 @@ export class EscalationManager {
       await this.options.sink.labelTask(input.taskId, this.options.label).catch(() => {});
     }
 
-    record.webhookDelivered = await this.deliverWebhook(record);
+    // webhook 投递与问卷侧共用 postHumanWebhook（TECH-1 合并）：URL 登记
+    // 进脱敏器、text 过一遍 redact；载荷仍是升级侧自己的 { text, escalation }。
+    record.webhookDelivered = await postHumanWebhook({
+      urlEnv: this.options.webhookUrlEnv,
+      text: `[dsh-ai-team] escalation: ${record.reason}`,
+      payload: { escalation: record },
+      redactor,
+      ...(this.options.fetchFn !== undefined ? { fetchFn: this.options.fetchFn } : {}),
+    });
 
     // 人工通知是尽力而为的：失败的邮件器绝不能阻塞升级记录。notify 钩子住在
     // service 里（它闭包引用了 TicketServer + Mailer），但在这里被调用，这样
@@ -120,25 +129,5 @@ export class EscalationManager {
   resolve(escalationId: string): void {
     const record = this.records.find((candidate) => candidate.id === escalationId);
     if (record !== undefined) record.resolvedAt = Date.now();
-  }
-
-  private async deliverWebhook(record: EscalationView): Promise<boolean> {
-    const url = resolveOptionalEnvRef(this.options.webhookUrlEnv);
-    if (url === undefined) return false;
-    const fetchImpl = this.options.fetchFn ?? fetch;
-    try {
-      const response = await fetchImpl(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          text: `[dsh-ai-team] escalation: ${record.reason}`,
-          escalation: record,
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      return response.ok;
-    } catch {
-      return false;
-    }
   }
 }

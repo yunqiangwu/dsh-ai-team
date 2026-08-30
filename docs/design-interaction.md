@@ -3,7 +3,7 @@
 > 状态：**M0 / M1 / M2 / M3 已实施**（2026-08-30）。M0 = `.tasks/INT-1.md`、M1 = `INT-2.md`、M2 = `INT-3.md`、M3 = `INT-4.md` 已落代码，`stateVersion` 随之 5 → 7（M2 只加内部记录字段；M3 的 `cancelled` 是枚举取值、`priority` 不进视图，所以仍是 7）。
 > 两处与 §3 / §9 的口径不同，已知且有意：
 > ① **`_board.md` 没有「等人回答」列**（§3.1 场景一原本要求"看板与面板都显示"）。看板由 `team.ts` 从 `.tasks/*.md` 单向生成且要求字节稳定，把只活在 `state.json` 里的问卷状态混进去，等于给它第二个真相源；等待信息已由面板与 `autopilot_status` 的 `awaitingHuman` 覆盖。
-> ② **问卷投递的 webhook 与 `EscalationManager.deliverWebhook` 仍是两份实现**。M2 抽出了共用的工单 HTTP 层（`src/ticket-handler.ts`），但 webhook 投递没顺手合并——它不在 INT-2/INT-3 的字面要求里，且两份的文案与凭据语义已经分叉（推送的是带 token 的那份链接）。合并已立契约 [`TECH-1`](../.tasks/TECH-1.md)（未实施）：只合并传输（fetch / 超时 / 头 / 脱敏登记），两边的载荷语义不变。
+> ② **问卷投递的 webhook 曾与 `EscalationManager.deliverWebhook` 是两份实现，已合并（[`TECH-1`](../.tasks/TECH-1.md)）**：升级侧改调 `notification.ts` 的 `postHumanWebhook`，合并的是传输层（fetch / 超时 / 头 / URL 脱敏登记）；载荷语义保持各自不变——问卷侧仍推带 token 的链接，升级侧仍 POST `{ text, escalation }`。
 > 配置字段语义仍以 [../README.md](../README.md) 为准，试点操作仍以 [../PILOT.md](../PILOT.md) 为准。引用代码一律写符号名（函数 / 类 / 常量），不引裸行号。
 
 ## 0. 目标与范围
@@ -173,6 +173,8 @@ approvedAt: null
 
 不给这张表的话，两个失败方向都会出现：要么每个小改动都发邮件（用户很快开始忽略），要么组长偷偷重写验收标准（用户失去控制权，且没有客观门能发现）。
 
+**派发顺序与域锁的交互**（TECH-2 已决口径）：候选按 `priority` 降序稳定排序，但排序只决定「先看谁」，不决定「谁必须先走」——依赖未满足的候选永远排在后面；`touches` 被在途任务锁定的候选推迟到锁释放（保持 `pending`、记 `deferred-domain-lock:<taskId>` 事件），派发继续走锁外的下一候选。一句话：**域锁推迟但不空转**——高优先级不会为了等锁让空闲开发者干等，而它为什么还没被派发，事件流里看得见。
+
 ### 6.3 在途任务被变更波及
 
 `in_progress` / `in_review` 的任务被需求变更命中时，三种处置，**默认第三种**：
@@ -263,5 +265,5 @@ M2 之前 `SlotProps` 只有 `{ sessionId?, useProjection, t }`，**面板发不
 
 1. `async` 模式下"人回一句继续"能否被宿主接管？需要 `dsh-agent` / workflow 层的写入口，本插件不依赖它们，且引入会破坏架构铁律 1（核心与 cordis 解耦）。建议宿主提供，插件不越界。
 2. `sha256` 审批链在用户直接手改文档时如何失效并重批——倾向：升格时比对失败即重开 questionnaire。
-3. ~~优先级与域锁冲突时的调度策略~~ 已决：**域锁推迟但不空转、跳过可见**——被锁候选保持 `pending` 并记 `deferred-domain-lock:<taskId>` 事件，派发继续走锁外的下一候选（吞吐优先，不引入严格优先级模式）。实施由 [`TECH-2`](../.tasks/TECH-2.md) 承载（未实施）。
+3. ~~优先级与域锁冲突时的调度策略~~ 已决并落代码（[`TECH-2`](../.tasks/TECH-2.md)）：**域锁推迟但不空转、跳过可见**——被锁候选保持 `pending` 并记 `deferred-domain-lock:<taskId>` 事件，派发继续走锁外的下一候选（吞吐优先，不引入严格优先级模式），口径见 §6.2 末段。
 4. 多团队并行时 phase 是否提升为 team 级——本文已按 team 级设计，但要确认与 `activeTeamId` 的渲染假设一致。

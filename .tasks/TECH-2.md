@@ -1,7 +1,7 @@
 ---
 id: TECH-2
 title: 优先级 × 域锁调度策略：域锁推迟但不空转、跳过可见
-status: pending
+status: done
 touches:
   - src/
   - tests/

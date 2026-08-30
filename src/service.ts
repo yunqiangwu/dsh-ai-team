@@ -2859,7 +2859,14 @@ export class AutopilotService {
         await this.escalateBlockedDependency(task, report, tasksByKey);
         continue;
       }
-      if (task.touches.length > 0 && touchesOverlap(task.touches, lockedTouches)) continue;
+      if (task.touches.length > 0 && touchesOverlap(task.touches, lockedTouches)) {
+        // 域锁推迟但不空转（TECH-2 / §11-3 已决口径）：被锁候选保持 pending 等
+        // 下一拍，派发继续走锁外的候选；跳过要出声——否则一张高优契约一直
+        // 没被派发时，面板与 autopilot_status 都看不出它在与谁等锁。这是正常
+        // 等待，不升级、不进直方图。
+        report.events.push(`deferred-domain-lock:${task.id}`);
+        continue;
+      }
       const developers = team.members.filter(
         (member) => member.role === 'developer' && member.status === 'idle' && member.currentTaskId === null,
       );

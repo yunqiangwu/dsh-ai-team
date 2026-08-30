@@ -269,15 +269,12 @@ function sanitizeHeader(value: string): string {
 // ── webhook ──────────────────────────────────────────────────────────────────
 
 /**
- * 给人看的 webhook 投递（IM / 飞书群机器人 / 任意 HTTP 钩子）。
+ * 给人看的 webhook 投递（IM / 飞书群机器人 / 任意 HTTP 钩子），升级与问卷
+ * 两条路径共用（TECH-1 合并）。
  *
  * 失败一律折成 `false`：投递状态是记录上的数据，不是流程开关 —— 一条发不出去的
  * 通知不该让问卷创建失败。URL 里常常带着 token（Slack 类钩子就是），所以读出来
  * 就登记进脱敏器。
- *
- * ⚠️ 升级侧仍用它自己那份 `EscalationManager.deliverWebhook`：本次改动明确不动
- * `escalate.ts` 的行为（`.tasks/INT-2.md` 场景一要求 `escalate` 一字不改），
- * 所以这里只服务问卷。两条路径合并是后续的搬家工作，不是遗漏。
  */
 export async function postHumanWebhook(input: {
   urlEnv?: string | undefined;

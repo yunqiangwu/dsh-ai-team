@@ -1,10 +1,11 @@
 ---
 id: TECH-1
 title: webhook 投递合并：升级与问卷收敛到 postHumanWebhook
-status: pending
+status: done
 touches:
   - src/
   - tests/
+  - docs/
 ---
 
 # webhook 投递合并：升级与问卷收敛到 postHumanWebhook

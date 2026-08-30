@@ -142,6 +142,31 @@ describe('unattended: daemon loop', () => {
     }
   }, 60_000);
 
+  it('TECH-2：域锁推迟但不空转、跳过可见 —— 高优先级被锁时派别的并记事件', async () => {
+    const { service, teamId, cleanup } = await serviceWithContracts('tech2-defer', [
+      // W-1 优先级最高、先派出并锁住 src/；H-1 次高但 touches 被锁；L-1 最低且在锁外域。
+      { id: 'W-1', title: 'in flight', touches: ['src/'], priority: 10 },
+      { id: 'H-1', title: 'high but locked', touches: ['src/'], priority: 5 },
+      { id: 'L-1', title: 'low but free', touches: ['docs/'] },
+    ]);
+    try {
+      const tick = await service.tickOnce();
+      const byContract = (id: string) => service.teamView(teamId).tasks.find((task) => task.contractId === id)!;
+      const dispatchedContracts = tick.dispatched.map(
+        (id) => service.teamView(teamId).tasks.find((task) => task.id === id)?.contractId,
+      );
+      // 场景一：被锁的 H-1 推迟（保持 pending、不升级），派发继续走锁外的 L-1。
+      expect(dispatchedContracts).toEqual(['W-1', 'L-1']);
+      expect(byContract('H-1').status).toBe('pending');
+      // 场景二：跳过要出声——事件里能看到 H-1 在等域锁；且这只是等待，不是升级。
+      expect(tick.events).toContain(`deferred-domain-lock:${byContract('H-1').id}`);
+      expect(tick.escalated).toEqual([]);
+      expect(service.escalations.all).toHaveLength(0);
+    } finally {
+      await cleanup();
+    }
+  }, 60_000);
+
   it('stuck tasks escalate and pause at task granularity', async () => {
     const { service, cleanup } = await serviceWithContracts(
       'stuck',

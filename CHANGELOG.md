@@ -15,10 +15,12 @@
 - **项目画像适配器 `profile`**：分支/PR 模板、合并策略、条件质量门、禁区策略与所有权路由可按项目约定覆写，内置 `agentdeploy` 预设。
 - **知识回路 `learnings`**：评审打回与升级自动沉淀为教训，按域相关性注入后续任务描述；待升格清单交人落文档。
 - **每任务墙钟预算**（`daemon.maxTaskHours`，超时升级 `budget-exceeded`）与团队运行指标聚合。
+- **域锁推迟可见化（TECH-2）**：`touches` 被在途任务锁定的派发候选保持 `pending` 并记 `deferred-domain-lock:<taskId>` 事件，派发继续走锁外候选——高优先级任务等域锁不再静默，也不误报升级。
 - **文档体系**：操作者 runbook `PILOT.md`、交互流程设计文档 `docs/design-interaction.md`（M0–M3 规格与实施记录）。
 
 ### 变更
 
+- **webhook 投递合并（TECH-1）**：升级侧改用与问卷共用的 `postHumanWebhook`，删除 `EscalationManager.deliverWebhook` 重复实现；webhook URL 现登记进脱敏器，两侧载荷语义不变。
 - 默认禁区收缩到 `LICENSE`：`AGENTS.md` / `.github/` 移出禁区，「不许改文档」的约束下移为「走有审批记录的 draft → 升格链」。
 
 ### 修复
