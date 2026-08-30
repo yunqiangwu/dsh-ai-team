@@ -68,6 +68,7 @@ const CSS = `
 .dsh-ai-team__feed-reason { font-weight: 600; margin-right: 6px; }
 .dsh-ai-team__feed-notify { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
 .dsh-ai-team__feed-check { color: #22c55e; }
+.dsh-ai-team__activity-time { margin-left: auto; opacity: .55; font-size: 10px; white-space: nowrap; }
 .dsh-ai-team__deploy { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed rgba(127,127,127,.2); }
 .dsh-ai-team__empty { opacity: .5; font-style: italic; }
 /* ── 等你决策（面板内作答）：琥珀色是"轮到你了"，红色留给"有东西坏了" ── */

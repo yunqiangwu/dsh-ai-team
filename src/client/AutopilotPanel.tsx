@@ -588,6 +588,66 @@ function LearningList({ learnings, t }: { learnings: LearningView[]; t: Translat
 }
 
 /**
+ * 活动时间线（P2-2）：把评审/升级/部署/问卷/教训五类带时间戳的记录合并成一条
+ * 按时间倒序的流水。数据全部来自已有 projection，不改 schema / stateVersion。
+ */
+type ActivityKind = 'review' | 'escalation' | 'deploy' | 'questionnaire' | 'learning';
+interface ActivityEvent {
+  at: number;
+  kind: ActivityKind;
+  text: string;
+}
+
+function ActivityTimeline({
+  team,
+  escalations,
+  deploys,
+  questionnaires,
+  t,
+}: {
+  team: TeamView;
+  escalations: EscalationView[];
+  deploys: DeployView[];
+  questionnaires: QuestionnaireView[];
+  t: Translator;
+}) {
+  const events: ActivityEvent[] = [];
+  for (const review of team.reviews) {
+    const task = team.tasks.find((candidate) => candidate.id === review.taskId);
+    events.push({
+      at: review.createdAt,
+      kind: 'review',
+      text: `${review.reviewerName} ${t(`review.${review.verdict}`)} ${task?.title ?? review.taskId}`,
+    });
+  }
+  for (const escalation of escalations) {
+    events.push({ at: escalation.createdAt, kind: 'escalation', text: escalation.message });
+  }
+  for (const deploy of deploys) {
+    events.push({ at: deploy.startedAt, kind: 'deploy', text: `${deploy.branch} ${t(`deploy.${deploy.status}`)}` });
+  }
+  for (const item of questionnaires) {
+    events.push({ at: item.createdAt, kind: 'questionnaire', text: item.title });
+  }
+  for (const learning of team.learnings) {
+    events.push({ at: learning.lastHitAt, kind: 'learning', text: learning.summary });
+  }
+  const recent = events.toSorted((a, b) => b.at - a.at).slice(0, 30);
+  if (recent.length === 0) return <span className="dsh-ai-team__empty">{t('activity.empty')}</span>;
+  return (
+    <div className="dsh-ai-team__feed">
+      {recent.map((event, index) => (
+        <div key={`${event.kind}-${event.at}-${index}`} className="dsh-ai-team__feed-item dsh-ai-team__feed-item--resolved">
+          <span className="dsh-ai-team__feed-reason">{t(`activity.${event.kind}`)}</span>
+          <span>{event.text}</span>
+          <span className="dsh-ai-team__activity-time">{new Date(event.at).toLocaleString()}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * 当前卡住的任务（等人工分诊 / 等组长澄清 / 卡死 / 门红）。
  *
  * `projection.blocked` 一直有值，却从没被渲染过：面板只在升级流里显示"已升级"，
@@ -688,7 +748,7 @@ function StatTile({ label, value, hint, onClick }: { label: string; value: strin
   );
 }
 
-type DetailKind = 'actions' | 'metrics' | 'blocked' | 'questionnaires' | 'learnings' | 'escalations' | 'deploys';
+type DetailKind = 'actions' | 'metrics' | 'blocked' | 'questionnaires' | 'learnings' | 'escalations' | 'deploys' | 'activity';
 
 /**
  * 状态栏：一排统计卡按钮。点击某张卡，弹出浮窗展示该类的详细面板（卡住/问卷/教训/升级/部署）。
@@ -725,6 +785,7 @@ function StatsStrip({
       case 'learnings': return <LearningList learnings={team.learnings} t={t} />;
       case 'escalations': return <EscalationFeed escalations={escalations} t={t} />;
       case 'deploys': return <DeployHistory deploys={deploys} t={t} />;
+      case 'activity': return <ActivityTimeline team={team} escalations={escalations} deploys={deploys} questionnaires={questionnaires} t={t} />;
       case 'metrics': return (
         <div className="dsh-ai-team__card-meta">
           <span>{t('metrics.dispatched', { dispatched: metrics.dispatched, completed: metrics.completed })}</span>
@@ -747,6 +808,7 @@ function StatsStrip({
         <StatTile label={t('section.learnings')} value={String(team.learnings.length)} hint={t('section.learnings.hint')} onClick={() => setOpen('learnings')} />
         <StatTile label={t('section.escalations')} value={String(openEsc)} hint={t('section.escalations.hint')} onClick={() => setOpen('escalations')} />
         <StatTile label={t('section.deploys')} value={String(deploys.length)} hint={t('section.deploys.hint')} onClick={() => setOpen('deploys')} />
+        <StatTile label={t('section.activity')} value={String(team.reviews.length + escalations.length + deploys.length + questionnaires.length + team.learnings.length)} hint={t('section.activity.hint')} onClick={() => setOpen('activity')} />
       </div>
       {open !== null ? (
         <div className="dsh-ai-team__overlay" onClick={() => setOpen(null)}>
