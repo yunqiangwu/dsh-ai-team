@@ -40,7 +40,7 @@ function GateBadge({ task, t }: { task: TaskView; t: Translator }) {
   return (
     <span
       className={`dsh-ai-team__badge ${task.gates.allPassed ? 'dsh-ai-team__badge--pass' : 'dsh-ai-team__badge--fail'}`}
-      title={task.gates.results.map((result) => `${result.passed ? '✓' : '✗'} ${result.command}`).join('\n')}
+      title={`${t('gates.tooltip')}\n${task.gates.results.map((result) => `${result.passed ? '✓' : '✗'} ${result.command}`).join('\n')}`}
     >
       {t('gates.badge', { passed, total })}
     </span>
@@ -77,7 +77,7 @@ function TaskCard({ task, awaiting, t }: { task: TaskView; awaiting: Questionnai
         <span>{task.assigneeName}</span>
         <GateBadge task={task} t={t} />
         <CiBadge task={task} t={t} />
-        {task.reviewRound > 0 ? <span>{t('task.round', { round: task.reviewRound })}</span> : null}
+        {task.reviewRound > 0 ? <span title={t('task.roundHint')}>{t('task.round', { round: task.reviewRound })}</span> : null}
         {/* 等人回答 ≠ 卡住：任务状态一字未改，但看板上必须说得出它在等谁。 */}
         {awaiting !== undefined ? (
           <span className="dsh-ai-team__badge dsh-ai-team__badge--pending" title={awaiting.title}>
@@ -484,9 +484,9 @@ function BlockedList({ ids, team, t }: { ids: string[]; team: TeamView; t: Trans
 /**
  * Grafana 风格统计卡：短标签 + 数字。作为按钮，点击时在父组件打开对应详情浮窗。
  */
-function StatTile({ label, value, onClick }: { label: string; value: string; onClick: () => void }) {
+function StatTile({ label, value, hint, onClick }: { label: string; value: string; hint?: string; onClick: () => void }) {
   return (
-    <button type="button" className="dsh-ai-team__stat" onClick={onClick}>
+    <button type="button" className="dsh-ai-team__stat" title={hint} onClick={onClick}>
       <span className="dsh-ai-team__stat-value">{value}</span>
       <span className="dsh-ai-team__stat-label">{label}</span>
     </button>
@@ -541,12 +541,12 @@ function StatsStrip({
   return (
     <>
       <div className="dsh-ai-team__stats">
-        <StatTile label={t('section.metrics')} value={`${metrics.completed}/${metrics.dispatched}`} onClick={() => setOpen('metrics')} />
-        <StatTile label={t('section.blocked')} value={String(blocked.length)} onClick={() => setOpen('blocked')} />
-        <StatTile label={t('section.questionnaires')} value={`${openQ}/${questionnaires.length}`} onClick={() => setOpen('questionnaires')} />
-        <StatTile label={t('section.learnings')} value={String(team.learnings.length)} onClick={() => setOpen('learnings')} />
-        <StatTile label={t('section.escalations')} value={String(openEsc)} onClick={() => setOpen('escalations')} />
-        <StatTile label={t('section.deploys')} value={String(deploys.length)} onClick={() => setOpen('deploys')} />
+        <StatTile label={t('section.metrics')} value={`${metrics.completed}/${metrics.dispatched}`} hint={t('section.metrics.hint')} onClick={() => setOpen('metrics')} />
+        <StatTile label={t('section.blocked')} value={String(blocked.length)} hint={t('section.blocked.hint')} onClick={() => setOpen('blocked')} />
+        <StatTile label={t('section.questionnaires')} value={`${openQ}/${questionnaires.length}`} hint={t('section.questionnaires.hint')} onClick={() => setOpen('questionnaires')} />
+        <StatTile label={t('section.learnings')} value={String(team.learnings.length)} hint={t('section.learnings.hint')} onClick={() => setOpen('learnings')} />
+        <StatTile label={t('section.escalations')} value={String(openEsc)} hint={t('section.escalations.hint')} onClick={() => setOpen('escalations')} />
+        <StatTile label={t('section.deploys')} value={String(deploys.length)} hint={t('section.deploys.hint')} onClick={() => setOpen('deploys')} />
       </div>
       {open !== null ? (
         <div className="dsh-ai-team__overlay" onClick={() => setOpen(null)}>

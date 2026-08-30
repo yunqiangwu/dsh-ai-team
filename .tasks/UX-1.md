@@ -18,7 +18,7 @@ touches:
 
 - [x] UX-1.1 设置卡片文案过时：`config.intro` 仍写「下次带 patch 启动时生效」，实际保存即热生效
 - [x] UX-1.2 升级分诊表单硬编码中文：`escalationFields()` 的 label/placeholder 是中文常量，英文面板显示中文
-- [ ] UX-1.3 术语黑话加 tooltip：`gates.badge`「门 3/4」、返工轮次、统计卡等用户不可读
+- [x] UX-1.3 术语黑话加 tooltip：`gates.badge`「门 3/4」、返工轮次、统计卡等用户不可读
 
 ## 验收标准
 
