@@ -1,7 +1,7 @@
 ---
 id: UX-1
 title: P0 用户体验正确性修复：过时文案 / 中文硬编码 / 术语 tooltip
-status: pending
+status: done
 owner: leader-1
 depends_on: []
 touches:
