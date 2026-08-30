@@ -18,6 +18,7 @@
 
 ### 修复
 
+- **收敛说明（CYC-2 → CYC-7 演进）**：上方 CYC-2 条目中「`cycle_approve` 无审批门时机械开工、**有审批门走问卷**」是中期（v1）状态；最终 CYC-7 已移除 `cycles.requireApproval` / `cycles.autoAdvance` 全局开关，开工审批在 kickoff 时已批过，`cycle_approve` 现在**纯机械**（`planned → in_progress`，无审批环节），周期边界确认收敛为周期级 `checkpoint` 字段（见下方 CYC-7 条目与 `docs/design-cycles.md`）。
 - **checkpoint 问卷死锁与提前开工**：checkpoint 问卷收敛为「继续 / 结束」单向确认，删除无后续路径的「暂缓」死选项（防周期永久卡 in_review）；`cycle_plan` 在上一周期停在 in_review 等人批时不再提前开工下一期（新周期保持 planned、不派发）。
 - **仓库克隆地址统一为 GitHub HTTPS**：README / PILOT.md 等文档中的克隆命令与示例地址同步更新。
 
