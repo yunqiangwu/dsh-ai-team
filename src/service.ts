@@ -1296,6 +1296,13 @@ export class AutopilotService {
         `remote "${this.options.remote.url}" requires SSH auth but env var "${this.options.remote.sshKeyEnv}" is not set`,
       );
     }
+    // 真实私钥必是多行 PEM；单行值几乎一定是误传了 key 文件路径（试点实测踩过）。
+    // 认证失败的信息藏在 git stderr 里，这里提前 fail-fast 把修法说清楚。
+    if (!key.includes('\n')) {
+      throw new Error(
+        `env var "${this.options.remote.sshKeyEnv}" must contain the SSH private key TEXT, not a file path (got a single-line value)`,
+      );
+    }
     this.redactor.register(key);
     const { env, cleanup } = await sshEnvForKey(key);
     return { env, cleanup };

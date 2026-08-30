@@ -85,16 +85,24 @@ export async function git(args: string[], cwd: string, options?: GitOptions): Pr
   }
 }
 
+/**
+ * `path` 本身是否是 git 仓库根（含自己的 .git）。
+ *
+ * 不能用 `rev-parse --is-inside-work-tree`：它会向上穿透找到父级仓库 ——
+ * 当 rootDir 位于宿主仓库内部时（dogfood 试点实测），clone 失败留下的空目录
+ * 会被误判成"仓库"，后续 worktree 操作全部作用于宿主仓库。
+ */
 async function isRepo(path: string): Promise<boolean> {
   try {
-    await git(['rev-parse', '--is-inside-work-tree'], path);
-    return true;
+    const gitDir = await git(['rev-parse', '--absolute-git-dir'], path);
+    return gitDir === join(path, '.git') || gitDir === path;
   } catch {
     return false;
   }
 }
 
 async function hasCommits(path: string): Promise<boolean> {
+  if (!(await isRepo(path))) return false;
   try {
     await git(['rev-parse', '--verify', 'HEAD'], path);
     return true;
@@ -275,8 +283,13 @@ export async function cloneRemote(
     await git(['clone', '--origin', 'origin', url, dest], dest, { env });
   } catch (error) {
     // 克隆空远端时大多数 git 版本会带 warning 成功，
-    // 但旧版本在创建目录后会以非零退出。
-    if (!(await isRepo(dest))) throw error;
+    // 但旧版本在创建目录后会以非零退出。此时 dest 已有自己的 .git，
+    // 修正后的 isRepo 只认本地 .git，不会误把父级仓库当成 clone 产物。
+    if (!(await isRepo(dest))) {
+      // 真失败：把空目录清掉，别给后续调用留下"看似存在"的路径。
+      await rm(dest, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
   }
   if (!(await hasCommits(dest))) {
     await git(['checkout', '-b', baseBranch], dest).catch(async () => {

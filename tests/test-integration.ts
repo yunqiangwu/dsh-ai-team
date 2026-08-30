@@ -7,7 +7,7 @@
  *   deploy (mocked HTTP health check only) → status.
  */
 import { describe, expect, it } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AutopilotService } from '../src/service.js';
 import { autopilotProjectionSchema } from '../src/schema.js';
@@ -290,6 +290,53 @@ describe('integration: full lifecycle', () => {
       const remoteLog = gitTest(['log', '--format=%s'], fixture.remotePath);
       expect(remoteLog).toContain('initial commit');
     } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('clone failure never escapes into a parent repository (dogfood rootDir inside a host repo)', async () => {
+    const fixture = await makeFixture('traverse');
+    // 宿主仓库：rootDir 落在它内部 —— dogfood 部署形态。真实试点踩到的坑：
+    // clone 失败留下空目录，rev-parse 向上穿透把宿主当成 clone 产物，
+    // 后续 worktree/分支全部建到了宿主仓库上。
+    const host = join(fixture.root, 'host');
+    gitTest(['init', '-b', 'main', host], fixture.root);
+    await writeFile(join(host, 'README.md'), '# host\n', 'utf8');
+    gitTest(['add', '-A'], host);
+    gitTest(['commit', '-m', 'chore: host'], host);
+    const branchesBefore = gitTest(['branch', '--format=%(refname:short)'], host);
+    const worktreesBefore = gitTest(['worktree', 'list'], host);
+
+    const service = await AutopilotService.create(
+      testOptions(fixture, {
+        rootDir: join(host, '.dsh-ai-team'),
+        remote: { url: join(fixture.root, 'missing.git'), sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'generic' },
+      }),
+    );
+    try {
+      // 不可达远端：clone 必须抛错，绝不静默"成功"。
+      await expect(service.createTeam({ name: 'traverse-team', cloneRemote: true })).rejects.toThrow();
+      // 宿主仓库未被污染：分支与 worktree 与失败前完全一致。
+      expect(gitTest(['branch', '--format=%(refname:short)'], host)).toBe(branchesBefore);
+      expect(gitTest(['worktree', 'list'], host)).toBe(worktreesBefore);
+    } finally {
+      await service.dispose();
+    }
+  }, 60_000);
+
+  it('rejects an sshKeyEnv that carries a key file path instead of the key text', async () => {
+    const fixture = await makeFixture('ssh-path');
+    const service = await AutopilotService.create(
+      testOptions(fixture, {
+        remote: { url: 'git@github.com:org/repo.git', sshKeyEnv: 'AUTOPILOT_TEST_GIT_KEY', platform: 'generic' },
+      }),
+    );
+    try {
+      process.env.AUTOPILOT_TEST_GIT_KEY = '/home/user/.ssh/id_ed25519';
+      // 提前 fail-fast 并说清修法，而不是让认证错误埋在 git stderr 里。
+      await expect(service.createTeam({ name: 'ssh-team', cloneRemote: true })).rejects.toThrow(/key TEXT, not a file path/);
+    } finally {
+      delete process.env.AUTOPILOT_TEST_GIT_KEY;
       await service.dispose();
     }
   }, 60_000);

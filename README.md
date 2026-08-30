@@ -91,7 +91,7 @@ autopilot_status      # 随时查看：循环状态 / 看板 / 升级 / 部署�
         maxTasks: 512
         remote:
           url: git@github.com:org/repo.git   # 可为空仓库
-          sshKeyEnv: AUTOPILOT_GIT_KEY       # 环境变量名，禁止直接传密钥值
+          sshKeyEnv: AUTOPILOT_GIT_KEY       # 环境变量名（变量装 SSH 私钥**内容**，不是路径）；禁止直接传密钥值
           platform: github                    # github | cnb | gitlab | generic
           apiTokenEnv: GITHUB_TOKEN           # PR/CI API token 的环境变量名
         bootstrap:
