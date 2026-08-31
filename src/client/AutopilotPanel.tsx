@@ -787,6 +787,7 @@ function StatsStrip({
   questionnaires,
   escalations,
   deploys,
+  completed,
   t,
 }: {
   team: TeamView;
@@ -794,6 +795,7 @@ function StatsStrip({
   questionnaires: QuestionnaireView[];
   escalations: EscalationView[];
   deploys: DeployView[];
+  completed: boolean;
   t: Translator;
 }) {
   const [open, setOpen] = useState<DetailKind | null>(null);
@@ -852,6 +854,7 @@ function StatsStrip({
   return (
     <>
       <div className="dsh-ai-team__stats">
+        {completed ? <CompletionSummary team={team} t={t} /> : null}
         <StatTile label={t('actions.title')} value={String(actionCount)} hint={t('actions.hint')} onClick={() => openDetail('actions')} />
         <StatTile label={t('section.metrics')} value={`${metrics.completed}/${metrics.dispatched}`} hint={t('section.metrics.hint')} onClick={() => openDetail('metrics')} />
         <StatTile label={t('section.blocked')} value={String(blocked.length)} hint={t('section.blocked.hint')} onClick={() => openDetail('blocked')} />
@@ -1190,7 +1193,8 @@ function LoopGuide({ loopState, t }: { loopState: AutopilotProjection['loopState
 /**
  * 完成态总结（P2-5）：loop completed 时把交付摘要直接摆出来 —— 任务收尾数、
  * 周期完成数、返工/门/部署指标与沉淀教训，一眼看清这一轮交出了什么。
- * 数据全部来自已有 projection，不改 schema / stateVersion。
+ * 紧凑重构（v1.7.1）：不再渲染独立卡片，而是返回 chip 行，由 StatsStrip 作为
+ * 前置 chips 渲染，消除一个 body flex child 和它独占的垂直空间。
  */
 function CompletionSummary({ team, t }: { team: TeamView; t: Translator }) {
   const metrics = team.metrics;
@@ -1200,24 +1204,29 @@ function CompletionSummary({ team, t }: { team: TeamView; t: Translator }) {
   const cycles = team.cycles ?? [];
   const cyclesDone = cycles.filter((cycle) => cycle.status === 'done').length;
   return (
-    <div className="dsh-ai-team__summary-card" role="status">
-      <div className="dsh-ai-team__summary-head">
-        <span className="dsh-ai-team__badge dsh-ai-team__badge--pass">{t('loop.completed')}</span>
-        <span className="dsh-ai-team__summary-title">{t('completion.title')}</span>
-      </div>
-      <div className="dsh-ai-team__summary-meta">
-        <span>{t('completion.tasks', { done, cancelled, total })}</span>
-        {cycles.length > 0 ? (
-          <span>{t('completion.cycles', { done: cyclesDone, total: cycles.length })}</span>
-        ) : null}
-        <span>{t('metrics.reviewRounds', { reviewRounds: metrics.reviewRounds })}</span>
-        <span>{t('metrics.gates', { gateRuns: metrics.gateRuns, gateFailures: metrics.gateFailures })}</span>
-        <span>{t('metrics.deploys', { deploys: metrics.deploys, rollbacks: metrics.rollbacks })}</span>
-        {team.learnings.length > 0 ? (
-          <span>{t('completion.learnings', { count: team.learnings.length })}</span>
-        ) : null}
-      </div>
-    </div>
+    <>
+      <span className="dsh-ai-team__stat dsh-ai-team__stat--completed">
+        <span className="dsh-ai-team__stat-label">{t('loop.completed')}</span>
+      </span>
+      <span className="dsh-ai-team__stat">
+        <span className="dsh-ai-team__stat-value">{done}</span>
+        <span className="dsh-ai-team__stat-label">{t('section.completed')}</span>
+      </span>
+      <span className="dsh-ai-team__stat">
+        <span className="dsh-ai-team__stat-value">{metrics.gateRuns}</span>
+        <span className="dsh-ai-team__stat-label">{t('section.gates')}</span>
+      </span>
+      <span className="dsh-ai-team__stat">
+        <span className="dsh-ai-team__stat-value">{metrics.deploys}</span>
+        <span className="dsh-ai-team__stat-label">{t('section.deploys')}</span>
+      </span>
+      {team.learnings.length > 0 ? (
+        <span className="dsh-ai-team__stat">
+          <span className="dsh-ai-team__stat-value">{team.learnings.length}</span>
+          <span className="dsh-ai-team__stat-label">{t('section.learnings')}</span>
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -1385,7 +1394,6 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
           >
             <PhaseGuide phase={team.phase} t={t} />
           </CompactGuide>
-          {projection.loopState === 'completed' ? <CompletionSummary team={team} t={t} /> : null}
           <CompactGuide
             visible={questionnaires.some((item) => item.status === 'answered' && item.mode === 'async')}
             fabLabel={t('questionnaire.awaitingLeader')}
@@ -1398,6 +1406,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
             questionnaires={questionnaires}
             escalations={escalations}
             deploys={deploys}
+            completed={projection.loopState === 'completed'}
             t={t}
           />
           <TeamBody team={team} questionnaires={questionnaires} t={t} />
