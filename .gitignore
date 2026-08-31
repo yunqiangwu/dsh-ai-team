@@ -37,3 +37,6 @@ pnpm-debug.log*
 .zcode
 
 .dsh-ai-team*
+
+autopilot-kanban-redesign.design
+.workbuddy

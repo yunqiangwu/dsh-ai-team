@@ -905,6 +905,47 @@ function WaitingDecisions({ items, t }: { items: QuestionnaireView[]; t: Transla
   );
 }
 
+/**
+ * 紧凑重构（v1.7.1）：把 LoopGuide / PhaseGuide / AsyncResumeBanner 默认折叠到右上角 fab 徽章。
+ * 空状态不渲染，避免在 header 区域撑出空白。点一下展开完整信息块。
+ * `visible` 由调用方判断子组件是否有实质内容（LoopGuide/PhaseGuide/AsyncResumeBanner 都会在空态返回 null）。
+ */
+function CompactGuide({
+  visible,
+  children,
+  fabLabel,
+  fabClass,
+}: {
+  /** 子组件是否有实质内容；false 时 CompactGuide 整体返回 null，fab 也不出现。 */
+  visible: boolean;
+  /** 完整展开态的 guide/banner 节点（由调用方提供）。 */
+  children: ReactNode;
+  /** 折叠徽章上显示的简要标签。 */
+  fabLabel: string;
+  /** 额外 fab class 用于 z-index 叠加（loop > phase > async，避免互相遮挡）。 */
+  fabClass?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (!visible) return null;
+  return (
+    <>
+      {expanded ? (
+        <div>{children}</div>
+      ) : (
+        <button
+          type="button"
+          className={`dsh-ai-team__guide-fab${fabClass ? ` dsh-ai-team__guide-fab--${fabClass}` : ''}`}
+          aria-label={fabLabel}
+          onClick={() => setExpanded(true)}
+        >
+          <span>{fabLabel}</span>
+          <span>▾</span>
+        </button>
+      )}
+    </>
+  );
+}
+
 /** 任务状态 → 徽标颜色：已完成/废弃绿、活跃/待办琥珀、异常红。 */
 function taskBadgeKind(status: TaskView['status']): string {
   if (status === 'done' || status === 'cancelled') return 'pass';
@@ -998,23 +1039,18 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
 
   const filtering = query !== '' || memberFilter !== '' || cycleFilter !== '';
   const visibleTasks = team.tasks.filter(matches);
+  // 紧凑重构（v1.7.1）：找到活跃周期用于在 header 行高亮。
+  const activeCycle = cycles.find((cycle) => cycle.status === 'in_progress');
 
   return (
     <>
-      <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.members')}</h4>
-        <div className="dsh-ai-team__members">
-          {team.members.map((member) => (
-            <MemberChip key={member.id} member={member} t={t} />
-          ))}
-        </div>
-      </section>
       <CycleSection team={team} t={t} />
-      <section>
-        <h4 className="dsh-ai-team__section-title">{t('section.tasks')}</h4>
-        <div className="dsh-ai-team__filters">
+      {/* 看板 header：标题 + 筛选 + 成员 + 活跃周期 同行（v1.7.1 紧凑重构） */}
+      <div className="dsh-ai-team__board-head">
+        <span className="dsh-ai-team__board-head-title">{t('section.tasks')}</span>
+        <div className="dsh-ai-team__board-head-filters">
           <input
-            className="dsh-ai-team__config-input dsh-ai-team__filter-search"
+            className="dsh-ai-team__config-input"
             type="search"
             placeholder={t('kanban.searchPlaceholder')}
             value={query}
@@ -1061,6 +1097,19 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
             </button>
           ) : null}
         </div>
+        {/* 活跃周期高亮：紧凑重构把 active cycle 从独立 section 搬进 header 行 */}
+        {activeCycle !== undefined ? (
+          <span className="dsh-ai-team__board-head-active" title={activeCycle.goal}>
+            {activeCycle.name} · {t('cycleStatus.in_progress')}
+          </span>
+        ) : null}
+        {/* 成员 chip 合并到 header 行，去掉独立 section（v1.7.1 紧凑重构） */}
+        <div className="dsh-ai-team__board-head-members">
+          {team.members.map((member) => (
+            <MemberChip key={member.id} member={member} t={t} />
+          ))}
+        </div>
+      </div>
         <div className="dsh-ai-team__kanban">
           {TASK_STATUSES.map((status) => {
             const tasks = team.tasks.filter((task) => task.status === status && matches(task));
@@ -1098,7 +1147,6 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
         {filtering && visibleTasks.length === 0 ? (
           <span className="dsh-ai-team__empty">{t('kanban.noMatch')}</span>
         ) : null}
-      </section>
     </>
   );
 }
@@ -1319,10 +1367,31 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       {open ? (
         <div className="dsh-ai-team__body">
           <TeamSwitcher teams={teams} activeTeamId={projection.activeTeamId} t={t} />
-          <LoopGuide loopState={projection.loopState} t={t} />
-          <PhaseGuide phase={team.phase} t={t} />
+          {/* 紧凑重构（v1.7.1）：guide 默认折叠到右上角 fab 徽章，空态不渲染 */}
+          <CompactGuide
+            visible={
+              (projection.loopState === 'stopped' || projection.loopState === 'paused')
+              && t(`loop.${projection.loopState}.guide`) !== `loop.${projection.loopState}.guide`
+            }
+            fabLabel={t('loop.guideHint', { state: projection.loopState })}
+            fabClass="async"
+          >
+            <LoopGuide loopState={projection.loopState} t={t} />
+          </CompactGuide>
+          <CompactGuide
+            visible={t(`phase.next.${team.phase}`) !== `phase.next.${team.phase}`}
+            fabLabel={t('phase.nextLabel')}
+            fabClass="loop"
+          >
+            <PhaseGuide phase={team.phase} t={t} />
+          </CompactGuide>
           {projection.loopState === 'completed' ? <CompletionSummary team={team} t={t} /> : null}
-          <AsyncResumeBanner items={questionnaires} t={t} />
+          <CompactGuide
+            visible={questionnaires.some((item) => item.status === 'answered' && item.mode === 'async')}
+            fabLabel={t('questionnaire.awaitingLeader')}
+          >
+            <AsyncResumeBanner items={questionnaires} t={t} />
+          </CompactGuide>
           <StatsStrip
             team={team}
             blocked={projection.blocked}
