@@ -5,6 +5,10 @@
  * （`id` / `status` / `owner` / `depends_on` / `touches`）加上带 Gherkin
  * 验收标准的 Markdown 正文。插件读取契约来校验派发，并在每次状态变更时重写
  * frontmatter、重新生成 `.tasks/_board.md`。
+ *
+ * `done` 历史任务不影响其它任务（只挡派发的依赖是无 done 的），由操作者定期
+ * 手动 `git mv` 进 `.tasks/archive/`（规则见 AGENTS.md「定期归档 done 历史任务」）。
+ * `.tasks/archive/` 不在契约扫描范围内，归档即真正退出工作集。
  */
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -181,28 +185,35 @@ export function renderTaskNote(kind: string, at: number, author: string): string
 }
 
 /**
- * 根据当前契约重新生成 `.tasks/_board.md`（按周期分组的状态表 + 阻塞清单）。
+ * 根据当前契约重新生成 `.tasks/_board.md`（只列进行中任务 + 归档统计）。
  * 绝不手改；每次状态变更后被调用。
  *
- * 分组口径（docs/design-cycles.md §3.2）：先列各周期的头（name + 该周期内
- * done/total 进度），再列其任务；无 `cycle` 字段的契约归「未排期」区。周期头的
- * 进度数字由契约 status 推出，而看板恰好在 status 变化时才重生成，因此字节稳定、
- * 不弄脏 worktree（与下方刻意不加时间戳同一道理）。
+ * 口径：`done` 历史任务由操作者手动归档进 `.tasks/archive/`（见 AGENTS.md
+ * 「定期归档 done 历史任务」），因此看板**不再逐行列出 done 任务**，只从契约里
+ * 挑出 `pending / in_progress / in_review / needs-human`，按周期（或无周期的
+ * 「未排期」）分组，顶部给一行「已归档 N 个任务」统计。`cancelled` 单列「已废弃」，
+ * `needs-human` 单列「阻塞清单」。字节稳定、不弄脏 worktree（刻意不加时间戳）。
  */
 export async function regenerateBoard(repoPath: string, contracts: TaskContract[]): Promise<void> {
+  // done 视为已归档，不入看板主体；cancelled 不是进行中，留到「已废弃」。
+  const inFlight = contracts.filter((contract) => contract.status !== 'done' && contract.status !== 'cancelled');
+  const blocked = contracts.filter((contract) => contract.status === 'needs-human');
+  const cancelled = contracts.filter((contract) => contract.status === 'cancelled');
+  const archived = await countArchived(repoPath);
+
   const lines: string[] = [
     '# 任务看板（自动生成，勿手改）',
     '',
     // 刻意不写「regenerated at <时间戳>」：本文件每次状态变更都会重生成并提交，
     // 内嵌时间戳会让内容每次都变，于是纯粹的重新生成也能把 worktree 弄脏、
     // 产出一堆零内容的空提交。变更时间由 git log 记录。
-    '| id | title | status | owner | depends_on | touches |',
-    '| --- | --- | --- | --- | --- | --- |',
+    `已归档 ${archived} 个任务（.tasks/archive/）`,
+    '',
   ];
   // 按周期名分组（Map 保持首次出现顺序）；无周期契约归「未排期」。
   const byCycle = new Map<string, TaskContract[]>();
   const unscheduled: TaskContract[] = [];
-  for (const contract of contracts) {
+  for (const contract of inFlight) {
     const target = contract.cycle === null ? unscheduled : (byCycle.get(contract.cycle) ?? []);
     target.push(contract);
     if (contract.cycle !== null) byCycle.set(contract.cycle, target);
@@ -215,17 +226,16 @@ export async function regenerateBoard(repoPath: string, contracts: TaskContract[
     }
   };
   for (const [cycle, group] of byCycle) {
-    const done = group.filter((contract) => contract.status === 'done').length;
-    lines.push(`## ${cycle}（${done}/${group.length} done）`, '', '| id | title | status | owner | depends_on | touches |', '| --- | --- | --- | --- | --- | --- |');
+    if (group.length === 0) continue;
+    lines.push(`## ${cycle}`, '', '| id | title | status | owner | depends_on | touches |', '| --- | --- | --- | --- | --- | --- |');
     renderGroup(group);
     lines.push('');
   }
-  if (unscheduled.length > 0 || byCycle.size === 0) {
+  if (unscheduled.length > 0) {
     lines.push('## 未排期', '', '| id | title | status | owner | depends_on | touches |', '| --- | --- | --- | --- | --- | --- |');
     renderGroup(unscheduled);
     lines.push('');
   }
-  const blocked = contracts.filter((contract) => contract.status === 'needs-human');
   lines.push('## 阻塞清单', '');
   if (blocked.length === 0) {
     lines.push('- (none)');
@@ -234,7 +244,6 @@ export async function regenerateBoard(repoPath: string, contracts: TaskContract[
   }
   // M3 重规划的废弃分区（§6.1）：契约文件保留不删，看板上也要能一眼看到
   // 哪些工作被放弃了 —— 否则「为什么这个 id 再也不会动」只能去 git log 里考古。
-  const cancelled = contracts.filter((contract) => contract.status === 'cancelled');
   lines.push('', '## 已废弃', '');
   if (cancelled.length === 0) {
     lines.push('- (none)');
@@ -243,6 +252,22 @@ export async function regenerateBoard(repoPath: string, contracts: TaskContract[
   }
   lines.push('');
   await writeFile(join(repoPath, '.tasks', '_board.md'), lines.join('\n'), 'utf8');
+}
+
+/**
+ * 统计 `.tasks/archive/` 下已归档的契约文件数。目录不存在 = 还没归档过，返回 0。
+ * 数字只反映**物理归档**：`done` 但尚未 `git mv` 的任务不算，也不出现在看板主体
+ * （它们已不在进行中），直到操作者归档进 `archive/` 才计入。
+ */
+async function countArchived(repoPath: string): Promise<number> {
+  const dir = join(repoPath, '.tasks', 'archive');
+  try {
+    const entries = await readdir(dir);
+    return entries.filter((entry) => entry.endsWith('.md')).length;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
 }
 
 /**

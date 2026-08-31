@@ -93,7 +93,9 @@ describe('integration: full lifecycle', () => {
       const doneContract = await readFile(join(team.repoPath, '.tasks', 'CORE-1.md'), 'utf8');
       expect(doneContract).toContain('status: done');
       const board = await readFile(join(team.repoPath, '.tasks', '_board.md'), 'utf8');
-      expect(board).toContain('CORE-1');
+      // done 历史任务不入看板主体（归档规则，见 AGENTS.md），只剩归档统计。
+      expect(board).toContain('已归档 0 个任务');
+      expect(board).not.toContain('| CORE-1 |');
       // Remote received the merged base branch.
       const remoteMain = gitTest(['log', '--format=%s', 'main'], fixture.remotePath);
       expect(remoteMain).toContain('merge: task/CORE-1');

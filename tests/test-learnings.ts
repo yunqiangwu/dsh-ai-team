@@ -250,7 +250,7 @@ function contract(id: string, cycle: string | null, status = 'pending') {
 }
 
 describe('regenerateBoard groups contracts by cycle', () => {
-  it('renders cycle headers with done/total progress, then unscheduled, blocking and cancelled sections', async () => {
+  it('renders only in-flight tasks by cycle, then unscheduled, blocking and cancelled sections', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-ai-team-board-'));
     await mkdir(join(dir, '.tasks'), { recursive: true });
     await regenerateBoard(dir, [
@@ -261,16 +261,18 @@ describe('regenerateBoard groups contracts by cycle', () => {
       contract('DEAD-1', 'M1', 'cancelled'),
     ]);
     const board = await readFile(join(dir, '.tasks', '_board.md'), 'utf8');
-    // 周期头：name + done/total 进度（M1 含 done/in_progress/cancelled 共 3 条，cancelled 计入总数）。
-    expect(board).toContain('## M1（1/3 done）');
-    expect(board).toContain('## M2（0/1 done）');
-    // 无周期契约归「未排期」区，且按首次出现顺序先列 M1、M2。
-    expect(board.indexOf('## M1（1/3 done）')).toBeLessThan(board.indexOf('## 未排期'));
-    expect(board.indexOf('## 未排期')).toBeLessThan(board.indexOf('## 阻塞清单'));
-    // 各分区内容都在，且不弄脏 worktree（无时间戳）。
-    expect(board).toContain('| M1-1 |');
+    // done 任务已归档/不入进行中分区 → 看板不再列它；进行中 M1-2 仍按周期分组呈现。
+    expect(board).not.toContain('| M1-1 |');
+    expect(board).toContain('## M1');
     expect(board).toContain('| M1-2 |');
-    expect(board).toContain('| FREE-1 |');
+    expect(board).toContain('| M2-1 |');
+    // cancelled 不是进行中，不出现在周期分组里，单独进「已废弃」。
+    expect(board).not.toContain('| DEAD-1 |');
+    // 无周期契约归「未排期」区，且按首次出现顺序先列 M1、M2。
+    expect(board.indexOf('## M1')).toBeLessThan(board.indexOf('## 未排期'));
+    expect(board.indexOf('## 未排期')).toBeLessThan(board.indexOf('## 阻塞清单'));
+    // 归档统计：.tasks/archive/ 目录不存在 → 0；看板字节稳定（无时间戳）。
+    expect(board).toContain('已归档 0 个任务');
     expect(board).toContain('## 已废弃');
     expect(board).toContain('DEAD-1 title DEAD-1 — cancelled');
     expect(board).not.toMatch(/regenerated at/);

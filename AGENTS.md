@@ -82,9 +82,20 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 <stateDir>/state.json.corrupt-<ts>     解析失败时改名留存，不让空状态覆盖掉唯一一份历史
 <repo>/.tasks/<id>.md                  任务真相源（frontmatter + Gherkin 验收）
 <repo>/.tasks/_board.md                自动生成，勿手改；内容稳定（不含时间戳，否则每拍都弄脏 worktree）
+<repo>/.tasks/archive/                 done 历史任务的手动归档区；不在契约扫描范围内
 ```
 
 `.dsh-ai-team/` 与 `**/state.json`、`**/heartbeat.json` 已在 `.gitignore` 中，运行态绝不入库。
+
+### 定期归档 done 历史任务
+
+`done` 任务不影响其它任务（只解决依赖的是**非 done** 的，done 不挡派发、不进看板），所以可以定期清理以保持 `.tasks/` 与看板简洁。**归档是操作者手动做的**，没有自动任务：
+
+- **怎么做**：把 `status: done` 的 `.tasks/<id>.md` 用 `git mv` 挪进 `.tasks/archive/`（保留 git 历史，别用 `rm`/直接删）。
+- **看板口径**：`regenerateBoard`（`src/team.ts`）只列**进行中**（`pending / in_progress / in_review / needs-human`）任务，不再逐行列出 done；顶部一行 `已归档 N 个任务` 统计的是 `.tasks/archive/*.md` 的数量（未物理归档的 done 不算）。
+- **归档即退出工作集**：`loadTaskContracts` 只扫 `.tasks/` 顶层，`.tasks/archive/` 不会被收养、不会被再次派发。
+- **时机**：本仓库每次发版前后把当期已合并的 done 契约归档一次；目标仓库同样按需定期执行。
+- **`cancelled` 不归档**：保留在 `.tasks/`（与 README「废弃不是删除」一致），只在看板「已废弃」分区呈现。
 
 ## 架构铁律
 
