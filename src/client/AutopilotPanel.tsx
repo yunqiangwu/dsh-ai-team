@@ -1195,37 +1195,48 @@ function TeamSwitcher({
   t: Translator;
 }) {
   const [pending, setPending] = useState(false);
+  const [error, setError] = useState(false);
   if (teams.length < 2) return null;
   const active = activeTeamId ?? teams[0]?.id ?? '';
   const switchTo = async (teamId: string) => {
     if (teamId === active || pending) return;
     setPending(true);
+    setError(false);
+    let ok = true;
     try {
-      await fetch(TEAM_SWITCH_ROUTE_PREFIX, {
+      const response = await fetch(TEAM_SWITCH_ROUTE_PREFIX, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ teamId }),
       });
+      ok = response.ok;
     } catch {
-      // 网络失败：保持原团队，等下一次快照自然纠正。
+      // 网络层失败统一走下面的失败提示。
+      ok = false;
     }
     setPending(false);
+    setError(!ok);
   };
   return (
-    <label className="dsh-ai-team__team-switch" title={t('team.switch')}>
-      <select
-        className="dsh-ai-team__config-input"
-        value={active}
-        disabled={pending}
-        onChange={(event) => void switchTo(event.target.value)}
-      >
-        {teams.map((team) => (
-          <option key={team.id} value={team.id}>
-            {team.name}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="dsh-ai-team__team-switch">
+      <label title={t('team.switch')}>
+        <select
+          className="dsh-ai-team__config-input"
+          value={active}
+          disabled={pending}
+          aria-invalid={error}
+          onChange={(event) => void switchTo(event.target.value)}
+        >
+          {teams.map((team) => (
+            <option key={team.id} value={team.id}>
+              {team.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {/* 失败可见（P1-C）：切换不成功不再静默弹回让人以为没点动。 */}
+      {error ? <span className="dsh-ai-team__form-error" role="alert">{t('team.switchError')}</span> : null}
+    </div>
   );
 }
 
