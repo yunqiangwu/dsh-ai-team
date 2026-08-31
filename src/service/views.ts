@@ -2,7 +2,7 @@
  * 视图投影的纯映射：内部记录（`service/state.ts`）→ 对外视图（schema.ts 派生
  * 类型）。从 AutopilotService 搬出来是为了能脱离 git 工作区与状态机直接单测 ——
  * 视图形状是 `stateVersion` 升版的连带面，schema 演进时的形状断言直接打这里
- * （tests/test-service-modules.ts）。
+ * （tests/unit/service-modules/）。
  *
  * 与 service/report.ts 同一条分工约定：这里是纯函数，编排与副作用留在 service.ts。
  */

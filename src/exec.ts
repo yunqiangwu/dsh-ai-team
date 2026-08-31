@@ -9,7 +9,7 @@
  *
  * 语义刻意与合并前逐字对齐：超时折算成 `exitCode 1`（门失败是数据不是异常），
  * 只有 abort 才 reject；省略 `timeoutMs` 即不限时，保持 bootstrap / deploy 现状。
- * 由 `tests/test-exec.ts` 那组锁定用例兜住。
+ * 由 `tests/unit/exec.ts` 那组锁定用例兜住。
  */
 import { execFile } from 'node:child_process';
 

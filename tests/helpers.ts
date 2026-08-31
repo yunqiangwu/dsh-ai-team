@@ -113,7 +113,7 @@ export function testOptions(fixture: Fixture, overrides: Partial<AutopilotOption
     },
     escalation: { label: 'needs-human', pauseOnEscalation: 'task' },
     // 用例默认 async：interactive 的 ask_human 会真的等人答复，忘了作答就是挂满超时。
-    // 交互等待路径由 test-questionnaire.ts 显式覆盖 mode 后单独验证。
+    // 交互等待路径由 tests/integration/questionnaire/modes.ts 显式覆盖 mode 后单独验证。
     questionnaire: { mode: 'async', timeoutMinutes: 60 },
     // 重规划护栏默认给一个宽裕值：个别用例（频率上限）自己 override 成小值。
     replan: { maxPerHour: 10 },
@@ -159,7 +159,7 @@ export interface SeedContract {
 /**
  * 建团队 → 把契约写进集成检出并提交 → 逐个补成员。
  *
- * test-unattended 里曾长出两个几乎同构的本地 helper（serviceWithContracts /
+ * tests/integration/unattended 里曾长出两个几乎同构的本地 helper（serviceWithContracts /
  * seedTeamWithContract），questionnaire 与 integration 又各有第三、第四份变体
  * —— 这条链是每个循环用例的公共前缀，上收到这里避免继续分叉。
  * `cloneRemote: true` 让 repo 带上 origin（hasRemote 为真时 approve 的最后一步

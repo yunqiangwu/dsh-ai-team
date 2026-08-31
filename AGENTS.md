@@ -16,7 +16,7 @@
 | 本地跑插件 | `pnpm dsh web --patch ./cordis.patch.yml` |
 | 发布前校验 | `pnpm pack --dry-run`（`prepublishOnly` 已串起 typecheck+lint+test+build） |
 
-环境：Node `>=22.19`、pnpm 11.x。单测跑单个文件用 `pnpm exec vitest run tests/test-unattended.ts`。
+环境：Node `>=22.19`、pnpm 11.x。单测跑单个文件用 `pnpm exec vitest run tests/integration/unattended/daemon-loop.ts`。
 
 ## 目录地图
 
@@ -67,7 +67,19 @@ src/
   client/         Web 端：面板、设置卡片、i18n 字典、样式、宿主契约（React 18，CJS 产物）
 preset/
   autopilot-team/ 插件自带的 agent preset 模板（agent.cordis.yml + preset.yml），随包发布，运行时拷到用户级预设根
-tests/            helpers.ts（真 git fixture）+ integration / unattended / notification / profile / bootstrap / cache / learnings / exec / allowlist / service-modules / client-dict / questionnaire / ticket-http / cycles 十四个常规测试 + test-e2e-*.ts 十一个确定性闭环（md2html / parallel / askhuman / clarify / docflow / escalation / escalations / gfm / replan / replans / multiteam，驱动：packages/llm-mock）+ smoke-cordis 冒烟（含预设落盘断言）
+tests/
+    helpers.ts / smoke-cordis.ts  根目录：真 git fixture + lib 产物冒烟（含预设落盘断言）
+    unit/                         纯逻辑单元测试（不跑真实仓库/端口），单文件压到 ~400 行内
+      allowlist / bootstrap / cache / client-dict / exec / learnings / profile
+      service-modules/            service/*.ts 纯函数：description / report / state / daemon / views / docflow / runtime-config / team-rules
+    integration/                  真实 git + HTTP 集成测试，单文件压到 ~400 行内
+      integration / notification
+      unattended/                 无人值守循环：daemon-loop / crash-recovery / description-projection / triage-multiteam / completion / knowledge-clarify / deploy / security / runtime-artifacts / phase-dispatch / replan
+      cycles/                     多周期（CYC）：planning / advancement
+      questionnaire/              问卷闭环：entity / modes / answer-writeback / approve-chain / ticket-form / contract-create
+      ticket-http/                工单 HTTP 契约行为锁定：helpers（公共启动/请求）+ routing / security / failures / listen / team-switch
+    e2e/                          十一个确定性闭环：md2html / parallel / askhuman / clarify / docflow / escalation / escalations / gfm / replan / replans / multiteam（驱动：packages/llm-mock）
+  注：test 文件按类型放子夹由 `vitest.config.ts` 递归发现（`tests/**/*.ts`），`**/helpers.ts` 明确排除；新 test 文件也照此归位，超过 ~1000 行就拆。
 ```
 
 ## 运行时拓扑
@@ -120,7 +132,7 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 3. **forbiddenPaths**：任何改动落地前都要查分支相对基线的 diff，三条路径共用 `assertNoForbiddenChanges`：push 自建远端（generic 下 `team_branch`/成员分支 push，比 `origin/base`）、reviewer approve（比本地 base）、`team_branch` 的 merge（比 target）——`pr_sync` 走的是 github 平台建 PR 的专用路径，本项目自建远端本地合并不用。触及禁区直接拒绝并升级；**基线或源 ref 解析不出来时拒绝并升级，绝不静默放行**。默认禁区现在只剩 `['LICENSE']`（2026-08-29 变更，`AGENTS.md` / `.github/` 已移出）。⚠️ 移出 `.github/` 的代价与应对见 README「安全模型」3：需要硬保证的项目自己把它配回 `security.forbiddenPaths`。
 4. **门不过不合并**：`pushRequiresGates` 时门红禁 push/approve；`requireCiGreen` 是**另一道独立的门**（不再被 `pushRequiresGates` 短路），且 `ciStatus === null`（从未 `pr_sync`）视为未验证 → 禁 approve。注意：CI 状态仅 github 平台查得到（其它平台 `pr_sync` 恒置 `unknown`、该门自动不强制），非 github 仓库请显式关掉 `requireCiGreen`——本项目即自建远端（generic），`requireCiGreen` 置 `false`，本地合并不依赖远端 CI。
 5. **禁止破坏性 git**：不 force-push 共享分支（任务/成员分支仅限 `--force-with-lease`）、不 reset 共享分支、不删 base 分支。所有可变 git 操作（create / checkout / merge / delete / push）的分支名一律过 `assertSafeRef`：不得以 `-` 开头、不得含空格或 `..`，否则模型传一个 `-D` 就能把 `git branch -D <同事的任务分支>` 拼进 argv 静默删分支。
-6. **工单凭据只活在人手里**：token 存在 service 侧旁路表（`state.json.ticketTokens`，**内部记录字段**，不是视图字段 —— 所以 `stateVersion` 不动），只拼进邮件 / webhook 的文案。任何人往 `EscalationView` / `QuestionnaireView` / 投影上加 token 字段都是在把「谁能答这张工单」写进谁都能抄一份的地方，`tests/test-notification.ts` 会红。三个失败分支（未知 id / 缺凭据 / 围栏不过）**必须返回逐字节相同的 404**，绝不 403 —— 差别一旦不同，工单号就能被枚举。独立端口 `host` 非回环 → 启动即抛，不降级继续。⚠️ 诚实边界：同源信任围栏挡的是端口扫描、跨站表单和 DNS rebinding，**挡不住本机进程和已被注入的 agent**（与硬规则 2 同一定位）。
+6. **工单凭据只活在人手里**：token 存在 service 侧旁路表（`state.json.ticketTokens`，**内部记录字段**，不是视图字段 —— 所以 `stateVersion` 不动），只拼进邮件 / webhook 的文案。任何人往 `EscalationView` / `QuestionnaireView` / 投影上加 token 字段都是在把「谁能答这张工单」写进谁都能抄一份的地方，`tests/integration/notification.ts` 会红。三个失败分支（未知 id / 缺凭据 / 围栏不过）**必须返回逐字节相同的 404**，绝不 403 —— 差别一旦不同，工单号就能被枚举。独立端口 `host` 非回环 → 启动即抛，不降级继续。⚠️ 诚实边界：同源信任围栏挡的是端口扫描、跨站表单和 DNS rebinding，**挡不住本机进程和已被注入的 agent**（与硬规则 2 同一定位）。
 
 ## 开发纪律
 
@@ -188,18 +200,18 @@ tests/            helpers.ts（真 git fixture）+ integration / unattended / no
 
 ## 测试约定
 
-- `tests/test-integration.ts` 全流程生命周期（clone → 派发 → 门 → 审查 → 合并 → push → 部署）。
-- `tests/test-unattended.ts` 循环分支（崩溃恢复、依赖/域锁、卡死、返工上限、完成报告、重规划）+ 安全硬规则。
-- `tests/test-notification.ts` 真 mock SMTP（net）+ 真工单端口，验证通知闭环。⚠️ 其中一条顺带是**凭据不漏进视图**的守门人：投影里的 `ticketUrl` 必须无 `?t=`，token 只活在 `state.json` 的旁路表 `ticketTokens` 里。
-- `tests/test-profile.ts` / `test-bootstrap.ts` / `test-cache.ts` / `test-learnings.ts` 各适配层与纯逻辑模块。
-- `tests/test-exec.ts` **shell runner 的行为锁定**：超时折算成 exitCode 1、只有 abort 才 reject、`CI=true`、日志尾保留最后 4000 字符。改 `exec.ts` 时这组必须一条不改地通过，才是「纯搬家没改行为」。
-- `tests/test-allowlist.ts` **白名单判定语义**：命令替换 / 反引号 / 换行 / 裸 `&` 一律不给静默放行（含一条"标记文件没被创建"的证据断言，证明确实没 spawn），而重定向与 glob 仍放行 —— 判据见「安全硬规则 2」。
-- `tests/test-service-modules.ts` `service/` 下纯函数的直接单测（描述预算倒排、完成报告渲染、state 工具）。
-- `tests/test-cycles.ts` 多周期开发闭环（CYC-1..7）：周期实体 / 增量规划与派发收窄 / 验收门与自动推进 / checkpoint 边界问卷 / 老团队兼容。
-- `tests/test-questionnaire.ts` 问卷闭环：独立实体（不产生升级/教训/直方图）、工单表单渲染与 400 重述、interactive 真 await 与超时兜底、答案 `[decision]` 回写、draft→accepted 审批链（含防「批 A 合 B」）、`contract_create` 写前校验。
-- `tests/test-ticket-http.ts` **工单 HTTP 契约的行为锁定**：前缀剥离（挂 `/autopilot/ticket` 却请求 `/ticket/x` → 404）、未知 id / 缺 token / token 不符**响应体逐字节相同**、DNS rebinding（`Host: evil.com` + 相同 `Origin` → 404）、`sec-fetch-site: cross-site` 拒、`0.0.0.0` 绑定拒启、JSON 400 保留 `missing`、超 body 413。⚠️ 它必须用裸 `node:http` 客户端而不是 `fetch` —— `fetch` 不给设 `Host`，而 `Host` 正是围栏的第一判据。
+- `tests/integration/integration.ts` 全流程生命周期（clone → 派发 → 门 → 审查 → 合并 → push → 部署）。
+- `tests/integration/unattended/` 循环分支（崩溃恢复、依赖/域锁、卡死、返工上限、完成报告、重规划）+ 安全硬规则。
+- `tests/integration/notification.ts` 真 mock SMTP（net）+ 真工单端口，验证通知闭环。⚠️ 其中一条顺带是**凭据不漏进视图**的守门人：投影里的 `ticketUrl` 必须无 `?t=`，token 只活在 `state.json` 的旁路表 `ticketTokens` 里。
+- `tests/unit/profile.ts` / `bootstrap.ts` / `cache.ts` / `learnings.ts` 各适配层与纯逻辑模块。
+- `tests/unit/exec.ts` **shell runner 的行为锁定**：超时折算成 exitCode 1、只有 abort 才 reject、`CI=true`、日志尾保留最后 4000 字符。改 `exec.ts` 时这组必须一条不改地通过，才是「纯搬家没改行为」。
+- `tests/unit/allowlist.ts` **白名单判定语义**：命令替换 / 反引号 / 换行 / 裸 `&` 一律不给静默放行（含一条"标记文件没被创建"的证据断言，证明确实没 spawn），而重定向与 glob 仍放行 —— 判据见「安全硬规则 2」。
+- `tests/unit/service-modules/` `service/` 下纯函数的直接单测（描述预算倒排、完成报告渲染、state 工具）。
+- `tests/integration/cycles/` 多周期开发闭环（CYC-1..7）：周期实体 / 增量规划与派发收窄 / 验收门与自动推进 / checkpoint 边界问卷 / 老团队兼容。
+- `tests/integration/questionnaire/` 问卷闭环：独立实体（不产生升级/教训/直方图）、工单表单渲染与 400 重述、interactive 真 await 与超时兜底、答案 `[decision]` 回写、draft→accepted 审批链（含防「批 A 合 B」）、`contract_create` 写前校验。
+- `tests/integration/ticket-http/` **工单 HTTP 契约的行为锁定**：前缀剥离（挂 `/autopilot/ticket` 却请求 `/ticket/x` → 404）、未知 id / 缺 token / token 不符**响应体逐字节相同**、DNS rebinding（`Host: evil.com` + 相同 `Origin` → 404）、`sec-fetch-site: cross-site` 拒、`0.0.0.0` 绑定拒启、JSON 400 保留 `missing`、超 body 413。⚠️ 它必须用裸 `node:http` 客户端而不是 `fetch` —— `fetch` 不给设 `Host`，而 `Host` 正是围栏的第一判据。
 - `tests/smoke-cordis.ts` Loader 契约冒烟。⚠️ 它把**注册工具名清单整条锁死**，新增 tool 必须同步那份数组，否则 `pnpm test` 红在这一条上。
-- `tests/test-e2e-*.ts` 确定性 e2e 系列（离线、零 token、可重复复跑）：md2html / parallel / askhuman / clarify / docflow / escalation / escalations / gfm / replan / replans / multiteam 各锁一段真实闭环；由独立子项目 `packages/llm-mock`（OpenAI 兼容流式 mock）驱动。
+- `tests/e2e/` 确定性 e2e 系列（离线、零 token、可重复复跑）：md2html / parallel / askhuman / clarify / docflow / escalation / escalations / gfm / replan / replans / multiteam 各锁一段真实闭环；由独立子项目 `packages/llm-mock`（OpenAI 兼容流式 mock）驱动。
 - 新增断言优先用 `AutopilotOptions` 工厂 `testOptions(fixture, overrides)`，别手搓配置对象。
 - ⚠️ 校验顺序必须是 `typecheck && lint && build && test`：`smoke-cordis` 跑的是 `lib/` 产物，把 build 放在 test 之后会拿上一版 lib 测出**假失败**（本轮实测踩过）。
 

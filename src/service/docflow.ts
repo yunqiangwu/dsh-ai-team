@@ -2,7 +2,7 @@
  * 人工决策回路的**文档审批链**（docs/design-interaction.md §4）与问卷记录的
  * 纯操作（§3.1）：draft 区读写、审批钉哈希、sha256 比对升格、答案的结构化回写。
  * 从 AutopilotService 搬出来是因为这一块是「纯逻辑却塞在编排文件里」的最大一块 ——
- * 搬出后可以脱离 git 工作区与守护循环单测（tests/test-service-modules.ts）。
+ * 搬出后可以脱离 git 工作区与守护循环单测（tests/unit/service-modules/）。
  *
  * 分工（与 `service/report.ts`、`service/daemon.ts` 同一条约定）：这里只有纯函数
  * 与显式注入；`changed()` / 快照推送 / 投递（邮件 webhook）/ 等待唤醒这些副作用

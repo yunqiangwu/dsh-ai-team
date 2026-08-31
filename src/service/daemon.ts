@@ -1,6 +1,6 @@
 /**
  * 守护循环的纯判定层：tick 家族里「阈值比较」的部分，从 AutopilotService 搬出
- * 来单独单测（tests/test-service-modules.ts）。升级副作用（report 收集、
+ * 来单独单测（tests/unit/service-modules/）。升级副作用（report 收集、
  * escalateTask、通知）仍留在 service.ts —— 与 `service/contracts.ts`「纯函数
  * 不碰盘、出口策略归调用方」是同一条分工约定。
  */
