@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { AutopilotService } from '../../../src/service.js';
 import { autopilotProjectionSchema } from '../../../src/schema.js';
 import { makeFixture, seedTeam, testOptions } from '../../helpers.js';
-import type { Fixture, SeedContract } from '../../helpers.js';
+import type { SeedContract } from '../../helpers.js';
 
 async function serviceWithContracts(
   prefix: string,

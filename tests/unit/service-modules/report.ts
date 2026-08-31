@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { renderCompletionReport, renderCycleSummary } from '../../../src/service/report.js';
 import type { LearningRecord } from '../../../src/learnings.js';
 import type { DeployView } from '../../../src/view.js';
-import type { MemberRecord, TaskRecord, TeamRecord } from '../../../src/service/state.js';
+import type { TaskRecord, TeamRecord } from '../../../src/service/state.js';
 
 function learning(overrides: Partial<LearningRecord> = {}): LearningRecord {
   return {

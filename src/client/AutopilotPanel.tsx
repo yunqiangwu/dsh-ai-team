@@ -1198,11 +1198,7 @@ function LoopGuide({ loopState, t }: { loopState: AutopilotProjection['loopState
  */
 function CompletionSummary({ team, t }: { team: TeamView; t: Translator }) {
   const metrics = team.metrics;
-  const total = team.tasks.length;
   const done = team.tasks.filter((task) => task.status === 'done').length;
-  const cancelled = team.tasks.filter((task) => task.status === 'cancelled').length;
-  const cycles = team.cycles ?? [];
-  const cyclesDone = cycles.filter((cycle) => cycle.status === 'done').length;
   return (
     <>
       <span className="dsh-ai-team__stat dsh-ai-team__stat--completed">

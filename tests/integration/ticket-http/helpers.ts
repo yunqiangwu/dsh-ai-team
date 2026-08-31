@@ -10,8 +10,6 @@ import {
   TICKET_PATH_PREFIX,
   TeamSwitchHandler,
   TicketHandler,
-  TicketServer,
-  ticketUrlWithToken,
   type TicketStore,
 } from '../../../src/ticket-handler.js';
 import type { TicketField } from '../../../src/formmodel.js';
