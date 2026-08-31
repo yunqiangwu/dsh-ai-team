@@ -1,7 +1,7 @@
 ---
 id: UX-3
 title: UX 优化第二轮：停摆引导 / 浮窗无障碍 / 团队切换反馈 / 过滤复位（P1）
-status: pending
+status: done
 owner: leader-1
 depends_on: [UX-2]
 touches:
@@ -12,9 +12,9 @@ touches:
 
 # UX 优化第二轮（P1）
 
-第一轮（UX-2，12 项）完成后通读 `AutopilotPanel` 发现的新一批 P1 缺口。这批是
-**净新增功能**，不在已发 v1.7.0 的范围内 —— 是否并入 1.7.0、还是留给 1.7.1，
-由人定夺（见 README 配置/发布约定）。每做完一项更新下方 todolist 并单独提交一次。
+第一轮（UX-2，12 项）完成后通读 `AutopilotPanel` 发现的新一批 P1 缺口。这批随
+v1.7.0 一起发布（版本号未动，仍 1.7.0，已并入 CHANGELOG）。每做完一项更新下方
+todolist 并单独提交一次。
 
 ## 任务清单（todolist）
 
