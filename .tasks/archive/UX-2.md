@@ -1,7 +1,7 @@
 ---
 id: UX-2
 title: UX 优化 P1/P2/P3 十二项：待办中心 / 注意力 / 看板 / 时间线 / 设置 / 引导 / 可访问性
-status: pending
+status: done
 owner: leader-1
 depends_on: [UX-1]
 touches:
