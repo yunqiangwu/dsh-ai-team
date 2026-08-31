@@ -1046,6 +1046,20 @@ function TeamBody({ team, questionnaires, t }: { team: TeamView; questionnaires:
               ))}
             </select>
           ) : null}
+          {/* 过滤复位（P1-D）：有过滤生效时一键清空三个条件，不用逐项手清。 */}
+          {filtering ? (
+            <button
+              type="button"
+              title={t('kanban.clearFilters')}
+              onClick={() => {
+                setQuery('');
+                setMemberFilter('');
+                setCycleFilter('');
+              }}
+            >
+              {t('kanban.clearFilters')}
+            </button>
+          ) : null}
         </div>
         <div className="dsh-ai-team__kanban">
           {TASK_STATUSES.map((status) => {
