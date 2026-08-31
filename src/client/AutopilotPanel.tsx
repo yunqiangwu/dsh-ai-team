@@ -1075,6 +1075,24 @@ function PhaseGuide({ phase, t }: { phase: TeamView['phase']; t: Translator }) {
 }
 
 /**
+ * 停摆引导（P1-A）：循环没在跑时（`stopped` 从未启动 / `paused` 暂停或崩溃恢复），
+ * 面板只有一个状态灯，新用户不知道怎么能跑起来。这里补一句「调哪个工具启动」。
+ * 与 PhaseGuide 正交：前者说「阶段下一步」，这里说「循环本身要它跑起来」——
+ * 两栏都是非派发/非运行的可见引导，不互相覆盖。
+ */
+function LoopGuide({ loopState, t }: { loopState: AutopilotProjection['loopState']; t: Translator }) {
+  if (loopState !== 'stopped' && loopState !== 'paused') return null;
+  const hint = t(`loop.${loopState}.guide`);
+  if (hint === `loop.${loopState}.guide`) return null;
+  return (
+    <div className="dsh-ai-team__guide" role="note">
+      <span className="dsh-ai-team__badge dsh-ai-team__badge--awaiting">{t(`loop.${loopState}`)}</span>
+      <span className="dsh-ai-team__guide-hint">{hint}</span>
+    </div>
+  );
+}
+
+/**
  * 完成态总结（P2-5）：loop completed 时把交付摘要直接摆出来 —— 任务收尾数、
  * 周期完成数、返工/门/部署指标与沉淀教训，一眼看清这一轮交出了什么。
  * 数据全部来自已有 projection，不改 schema / stateVersion。
@@ -1243,6 +1261,7 @@ export function AutopilotPanel({ useProjection, t }: SlotProps) {
       {open ? (
         <div className="dsh-ai-team__body">
           <TeamSwitcher teams={teams} activeTeamId={projection.activeTeamId} t={t} />
+          <LoopGuide loopState={projection.loopState} t={t} />
           <PhaseGuide phase={team.phase} t={t} />
           {projection.loopState === 'completed' ? <CompletionSummary team={team} t={t} /> : null}
           <AsyncResumeBanner items={questionnaires} t={t} />
