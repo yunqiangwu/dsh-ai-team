@@ -797,12 +797,36 @@ function StatsStrip({
   t: Translator;
 }) {
   const [open, setOpen] = useState<DetailKind | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  // 记住是谁打开的浮窗：关闭后把焦点还给那个统计卡按钮（P1-B），不让它悬空。
+  const triggerRef = useRef<HTMLElement | null>(null);
   const metrics = team.metrics;
   const openEsc = escalations.filter((escalation) => escalation.resolvedAt === null).length;
   const openQ = questionnaires.filter((item) => item.status === 'open').length;
   const needsHuman = team.tasks.filter((task) => task.status === 'needs-human').length;
   // 头部琥珀计数与这里共用同一份口径：问卷 + 升级 + 卡住 + 待人工。
   const actionCount = openQ + openEsc + blocked.length + needsHuman;
+
+  const openDetail = (kind: DetailKind) => {
+    triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setOpen(kind);
+  };
+  const closeDetail = () => {
+    setOpen(null);
+    triggerRef.current?.focus();
+  };
+
+  // 浮窗无障碍（P1-B）：打开时焦点移入对话框，Esc 关闭并归还焦点给触发按钮。
+  useEffect(() => {
+    if (open === null) return;
+    overlayRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDetail();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // closeDetail 每次渲染都是新闭包，但只读 ref，不参与依赖也能拿到最新值。
+  }, [open]);
 
   const content = (() => {
     switch (open) {
@@ -828,21 +852,30 @@ function StatsStrip({
   return (
     <>
       <div className="dsh-ai-team__stats">
-        <StatTile label={t('actions.title')} value={String(actionCount)} hint={t('actions.hint')} onClick={() => setOpen('actions')} />
-        <StatTile label={t('section.metrics')} value={`${metrics.completed}/${metrics.dispatched}`} hint={t('section.metrics.hint')} onClick={() => setOpen('metrics')} />
-        <StatTile label={t('section.blocked')} value={String(blocked.length)} hint={t('section.blocked.hint')} onClick={() => setOpen('blocked')} />
-        <StatTile label={t('section.questionnaires')} value={`${openQ}/${questionnaires.length}`} hint={t('section.questionnaires.hint')} onClick={() => setOpen('questionnaires')} />
-        <StatTile label={t('section.learnings')} value={String(team.learnings.length)} hint={t('section.learnings.hint')} onClick={() => setOpen('learnings')} />
-        <StatTile label={t('section.escalations')} value={String(openEsc)} hint={t('section.escalations.hint')} onClick={() => setOpen('escalations')} />
-        <StatTile label={t('section.deploys')} value={String(deploys.length)} hint={t('section.deploys.hint')} onClick={() => setOpen('deploys')} />
-        <StatTile label={t('section.activity')} value={String(team.reviews.length + escalations.length + deploys.length + questionnaires.length + team.learnings.length)} hint={t('section.activity.hint')} onClick={() => setOpen('activity')} />
+        <StatTile label={t('actions.title')} value={String(actionCount)} hint={t('actions.hint')} onClick={() => openDetail('actions')} />
+        <StatTile label={t('section.metrics')} value={`${metrics.completed}/${metrics.dispatched}`} hint={t('section.metrics.hint')} onClick={() => openDetail('metrics')} />
+        <StatTile label={t('section.blocked')} value={String(blocked.length)} hint={t('section.blocked.hint')} onClick={() => openDetail('blocked')} />
+        <StatTile label={t('section.questionnaires')} value={`${openQ}/${questionnaires.length}`} hint={t('section.questionnaires.hint')} onClick={() => openDetail('questionnaires')} />
+        <StatTile label={t('section.learnings')} value={String(team.learnings.length)} hint={t('section.learnings.hint')} onClick={() => openDetail('learnings')} />
+        <StatTile label={t('section.escalations')} value={String(openEsc)} hint={t('section.escalations.hint')} onClick={() => openDetail('escalations')} />
+        <StatTile label={t('section.deploys')} value={String(deploys.length)} hint={t('section.deploys.hint')} onClick={() => openDetail('deploys')} />
+        <StatTile label={t('section.activity')} value={String(team.reviews.length + escalations.length + deploys.length + questionnaires.length + team.learnings.length)} hint={t('section.activity.hint')} onClick={() => openDetail('activity')} />
       </div>
       {open !== null ? (
-        <div className="dsh-ai-team__overlay" onClick={() => setOpen(null)}>
-          <div className="dsh-ai-team__overlay-panel" onClick={(event) => event.stopPropagation()}>
+        <div className="dsh-ai-team__overlay" onClick={closeDetail}>
+          {/* role=dialog + aria-modal + tabIndex 让焦点能移进来（P1-B）；Esc 见 useEffect。 */}
+          <div
+            ref={overlayRef}
+            className="dsh-ai-team__overlay-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t(`section.${open}`)}
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <header className="dsh-ai-team__overlay-head">
               <span>{t(`section.${open}`)}</span>
-              <button type="button" className="dsh-ai-team__overlay-close" onClick={() => setOpen(null)}>✕</button>
+              <button type="button" className="dsh-ai-team__overlay-close" aria-label={t('overlay.close')} onClick={closeDetail}>✕</button>
             </header>
             <div className="dsh-ai-team__overlay-body">{content}</div>
           </div>
